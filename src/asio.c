@@ -626,7 +626,11 @@ HIDDEN LONG STDMETHODCALLTYPE Start(LPPIPEASIO iface)
     This->host_buffer_index =  0;
     This->host_num_samples.hi = This->host_num_samples.lo = 0;
 
-    time = timeGetTime();
+    /* GetTickCount, not timeGetTime — see jack_process_callback for the
+     * Wine-winmm RT-thread smash details. Same DWORD ms return type so
+     * drop-in. (This call site is on the main thread, but keep both
+     * sites consistent.) */
+    time = GetTickCount();
     This->host_time_stamp.lo = time * 1000000;
     This->host_time_stamp.hi = ((unsigned long long) time * 1000000) >> 32;
 
@@ -1315,7 +1319,20 @@ static inline int jack_process_callback(audio_nframes_t nframes, void *arg)
         This->host_num_samples.hi++;
     This->host_num_samples.lo += nframes;
 
-    time = timeGetTime();
+    /* GetTickCount instead of timeGetTime: WINMM's timeGetTime, when
+     * called from the PipeWire RT thread (CreateThread'd via our
+     * spa_thread_utils override), corrupts the calling process's
+     * Wine PE main thread stack — overwriting a saved RIP on main's
+     * frame with a small constant.  The corruption is detected ~40
+     * audio cycles later when main's Sleep() polls clock_gettime
+     * and its FORTIFY canary check trips.
+     *
+     * GetTickCount (kernel32) doesn't have this issue.  Both return
+     * DWORD milliseconds since system start, so it's a drop-in.
+     * Bisected via Step 1-2 of the smash-hunt plan; ruled in by
+     * gating timeGetTime alone, ruled in further by swapping in
+     * GetTickCount (no smash). */
+    time = GetTickCount();
     This->host_time_stamp.lo = time * 1000000;
     This->host_time_stamp.hi = ((unsigned long long) time * 1000000) >> 32;
 
