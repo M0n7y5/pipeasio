@@ -12,38 +12,55 @@ enable the [KXStudio repositories](https://kx.studio/Repositories) and install W
 
 ### BUILDING
 
-Do the following to build for 32-bit Wine.
+This fork uses CMake. x86_64 only.
+
+Build requirements: `cmake` (≥ 3.20), `ninja-build` (recommended) or GNU make,
+`gcc`, Wine SDK (`wine-devel` / `winehq-stable-dev`), `pkg-config`, and
+`libpipewire-0.3-dev` (declared at configure time; native PipeWire backend
+is in progress).
 
 ```sh
-make 32
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
 ```
 
-Do the following to build for 64-bit Wine.
+Debug build with assertions and Wine debug channel macros:
 
 ```sh
-make 64
+cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-debug
 ```
 
 ### INSTALLING
 
-To install 32-bit WineASIO (substitute with the path to the 32-bit wine libs for your distro).
+Default install prefix is `/usr/local`; pass `--prefix /usr` to match the
+distro layout most ASIO hosts expect.
 
 ```sh
-sudo cp build32/wineasio32.dll /usr/lib/i386-linux-gnu/wine/i386-windows/
-sudo cp build32/wineasio32.dll.so /usr/lib/i386-linux-gnu/wine/i386-unix/
+sudo cmake --install build --prefix /usr
 ```
 
-To install 64bit WineASIO (substitute with the path to the 64-bit wine libs for your distro).
+This lays down:
 
-```sh
-sudo cp build64/wineasio64.dll /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/
-sudo cp build64/wineasio64.dll.so /usr/lib/x86_64-linux-gnu/wine/x86_64-unix/
+```
+/usr/lib/wine/x86_64-windows/wineasio64.dll
+/usr/lib/wine/x86_64-windows/wineasio.dll        -> wineasio64.dll
+/usr/lib/wine/x86_64-unix/wineasio64.dll.so
+/usr/lib/wine/x86_64-unix/wineasio.dll.so        -> wineasio64.dll.so
 ```
 
-**NOTE:**  
-**Wine does not have consistent paths between different Linux distributions, these paths are only a hint and likely not what will work for you.**  
-**New versions of wine might also need to use `wineasio64.so` as name instead of `wineasio64.dll.so`.**  
-**It is up to the packager to figure out what works for the Wine version used on their specific distro.**
+The `wineasio.dll{,.so}` symlinks satisfy the unified PE name that Wine 10+
+expects; without them `regsvr32 wineasio64.dll` fails with status `c0000135`
+on newer Wine.
+
+**NOTE:** Wine library directories vary across distros — adjust `--prefix`
+or override `CMAKE_INSTALL_LIBDIR` if your distro is non-standard.
+
+### DEVELOPMENT (VS Code)
+
+Recommended extensions are listed in `.vscode/extensions.json`; VS Code
+prompts on first open. The build emits `build/compile_commands.json` for
+clangd; the in-tree `.clang-format` and `.editorconfig` keep diffs clean.
 
 #### EXTRAS
 

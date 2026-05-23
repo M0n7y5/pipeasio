@@ -2,7 +2,16 @@
 *.dll
 *.o
 *.so
+build/
 build32/
 build64/
 debian/
 __pycache__/
+
+# Untracked research notes
+reserach/
+
+# Tooling
+.cache/
+compile_commands.json
+.vscode/*.local.json

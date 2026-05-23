@@ -1,0 +1,27 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Attach to Wine process",
+            "type": "lldb",
+            "request": "attach",
+            "pid": "${command:pickProcess}",
+            "stopOnEntry": false,
+            "initCommands": [
+                "settings set target.process.thread.step-avoid-regexp '^wine'"
+            ]
+        },
+        {
+            "name": "Run regsvr32 under LLDB",
+            "type": "lldb",
+            "request": "launch",
+            "program": "wine",
+            "args": ["regsvr32", "${workspaceFolder}/build/wineasio64.dll.so"],
+            "env": {
+                "WINEPREFIX": "${env:HOME}/.wine-test",
+                "WINEDEBUG": "+module,+loaddll,trace+asio"
+            },
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

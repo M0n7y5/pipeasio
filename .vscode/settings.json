@@ -1,0 +1,38 @@
+{
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "clangd.arguments": [
+        "--compile-commands-dir=${workspaceFolder}/build",
+        "--background-index",
+        "--header-insertion=never",
+        "--clang-tidy",
+        "--completion-style=detailed",
+        "--pch-storage=memory"
+    ],
+    "[c]": {
+        "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
+        "editor.formatOnSave": true,
+        "editor.rulers": [100],
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true
+    },
+    "cmake.buildDirectory": "${workspaceFolder}/build",
+    "cmake.generator": "Ninja",
+    "cmake.configureOnOpen": true,
+    "files.associations": {
+        "*.spec": "shellscript",
+        "*.cmake": "cmake"
+    },
+    "files.watcherExclude": {
+        "**/build/**": true,
+        "**/build32/**": true,
+        "**/build64/**": true,
+        "**/reserach/**": true,
+        "**/.cache/**": true
+    },
+    "search.exclude": {
+        "build/**": true,
+        "build32/**": true,
+        "build64/**": true,
+        "reserach/**": true
+    }
+}

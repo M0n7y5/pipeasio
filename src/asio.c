@@ -47,7 +47,7 @@
 #include <wine/unicode.h>
 #endif
 
-#include "jackbridge.h"
+#include "audio.h"
 
 #ifdef DEBUG
 WINE_DEFAULT_DEBUG_CHANNEL(asio);
@@ -176,9 +176,9 @@ typedef struct IWineASIO *LPWINEASIO;
 
 typedef struct IOChannel
 {
-    jack_default_audio_sample_t *audio_buffer;
+    audio_sample_t *audio_buffer;
     char                        port_name[WINEASIO_MAX_NAME_LENGTH];
-    jack_port_t                 *port;
+    audio_port_t                 *port;
     bool                        active;
 } IOChannel;
 
@@ -215,7 +215,7 @@ typedef struct IWineASIOImpl
     LONG                        wineasio_preferred_buffersize;
 
     /* JACK stuff */
-    jack_client_t               *jack_client;
+    audio_client_t               *jack_client;
     char                        jack_client_name[WINEASIO_MAX_NAME_LENGTH];
     int                         jack_num_input_ports;
     int                         jack_num_output_ports;
@@ -223,7 +223,7 @@ typedef struct IWineASIOImpl
     const char                  **jack_output_ports;
 
     /* jack process callback buffers */
-    jack_default_audio_sample_t *callback_audio_buffer;
+    audio_sample_t *callback_audio_buffer;
     IOChannel                   *input_channel;
     IOChannel                   *output_channel;
 } IWineASIOImpl;
@@ -293,10 +293,10 @@ HIDDEN void __thiscall_OutputReady(void);
  *  Jack callbacks
  */
 
-static inline int  jack_buffer_size_callback (jack_nframes_t nframes, void *arg);
-static inline void jack_latency_callback(jack_latency_callback_mode_t mode, void *arg);
-static inline int  jack_process_callback (jack_nframes_t nframes, void *arg);
-static inline int  jack_sample_rate_callback (jack_nframes_t nframes, void *arg);
+static inline int  jack_buffer_size_callback (audio_nframes_t nframes, void *arg);
+static inline void jack_latency_callback(audio_latency_mode_t mode, void *arg);
+static inline int  jack_process_callback (audio_nframes_t nframes, void *arg);
+static inline int  jack_sample_rate_callback (audio_nframes_t nframes, void *arg);
 
 /*
  *  Support functions
@@ -412,22 +412,22 @@ HIDDEN ULONG STDMETHODCALLTYPE Release(LPWINEASIO iface)
         /* just for good measure we deinitialize IOChannel structures and unregister JACK ports */
         for (int i = 0; i < This->wineasio_number_inputs; i++)
         {
-            jackbridge_port_unregister (This->jack_client, This->input_channel[i].port);
+            audio_port_unregister (This->jack_client, This->input_channel[i].port);
             This->input_channel[i].active = false;
             This->input_channel[i].port = NULL;
         }
         for (int i = 0; i < This->wineasio_number_outputs; i++)
         {
-            jackbridge_port_unregister (This->jack_client, This->output_channel[i].port);
+            audio_port_unregister (This->jack_client, This->output_channel[i].port);
             This->output_channel[i].active = false;
             This->output_channel[i].port = NULL;
         }
         This->host_active_inputs = This->host_active_outputs = 0;
         TRACE("%i IOChannel structures released\n", This->wineasio_number_inputs + This->wineasio_number_outputs);
 
-        jackbridge_free (This->jack_output_ports);
-        jackbridge_free (This->jack_input_ports);
-        jackbridge_client_close(This->jack_client);
+        audio_free (This->jack_output_ports);
+        audio_free (This->jack_input_ports);
+        audio_close(This->jack_client);
         if (This->input_channel)
             HeapFree(GetProcessHeap(), 0, This->input_channel);
     }
@@ -449,29 +449,29 @@ DEFINE_THISCALL_WRAPPER(Init,8)
 HIDDEN LONG STDMETHODCALLTYPE Init(LPWINEASIO iface, void *sysRef)
 {
     IWineASIOImpl   *This = (IWineASIOImpl *)iface;
-    jack_status_t   jack_status;
-    jack_options_t  jack_options = This->wineasio_autostart_server ? JackNullOption : JackNoStartServer;
+    uint32_t   jack_status;
+    uint32_t  jack_options = This->wineasio_autostart_server ? AUDIO_NULL_OPTION : AUDIO_NO_START_SERVER;
     int             i;
 
     This->sys_ref = sysRef;
     mlockall(MCL_FUTURE);
     configure_driver(This);
 
-    if (!(This->jack_client = jackbridge_client_open(This->jack_client_name, jack_options, &jack_status)))
+    if (!(This->jack_client = audio_open(This->jack_client_name, jack_options, &jack_status)))
     {
         WARN("Unable to open a JACK client as: %s\n", This->jack_client_name);
         return 0;
     }
-    TRACE("JACK client opened as: '%s'\n", jackbridge_get_client_name(This->jack_client));
+    TRACE("JACK client opened as: '%s'\n", audio_get_client_name(This->jack_client));
 
-    This->host_sample_rate = jackbridge_get_sample_rate(This->jack_client);
-    This->host_current_buffersize = jackbridge_get_buffer_size(This->jack_client);
+    This->host_sample_rate = audio_get_sample_rate(This->jack_client);
+    This->host_current_buffersize = audio_get_buffer_size(This->jack_client);
 
     /* Allocate IOChannel structures */
     This->input_channel = HeapAlloc(GetProcessHeap(), 0, (This->wineasio_number_inputs + This->wineasio_number_outputs) * sizeof(IOChannel));
     if (!This->input_channel)
     {
-        jackbridge_client_close(This->jack_client);
+        audio_close(This->jack_client);
         ERR("Unable to allocate IOChannel structures for %i channels\n", This->wineasio_number_inputs);
         return 0;
     }
@@ -479,10 +479,10 @@ HIDDEN LONG STDMETHODCALLTYPE Init(LPWINEASIO iface, void *sysRef)
     TRACE("%i IOChannel structures allocated\n", This->wineasio_number_inputs + This->wineasio_number_outputs);
 
     /* Get and count physical JACK ports */
-    This->jack_input_ports = jackbridge_get_ports(This->jack_client, NULL, NULL, JackPortIsPhysical | JackPortIsOutput);
+    This->jack_input_ports = audio_get_ports(This->jack_client, NULL, NULL, AUDIO_PORT_IS_PHYSICAL | AUDIO_PORT_IS_OUTPUT);
     for (This->jack_num_input_ports = 0; This->jack_input_ports && This->jack_input_ports[This->jack_num_input_ports]; This->jack_num_input_ports++)
         ;
-    This->jack_output_ports = jackbridge_get_ports(This->jack_client, NULL, NULL, JackPortIsPhysical | JackPortIsInput);
+    This->jack_output_ports = audio_get_ports(This->jack_client, NULL, NULL, AUDIO_PORT_IS_PHYSICAL | AUDIO_PORT_IS_INPUT);
     for (This->jack_num_output_ports = 0; This->jack_output_ports && This->jack_output_ports[This->jack_num_output_ports]; This->jack_num_output_ports++)
         ;
 
@@ -492,8 +492,8 @@ HIDDEN LONG STDMETHODCALLTYPE Init(LPWINEASIO iface, void *sysRef)
         This->input_channel[i].active = false;
         This->input_channel[i].port = NULL;
         snprintf(This->input_channel[i].port_name, WINEASIO_MAX_NAME_LENGTH, "in_%i", i + 1);
-        This->input_channel[i].port = jackbridge_port_register(This->jack_client,
-            This->input_channel[i].port_name, JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, i);
+        This->input_channel[i].port = audio_port_register(This->jack_client,
+            This->input_channel[i].port_name, AUDIO_DEFAULT_TYPE, AUDIO_PORT_IS_INPUT, i);
         /* TRACE("IOChannel structure initialized for input %d: '%s'\n", i, This->input_channel[i].port_name); */
     }
     for (i = 0; i < This->wineasio_number_outputs; i++)
@@ -501,41 +501,41 @@ HIDDEN LONG STDMETHODCALLTYPE Init(LPWINEASIO iface, void *sysRef)
         This->output_channel[i].active = false;
         This->output_channel[i].port = NULL;
         snprintf(This->output_channel[i].port_name, WINEASIO_MAX_NAME_LENGTH, "out_%i", i + 1);
-        This->output_channel[i].port = jackbridge_port_register(This->jack_client,
-            This->output_channel[i].port_name, JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, i);
+        This->output_channel[i].port = audio_port_register(This->jack_client,
+            This->output_channel[i].port_name, AUDIO_DEFAULT_TYPE, AUDIO_PORT_IS_OUTPUT, i);
         /* TRACE("IOChannel structure initialized for output %d: '%s'\n", i, This->output_channel[i].port_name); */
     }
     TRACE("%i IOChannel structures initialized\n", This->wineasio_number_inputs + This->wineasio_number_outputs);
 
-    jackbridge_set_thread_creator(jack_thread_creator);
+    audio_set_thread_creator(jack_thread_creator);
 
-    if (!jackbridge_set_buffer_size_callback(This->jack_client, jack_buffer_size_callback, This))
+    if (!audio_set_buffer_size_callback(This->jack_client, jack_buffer_size_callback, This))
     {
-        jackbridge_client_close(This->jack_client);
+        audio_close(This->jack_client);
         HeapFree(GetProcessHeap(), 0, This->input_channel);
         ERR("Unable to register JACK buffer size change callback\n");
         return 0;
     }
     
-    if (!jackbridge_set_latency_callback(This->jack_client, jack_latency_callback, This))
+    if (!audio_set_latency_callback(This->jack_client, jack_latency_callback, This))
     {
-        jackbridge_client_close(This->jack_client);
+        audio_close(This->jack_client);
         HeapFree(GetProcessHeap(), 0, This->input_channel);
         ERR("Unable to register JACK latency callback\n");
         return 0;
     }
 
-    if (!jackbridge_set_process_callback(This->jack_client, jack_process_callback, This))
+    if (!audio_set_process_callback(This->jack_client, jack_process_callback, This))
     {
-        jackbridge_client_close(This->jack_client);
+        audio_close(This->jack_client);
         HeapFree(GetProcessHeap(), 0, This->input_channel);
         ERR("Unable to register JACK process callback\n");
         return 0;
     }
 
-    if (!jackbridge_set_sample_rate_callback (This->jack_client, jack_sample_rate_callback, This))
+    if (!audio_set_sample_rate_callback (This->jack_client, jack_sample_rate_callback, This))
     {
-        jackbridge_client_close(This->jack_client);
+        audio_close(This->jack_client);
         HeapFree(GetProcessHeap(), 0, This->input_channel);
         ERR("Unable to register JACK sample rate change callback\n");
         return 0;
@@ -700,7 +700,7 @@ DEFINE_THISCALL_WRAPPER(GetLatencies,12)
 HIDDEN LONG STDMETHODCALLTYPE GetLatencies(LPWINEASIO iface, LONG *inputLatency, LONG *outputLatency)
 {
     IWineASIOImpl           *This = (IWineASIOImpl*)iface;
-    jack_latency_range_t    range;
+    audio_latency_range_t    range;
 
     if (!inputLatency || !outputLatency)
         return -998;
@@ -708,9 +708,9 @@ HIDDEN LONG STDMETHODCALLTYPE GetLatencies(LPWINEASIO iface, LONG *inputLatency,
     if (This->host_driver_state == Loaded)
         return -1000;
 
-    jackbridge_port_get_latency_range(This->input_channel[0].port, JackCaptureLatency, &range);
+    audio_port_get_latency_range(This->input_channel[0].port, AUDIO_CAPTURE_LATENCY, &range);
     *inputLatency = range.max;
-    jackbridge_port_get_latency_range(This->output_channel[0].port, JackPlaybackLatency, &range);
+    audio_port_get_latency_range(This->output_channel[0].port, AUDIO_PLAYBACK_LATENCY, &range);
     *outputLatency = range.max;
     TRACE("iface: %p, input latency: %d, output latency: %d\n", iface, (int)*inputLatency, (int)*outputLatency);
 
@@ -985,7 +985,7 @@ HIDDEN LONG STDMETHODCALLTYPE CreateBuffers(LPWINEASIO iface, BufferInformation 
             else
             {
                 This->host_current_buffersize = bufferSize;
-                if (jackbridge_set_buffer_size(This->jack_client, This->host_current_buffersize))
+                if (audio_set_buffer_size(This->jack_client, This->host_current_buffersize))
                 {
                     WARN("JACK is unable to set buffersize to %d\n", (int)This->host_current_buffersize);
                     return -999;
@@ -1008,14 +1008,14 @@ HIDDEN LONG STDMETHODCALLTYPE CreateBuffers(LPWINEASIO iface, BufferInformation 
     /* Allocate audio buffers */
 
     This->callback_audio_buffer = HeapAlloc(GetProcessHeap(), 0,
-        (This->wineasio_number_inputs + This->wineasio_number_outputs) * 2 * This->host_current_buffersize * sizeof(jack_default_audio_sample_t));
+        (This->wineasio_number_inputs + This->wineasio_number_outputs) * 2 * This->host_current_buffersize * sizeof(audio_sample_t));
     if (!This->callback_audio_buffer)
     {
         ERR("Unable to allocate %i audio buffers\n", This->wineasio_number_inputs + This->wineasio_number_outputs);
         return -994;
     }
     TRACE("%i audio buffers allocated (%i kB)\n", This->wineasio_number_inputs + This->wineasio_number_outputs,
-          (int) ((This->wineasio_number_inputs + This->wineasio_number_outputs) * 2 * This->host_current_buffersize * sizeof(jack_default_audio_sample_t) / 1024));
+          (int) ((This->wineasio_number_inputs + This->wineasio_number_outputs) * 2 * This->host_current_buffersize * sizeof(audio_sample_t) / 1024));
 
     for (i = 0; i < This->wineasio_number_inputs; i++)
         This->input_channel[i].audio_buffer = This->callback_audio_buffer + (i * 2 * This->host_current_buffersize);
@@ -1054,18 +1054,18 @@ HIDDEN LONG STDMETHODCALLTYPE CreateBuffers(LPWINEASIO iface, BufferInformation 
     }
     TRACE("%d audio channels initialized\n", (int)(This->host_active_inputs + This->host_active_outputs));
 
-    if (!jackbridge_activate(This->jack_client))
+    if (!audio_activate(This->jack_client))
         return -1000;
 
     /* connect to the hardware io */
     if (This->wineasio_connect_to_hardware)
     {
         for (i = 0; i < This->jack_num_input_ports && i < This->wineasio_number_inputs; i++)
-            if (strstr(jackbridge_port_type(jackbridge_port_by_name(This->jack_client, This->jack_input_ports[i])), "audio"))
-                jackbridge_connect(This->jack_client, This->jack_input_ports[i], jackbridge_port_name(This->input_channel[i].port));
+            if (strstr(audio_port_type(audio_port_by_name(This->jack_client, This->jack_input_ports[i])), "audio"))
+                audio_connect(This->jack_client, This->jack_input_ports[i], audio_port_name(This->input_channel[i].port));
         for (i = 0; i < This->jack_num_output_ports && i < This->wineasio_number_outputs; i++)
-            if (strstr(jackbridge_port_type(jackbridge_port_by_name(This->jack_client, This->jack_output_ports[i])), "audio"))
-                jackbridge_connect(This->jack_client, jackbridge_port_name(This->output_channel[i].port), This->jack_output_ports[i]);
+            if (strstr(audio_port_type(audio_port_by_name(This->jack_client, This->jack_output_ports[i])), "audio"))
+                audio_connect(This->jack_client, audio_port_name(This->output_channel[i].port), This->jack_output_ports[i]);
     }
 
     /* at this point all the connections are made and the jack process callback is outputting silence */
@@ -1094,7 +1094,7 @@ HIDDEN LONG STDMETHODCALLTYPE DisposeBuffers(LPWINEASIO iface)
     if (This->host_driver_state != Prepared)
         return -1000;
 
-    if (!jackbridge_deactivate(This->jack_client))
+    if (!audio_deactivate(This->jack_client))
         return -1000;
 
     This->host_callbacks = NULL;
@@ -1242,7 +1242,7 @@ HIDDEN LONG STDMETHODCALLTYPE OutputReady(LPWINEASIO iface)
  *  JACK callbacks
  */
 
-static inline int jack_buffer_size_callback(jack_nframes_t nframes, void *arg)
+static inline int jack_buffer_size_callback(audio_nframes_t nframes, void *arg)
 {
     IWineASIOImpl   *This = (IWineASIOImpl*)arg;
 
@@ -1254,7 +1254,7 @@ static inline int jack_buffer_size_callback(jack_nframes_t nframes, void *arg)
     return 0;
 }
 
-static inline void jack_latency_callback(jack_latency_callback_mode_t mode, void *arg)
+static inline void jack_latency_callback(audio_latency_mode_t mode, void *arg)
 {
     IWineASIOImpl   *This = (IWineASIOImpl*)arg;
 
@@ -1267,21 +1267,21 @@ static inline void jack_latency_callback(jack_latency_callback_mode_t mode, void
     return;
 }
 
-static inline int jack_process_callback(jack_nframes_t nframes, void *arg)
+static inline int jack_process_callback(audio_nframes_t nframes, void *arg)
 {
     IWineASIOImpl               *This = (IWineASIOImpl*)arg;
 
     int                         i;
-    jack_transport_state_t      jack_transport_state;
-    jack_position_t             jack_position;
+    audio_transport_state_t      jack_transport_state;
+    audio_position_t             jack_position;
     DWORD                       time;
 
     /* output silence if the host callback isn't running yet */
     if (This->host_driver_state != Running)
     {
         for (i = 0; i < This->host_active_outputs; i++)
-            memset(jackbridge_port_get_buffer(This->output_channel[i].port, nframes),
-                   0, sizeof (jack_default_audio_sample_t) * nframes);
+            memset(audio_port_get_buffer(This->output_channel[i].port, nframes),
+                   0, sizeof (audio_sample_t) * nframes);
         return 0;
     }
 
@@ -1289,8 +1289,8 @@ static inline int jack_process_callback(jack_nframes_t nframes, void *arg)
     for (i = 0; i < This->wineasio_number_inputs; i++)
         if (This->input_channel[i].active)
             memcpy (&This->input_channel[i].audio_buffer[nframes * This->host_buffer_index],
-                    jackbridge_port_get_buffer(This->input_channel[i].port, nframes),
-                    sizeof (jack_default_audio_sample_t) * nframes);
+                    audio_port_get_buffer(This->input_channel[i].port, nframes),
+                    sizeof (audio_sample_t) * nframes);
 
     if (This->host_num_samples.lo > ULONG_MAX - nframes)
         This->host_num_samples.hi++;
@@ -1311,9 +1311,9 @@ static inline int jack_process_callback(jack_nframes_t nframes, void *arg)
 
         if (This->host_can_time_code) /* FIXME addionally use time code if supported */
         {
-            jack_transport_state = jackbridge_transport_query(This->jack_client, &jack_position);
+            jack_transport_state = audio_transport_query(This->jack_client, &jack_position);
             This->host_time.flagsForTimeCode = 0x1;
-            if (jack_transport_state == JackTransportRolling)
+            if (jack_transport_state == AUDIO_TRANSPORT_ROLLING)
                 This->host_time.flagsForTimeCode |= 0x2;
         }
         This->host_callbacks->swapBuffersWithTimeInfo(&This->host_time, This->host_buffer_index, 1);
@@ -1326,16 +1326,16 @@ static inline int jack_process_callback(jack_nframes_t nframes, void *arg)
     /* copy host to jack buffers */
     for (i = 0; i < This->wineasio_number_outputs; i++)
         if (This->output_channel[i].active)
-            memcpy(jackbridge_port_get_buffer(This->output_channel[i].port, nframes),
+            memcpy(audio_port_get_buffer(This->output_channel[i].port, nframes),
                     &This->output_channel[i].audio_buffer[nframes * This->host_buffer_index],
-                    sizeof (jack_default_audio_sample_t) * nframes);
+                    sizeof (audio_sample_t) * nframes);
 
     /* switch host buffer */
     This->host_buffer_index = This->host_buffer_index ? 0 : 1;
     return 0;
 }
 
-static inline int jack_sample_rate_callback(jack_nframes_t nframes, void *arg)
+static inline int jack_sample_rate_callback(audio_nframes_t nframes, void *arg)
 {
     IWineASIOImpl   *This = (IWineASIOImpl*)arg;
 
