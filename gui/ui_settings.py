@@ -27,15 +27,15 @@ except ImportError:
     from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QSpacerItem, QSizePolicy
 
 
-class Ui_WineASIOSettings(object):
-    OBJECT_NAME = "WineASIOSettings"
+class Ui_PipeASIOSettings(object):
+    OBJECT_NAME = "PipeASIOSettings"
 
-    def setupUi(self, WineASIOSettings):
-        WineASIOSettings.setObjectName(self.OBJECT_NAME)
-        WineASIOSettings.resize(400, 310)
-        self.verticalLayout = QVBoxLayout(WineASIOSettings)
+    def setupUi(self, PipeASIOSettings):
+        PipeASIOSettings.setObjectName(self.OBJECT_NAME)
+        PipeASIOSettings.resize(400, 310)
+        self.verticalLayout = QVBoxLayout(PipeASIOSettings)
         self.verticalLayout.setObjectName("verticalLayout")
-        self.group_ports = QGroupBox(WineASIOSettings)
+        self.group_ports = QGroupBox(PipeASIOSettings)
         self.group_ports.setObjectName("group_ports")
         self.verticalLayout_22 = QVBoxLayout(self.group_ports)
         self.verticalLayout_22.setObjectName("verticalLayout_22")
@@ -73,7 +73,7 @@ class Ui_WineASIOSettings(object):
         self.layout_ports_connect_hw.addWidget(self.cb_ports_connect_hw)
         self.verticalLayout_22.addLayout(self.layout_ports_connect_hw)
         self.verticalLayout.addWidget(self.group_ports)
-        self.group_jack = QGroupBox(WineASIOSettings)
+        self.group_jack = QGroupBox(PipeASIOSettings)
         self.group_jack.setObjectName("group_jack")
         self.verticalLayout_23 = QVBoxLayout(self.group_jack)
         self.verticalLayout_23.setObjectName("verticalLayout_23")
@@ -104,20 +104,20 @@ class Ui_WineASIOSettings(object):
         self.layout_jack_buffer_size.addWidget(self.cb_jack_buffer_size)
         self.verticalLayout_23.addLayout(self.layout_jack_buffer_size)
         self.verticalLayout.addWidget(self.group_jack)
-        self.buttonBox = QDialogButtonBox(WineASIOSettings)
+        self.buttonBox = QDialogButtonBox(PipeASIOSettings)
         self.buttonBox.setOrientation(Qt.Horizontal)
         self.buttonBox.setStandardButtons(QDialogButtonBox.Cancel|QDialogButtonBox.Ok|QDialogButtonBox.RestoreDefaults)
         self.buttonBox.setObjectName("buttonBox")
         self.verticalLayout.addWidget(self.buttonBox)
 
-        self.retranslateUi(WineASIOSettings)
-        self.buttonBox.accepted.connect(WineASIOSettings.accept)
-        self.buttonBox.rejected.connect(WineASIOSettings.reject)
-        QMetaObject.connectSlotsByName(WineASIOSettings)
+        self.retranslateUi(PipeASIOSettings)
+        self.buttonBox.accepted.connect(PipeASIOSettings.accept)
+        self.buttonBox.rejected.connect(PipeASIOSettings.reject)
+        QMetaObject.connectSlotsByName(PipeASIOSettings)
 
-    def retranslateUi(self, WineASIOSettings):
+    def retranslateUi(self, PipeASIOSettings):
         _tr = QCoreApplication.translate
-        WineASIOSettings.setWindowTitle(_tr(self.OBJECT_NAME, "WineASIO Settings"))
+        PipeASIOSettings.setWindowTitle(_tr(self.OBJECT_NAME, "PipeASIO Settings"))
         self.group_ports.setTitle(_tr(self.OBJECT_NAME, "Audio Ports"))
         self.label_ports_in.setToolTip(_tr(self.OBJECT_NAME, "Number of jack ports that wineasio will try to open.\n"
 "Default is 16"))

@@ -1,14 +1,14 @@
-# WineASIO
+# PipeASIO
 
-WineASIO provides an ASIO to JACK driver for WINE.  
-ASIO is the most common Windows low-latency driver, so is commonly used in audio workstation programs.
+PipeASIO is an ASIO driver for Wine that talks to PipeWire directly — no `libjack.so.0` runtime dependency.
 
-You can, for example, use with FLStudio under GNU/Linux systems (together with JACK).
+It's a fork of [WineASIO](https://github.com/wineasio/wineasio), created so the driver loads cleanly inside the Steam Runtime `steamrt4` container that FL Studio runs in under Faugus / Proton-CachyOS — that container ships `libpipewire-0.3` but not `libjack.so.0`, which makes upstream WineASIO SEGV on `dlopen`.
+
+For backward compatibility with existing wineprefixes, the binary filename (`wineasio64.dll`), the CLSID, and the Windows registry paths (`HKCU\Software\Wine\WineASIO`, `HKCU\Software\ASIO\WineASIO`) are unchanged from upstream — only the project identity differs.
+
+ASIO is the most common Windows low-latency driver, so is commonly used in audio workstation programs like FL Studio, Ableton Live, and Reaper.
 
 ![Screenshot](screenshot.png)
-
-For best results with Debian-based distributions,
-enable the [KXStudio repositories](https://kx.studio/Repositories) and install WineASIO from there.
 
 ### BUILDING
 

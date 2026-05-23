@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>WineASIOSettings</class>
- <widget class="QDialog" name="WineASIOSettings">
+ <class>PipeASIOSettings</class>
+ <widget class="QDialog" name="PipeASIOSettings">
   <property name="geometry">
    <rect>
     <x>0</x>
@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>WineASIO Settings</string>
+   <string>PipeASIO Settings</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
@@ -228,7 +228,7 @@ Default is on</string>
   <connection>
    <sender>buttonBox</sender>
    <signal>accepted()</signal>
-   <receiver>WineASIOSettings</receiver>
+   <receiver>PipeASIOSettings</receiver>
    <slot>accept()</slot>
    <hints>
     <hint type="sourcelabel">
@@ -244,7 +244,7 @@ Default is on</string>
   <connection>
    <sender>buttonBox</sender>
    <signal>rejected()</signal>
-   <receiver>WineASIOSettings</receiver>
+   <receiver>PipeASIOSettings</receiver>
    <slot>reject()</slot>
    <hints>
     <hint type="sourcelabel">

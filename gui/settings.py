@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# WineASIO Settings GUI
+# PipeASIO Settings GUI
 # Copyright (C) 2020-2025 Filipe Coelho <falktx@falktx.com>
 #
 # This program is free software; you can redistribute it and/or modify
@@ -33,7 +33,7 @@ except ImportError:
 
 # ---------------------------------------------------------------------------------------------------------------------
 
-from ui_settings import Ui_WineASIOSettings
+from ui_settings import Ui_PipeASIOSettings
 
 # ---------------------------------------------------------------------------------------------------------------------
 
@@ -83,10 +83,10 @@ def smartHex(value: str, length: int):
   return hexStr
 
 # ---------------------------------------------------------------------------------------------------------------------
-# Set-up GUI (Tweaks, WineASIO)
+# Set-up GUI (Tweaks, PipeASIO)
 
 # Force Restart Dialog
-class WineASIOSettingsDialog(QDialog, Ui_WineASIOSettings):
+class PipeASIOSettingsDialog(QDialog, Ui_PipeASIOSettings):
     def __init__(self):
         QDialog.__init__(self, None)
         self.setupUi(self)
@@ -162,12 +162,12 @@ class WineASIOSettingsDialog(QDialog, Ui_WineASIOSettings):
 if __name__ == '__main__':
     # App initialization
     app = QApplication(sys.argv)
-    app.setApplicationName("WineASIO Settings")
+    app.setApplicationName("PipeASIO Settings")
     app.setApplicationVersion("1.0.0")
     app.setOrganizationName("falkTX")
 
     # Show GUI
-    gui = WineASIOSettingsDialog()
+    gui = PipeASIOSettingsDialog()
     gui.show()
 
     # Exit properly

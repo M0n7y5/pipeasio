@@ -1,5 +1,5 @@
 #!/usr/bin/make -f
-# Makefile for WineASIO Settings GUI #
+# Makefile for PipeASIO Settings GUI  #
 # ---------------------------------- #
 # Created by falkTX
 #
@@ -47,9 +47,9 @@ ui_%.py: %.ui
 	sed -i 's/QtWidgets.//g' $@
 	sed -i 's/_translate = QCoreApplication.translate/_tr = QCoreApplication.translate/' $@
 	sed -i 's/_translate(/_tr(/g' $@
-	sed -i 's/"WineASIOSettings"/self.OBJECT_NAME/g' $@
+	sed -i 's/"PipeASIOSettings"/self.OBJECT_NAME/g' $@
 	sed -i 's/ # type: ignore//g' $@
-	sed -i 's/WineASIOSettings(object):/WineASIOSettings(object):\n    OBJECT_NAME = "WineASIOSettings"\n/' $@
+	sed -i 's/PipeASIOSettings(object):/PipeASIOSettings(object):\n    OBJECT_NAME = "PipeASIOSettings"\n/' $@
 	sed -i 's/from PyQt5 import   QtWidgets/$(shell echo "$$UI_IMPORTS")/' $@
 	sed -i 's/ except ImportError:/except ImportError:/' $@
 

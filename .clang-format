@@ -1,4 +1,4 @@
-# WineASIO formatting — Wine-ish house style.
+# PipeASIO formatting — Wine-ish house style.
 # Apply via: clangd "Format Document" or `clang-format -i src/*.c include/*.h`
 ---
 Language: Cpp
