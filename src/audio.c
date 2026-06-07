@@ -583,6 +583,10 @@ bool audio_activate(audio_client_t *c)
         pw_properties_setf(filter_props, PW_KEY_NODE_FORCE_RATE, "%u", (unsigned)c->forced_rate);
     pw_properties_setf(filter_props, PW_KEY_NODE_LATENCY,       "%u/%u",
                        (unsigned)bsize_samples, (unsigned)c->sample_rate);
+    TRACE("audio_activate: forcing quantum=%u, forced_rate=%u (0=follow graph), "
+          "latency=%u/%u\n",
+          (unsigned)bsize_samples, (unsigned)c->forced_rate,
+          (unsigned)bsize_samples, (unsigned)c->sample_rate);
 
     pw_thread_loop_lock(c->loop);
 
@@ -1163,13 +1167,38 @@ static void audio_on_process(void *userdata, struct spa_io_position *position)
             ? pw_filter_dequeue_buffer(p->pw_filter_port) : NULL;
     }
 
+    const uint32_t quantum = position ? (uint32_t)position->clock.duration : 0;
+
+    /* Decisive #3 signal: the host's bufferSwitch runs once per process() for
+     * c->buffer_size frames, but we emit `quantum` frames to the graph — so
+     * playback speed scales as buffer_size/quantum.  They MUST be equal; if
+     * the daemon clamped our forced quantum (pinned clock.min/max-quantum)
+     * they diverge and audio runs slow/pitched-down.  Warn once (the data
+     * loop is single-threaded here), unconditionally so it shows without
+     * PIPEASIO_DEBUG. */
+    if (quantum && quantum != c->buffer_size) {
+        static bool quantum_warned;
+        if (!quantum_warned) {
+            quantum_warned = true;
+            WARN("PipeWire quantum %u != host buffer_size %u: graph clamped our "
+                 "forced quantum, playback runs at %u/%u speed. Raise the host "
+                 "buffer size or relax clock.min-quantum/clock.max-quantum "
+                 "(pw-metadata -n settings).\n",
+                 (unsigned)quantum, (unsigned)c->buffer_size,
+                 (unsigned)c->buffer_size, (unsigned)quantum);
+        }
+    }
+
     if (pipeasio_log_on()) {
         static uint64_t cycle_count;
         if (++cycle_count <= 8
             || (cycle_count <  100 && cycle_count %  10 == 0)
             || (cycle_count >= 100 && cycle_count % 100 == 0))
-            TRACE("process: cycle=%lu tid=%lx\n",
-                  (unsigned long)cycle_count, (unsigned long)GetCurrentThreadId());
+            TRACE("process: cycle=%lu tid=%lx buffer_size=%u quantum=%u rate=%u/%u\n",
+                  (unsigned long)cycle_count, (unsigned long)GetCurrentThreadId(),
+                  (unsigned)c->buffer_size, (unsigned)quantum,
+                  position ? (unsigned)position->clock.rate.num : 0u,
+                  position ? (unsigned)position->clock.rate.denom : 0u);
     }
 
     /* Run the ASIO host's process callback; audio_port_get_buffer returns
