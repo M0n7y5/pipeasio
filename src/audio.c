@@ -572,6 +572,7 @@ bool audio_activate(audio_client_t *c)
         PW_KEY_MEDIA_ROLE,           "DSP",
         PW_KEY_NODE_ALWAYS_PROCESS,  "true",
         PW_KEY_NODE_GROUP,           "group.dsp.0",
+        "pipeasio.node",             "1",
         NULL);
     if (!filter_props) {
         ERR("pw_properties_new (filter) failed\n");

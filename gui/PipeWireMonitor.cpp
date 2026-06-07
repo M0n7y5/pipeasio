@@ -4,6 +4,7 @@
  * Copyright (C) 2026 PipeASIO contributors
  */
 #include "PipeWireMonitor.hpp"
+#include "DeviceEnumerator.hpp"
 
 #include <QProcess>
 #include <QStringList>
@@ -84,7 +85,7 @@ NodeStats parsePwTop(const QByteArray &out, const QString &nodeNameSubstr)
 }
 
 PipeWireMonitor::PipeWireMonitor(QObject *parent)
-    : QObject(parent), m_timer(new QTimer(this)), m_target(QStringLiteral("PipeASIO"))
+    : QObject(parent), m_timer(new QTimer(this)), m_autoDiscover(true)
 {
     m_timer->setInterval(400);
     connect(m_timer, &QTimer::timeout, this, &PipeWireMonitor::poll);
@@ -94,7 +95,9 @@ PipeWireMonitor::~PipeWireMonitor() = default;
 
 void PipeWireMonitor::setTarget(const QString &nodeNameSubstr)
 {
+    /* An explicit (configured) name disables auto-discovery; empty re-enables it. */
     m_target = nodeNameSubstr;
+    m_autoDiscover = nodeNameSubstr.isEmpty();
 }
 
 void PipeWireMonitor::start()
@@ -121,5 +124,16 @@ void PipeWireMonitor::poll()
         return;
     }
     const QByteArray out = proc.readAllStandardOutput();
+
+    /* The host names our node after its own executable, so when no explicit
+     * node_name is configured we resolve it from the "pipeasio.node" marker
+     * the driver stamps on the filter — refreshed whenever the current target
+     * isn't present (e.g. the host (re)started since we last looked). */
+    if (m_autoDiscover && (m_target.isEmpty() || !parsePwTop(out, m_target).found)) {
+        const QString name = DeviceEnumerator::findOwnNode(DeviceEnumerator::runPwDump());
+        if (!name.isEmpty())
+            m_target = name;
+    }
+
     emit updated(parsePwTop(out, m_target));
 }

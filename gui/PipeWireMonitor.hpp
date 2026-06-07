@@ -49,4 +49,5 @@ private slots:
 private:
     QTimer *m_timer;
     QString m_target;
+    bool    m_autoDiscover;   /* true => resolve our node via the marker prop */
 };

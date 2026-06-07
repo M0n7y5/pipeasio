@@ -149,6 +149,23 @@ static void test_parse_pwtop()
     CHECK(!miss.found);
 }
 
+static void test_find_own_node()
+{
+    const QByteArray json =
+        "[\n"
+        "  {\"id\":40,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
+        "{\"media.class\":\"Audio/Sink\",\"node.name\":\"alsa_output.test\"}}},\n"
+        "  {\"id\":61,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
+        "{\"node.name\":\"FL64\",\"media.role\":\"DSP\",\"pipeasio.node\":\"1\"}}}\n"
+        "]\n";
+    CHECK(DeviceEnumerator::findOwnNode(json) == QStringLiteral("FL64"));
+
+    const QByteArray none =
+        "[ {\"id\":40,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
+        "{\"node.name\":\"alsa_output.test\"}}} ]";
+    CHECK(DeviceEnumerator::findOwnNode(none).isEmpty());
+}
+
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
@@ -158,6 +175,7 @@ int main(int argc, char **argv)
     test_cross_language();
     test_parse_pwdump();
     test_parse_pwtop();
+    test_find_own_node();
 
     std::fprintf(stderr, "[%s] %d checks, %d failed\n",
                  g_fail ? "FAIL" : "PASS", g_total, g_fail);

@@ -23,6 +23,10 @@ struct Device {
 /* Parse `pw-dump` JSON into a device list. Pure. */
 QList<Device> parsePwDump(const QByteArray &json);
 
+/* node.name of our own filter node (tagged "pipeasio.node"="1" by the driver),
+ * or "" if no such node is present.  Pure. */
+QString findOwnNode(const QByteArray &json);
+
 /* Run `pw-dump` and return its stdout (empty on failure). */
 QByteArray runPwDump();
 

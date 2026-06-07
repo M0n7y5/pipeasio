@@ -63,6 +63,31 @@ QList<Device> parsePwDump(const QByteArray &json)
     return devices;
 }
 
+QString findOwnNode(const QByteArray &json)
+{
+    QJsonParseError err {};
+    const QJsonDocument doc = QJsonDocument::fromJson(json, &err);
+    if (err.error != QJsonParseError::NoError || !doc.isArray())
+        return {};
+
+    const QJsonArray arr = doc.array();
+    for (const QJsonValue &v : arr) {
+        if (!v.isObject())
+            continue;
+        const QJsonObject obj = v.toObject();
+        if (obj.value(QStringLiteral("type")).toString() !=
+            QLatin1String("PipeWire:Interface:Node"))
+            continue;
+        const QJsonObject props =
+            obj.value(QStringLiteral("info")).toObject()
+               .value(QStringLiteral("props")).toObject();
+        if (props.value(QStringLiteral("pipeasio.node")).toString() ==
+            QLatin1String("1"))
+            return props.value(QStringLiteral("node.name")).toString();
+    }
+    return {};
+}
+
 QByteArray runPwDump()
 {
     QProcess proc;

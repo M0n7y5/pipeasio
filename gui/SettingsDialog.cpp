@@ -77,10 +77,9 @@ SettingsDialog::SettingsDialog(QWidget *parent) : QDialog(parent)
 
     connect(&m_monitor, &PipeWireMonitor::updated, this,
             &SettingsDialog::onMonitorUpdated);
-    const QString target =
-        (cfg.node_name[0] == '\0') ? QStringLiteral("PipeASIO")
-                                   : QString::fromUtf8(cfg.node_name);
-    m_monitor.setTarget(target);
+    /* Empty target => the monitor auto-discovers our node via the driver's
+     * "pipeasio.node" marker (the host names the node after its own exe). */
+    m_monitor.setTarget(cfg.node_name[0] ? QString::fromUtf8(cfg.node_name) : QString());
     m_monitor.start();
 }
 
