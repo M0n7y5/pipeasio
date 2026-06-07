@@ -50,8 +50,6 @@ typedef int  (*audio_process_cb)    (audio_nframes_t nframes, void *arg);
 typedef int  (*audio_buffer_size_cb)(audio_nframes_t nframes, void *arg);
 typedef int  (*audio_sample_rate_cb)(audio_nframes_t nframes, void *arg);
 typedef void (*audio_latency_cb)    (audio_latency_mode_t mode, void *arg);
-typedef int  (*audio_thread_creator)(pthread_t *thread, const pthread_attr_t *attr,
-                                     void *(*start)(void *), void *arg);
 
 /* --- Constants ---------------------------------------------------------- */
 
@@ -103,7 +101,6 @@ bool audio_set_process_callback    (audio_client_t *client, audio_process_cb cb,
 bool audio_set_buffer_size_callback(audio_client_t *client, audio_buffer_size_cb cb, void *arg);
 bool audio_set_sample_rate_callback(audio_client_t *client, audio_sample_rate_cb cb, void *arg);
 bool audio_set_latency_callback    (audio_client_t *client, audio_latency_cb cb,     void *arg);
-void audio_set_thread_creator      (audio_thread_creator creator);
 
 /* --- Connections / transport / memory ----------------------------------- */
 

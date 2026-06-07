@@ -26,13 +26,22 @@
 #include "winternl.h"
 #include "wine/debug.h"
 
-/* Force-print logging via raw write(STDERR_FILENO,…). Bypasses Wine's
- * debug-channel filtering, msvcrt FILE* routing, and stdio buffers that
- * get discarded on abnormal exit (stack smashes, glibc abort, …) — so
- * the last few lines before a crash actually reach /tmp/probe.err. */
+#include <stdlib.h>   /* getenv for PIPEASIO_DEBUG */
+
+/* Raw write(STDERR_FILENO,…) logging: bypasses Wine's debug-channel
+ * filtering and the stdio buffers discarded on abnormal exit, and works
+ * from any thread (incl. the RT/data-loop threads that have no Wine
+ * TEB).  Verbose TRACE is opt-in via the PIPEASIO_DEBUG env var;
+ * WARN/ERR always emit. */
 #undef TRACE
 #undef WARN
 #undef ERR
+static inline int pipeasio_log_on(void)
+{
+    static int on = -1;
+    if (on < 0) on = getenv("PIPEASIO_DEBUG") ? 1 : 0;
+    return on;
+}
 #define PIPEASIO_LOG(pfx, fmt, ...) do {                                       \
     char _buf[1024];                                                           \
     int  _n = snprintf(_buf, sizeof _buf, pfx fmt, ##__VA_ARGS__);             \
@@ -40,7 +49,7 @@
         (void)write(STDERR_FILENO, _buf,                                       \
                     (size_t)_n < sizeof _buf ? (size_t)_n : sizeof _buf - 1);  \
 } while (0)
-#define TRACE(fmt, ...) PIPEASIO_LOG("[pipeasio] ",       fmt, ##__VA_ARGS__)
+#define TRACE(fmt, ...) do { if (pipeasio_log_on()) PIPEASIO_LOG("[pipeasio] ", fmt, ##__VA_ARGS__); } while (0)
 #define WARN(fmt, ...)  PIPEASIO_LOG("[pipeasio] WARN: ", fmt, ##__VA_ARGS__)
 #define ERR(fmt, ...)   PIPEASIO_LOG("[pipeasio] ERR: ",  fmt, ##__VA_ARGS__)
 
@@ -374,43 +383,9 @@ static void audio_adopt_own_ports(audio_client_t *c);
  * Lifecycle
  * ---------------------------------------------------------------------- */
 
-/* SIGABRT handler that dumps a Linux backtrace when glibc fires
- * __stack_chk_fail, so we can see exactly which function smashed the
- * canary. backtrace() walks frame pointers, so the build must use
- * -fno-omit-frame-pointer (Debug config sets this). */
-#include <execinfo.h>
-#include <signal.h>
-static void pipeasio_sigabrt(int sig)
-{
-    static const char msg[] = "\n[pipeasio] === SIGABRT backtrace ===\n";
-    (void)write(STDERR_FILENO, msg, sizeof msg - 1);
-    void *frames[64];
-    int   n = backtrace(frames, 64);
-    backtrace_symbols_fd(frames, n, STDERR_FILENO);
-    /* Re-raise with default handler so the process actually dies. */
-    signal(sig, SIG_DFL);
-    raise(sig);
-}
-
 audio_client_t *audio_open(const char *client_name, uint32_t options, uint32_t *status)
 {
-    /* Pre-allocation canary: proves we entered audio_open even if a
-     * later TRACE doesn't (uses only stack + write, no heap/loop).
-     * Probe both fd 1 and fd 2 to map which fd is which under Wine. */
-    {
-        static const char _c1[] = "[pipeasio] audio_open ENTRY fd=1 (build " PIPEASIO_BUILD_TAG ")\n";
-        static const char _c2[] = "[pipeasio] audio_open ENTRY fd=2 (build " PIPEASIO_BUILD_TAG ")\n";
-        (void)write(1, _c1, sizeof _c1 - 1);
-        (void)write(2, _c2, sizeof _c2 - 1);
-    }
-
-    /* Install on first audio_open so we capture stack-smash backtraces. */
-    {
-        struct sigaction sa = { .sa_handler = pipeasio_sigabrt };
-        sigaction(SIGABRT, &sa, NULL);
-    }
-
-    (void)options;   /* JACK-era flags do not map onto PipeWire */
+    (void)options;   /* legacy option flags do not map onto PipeWire */
     if (status) *status = 0;
 
     audio_client_t *c = calloc(1, sizeof(*c));
@@ -446,17 +421,14 @@ audio_client_t *audio_open(const char *client_name, uint32_t options, uint32_t *
      * otherwise execute on a Wine-managed bridge stack with a
      * mismatched __stack_chk_guard, which smashes the canary on return.
      *
-     * Belt+braces: pw_context_set_object is the documented 1.6+ path,
-     * pw_data_loop_set_thread_utils still works for context-internal
-     * data loops, and pw_thread_utils_set is deprecated (does nothing)
-     * but harmless to call. */
+     * Set the override on the context's data loop only (like pwasio): the
+     * data loop owns the RT process() thread, which must be a Win32 thread
+     * with a Wine TEB.  The pw_thread_loop main loop stays a plain pthread
+     * — it only runs registry/core events (libc allocation, no PE
+     * bridging), so it needs no TEB and no Win32 thread. */
     c->rt_iface.iface = SPA_INTERFACE_INIT(
         SPA_TYPE_INTERFACE_ThreadUtils, SPA_VERSION_THREAD_UTILS,
         &audio_rt_methods, &c->rt);
-    int set_rc = pw_context_set_object(c->ctx, SPA_TYPE_INTERFACE_ThreadUtils, &c->rt_iface);
-    void *got = pw_context_get_object(c->ctx, SPA_TYPE_INTERFACE_ThreadUtils);
-    TRACE("pw_context_set_object(ThreadUtils) rc=%d got=%p (expected %p)\n",
-          set_rc, got, (void *)&c->rt_iface);
     c->data_loop = pw_context_get_data_loop(c->ctx);
     pw_data_loop_set_thread_utils(c->data_loop, &c->rt_iface);
 
@@ -998,15 +970,6 @@ bool audio_set_latency_callback(audio_client_t *c, audio_latency_cb cb, void *ar
     c->latency_cb = cb;
     c->latency_cb_arg = arg;
     return true;
-}
-
-void audio_set_thread_creator(audio_thread_creator creator)
-{
-    /* Superseded by the spa_thread_utils override installed in audio_open.
-     * The PipeWire data loop's RT thread is always a CreateThread'd Wine
-     * thread regardless of what creator (if any) the caller registers
-     * here. */
-    (void)creator;
 }
 
 /* ----------------------------------------------------------------------

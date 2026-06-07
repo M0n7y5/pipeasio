@@ -32,15 +32,22 @@
 #include <sys/mman.h>
 #include <pthread.h>
 
-/* Always include wine/debug.h for helpers like debugstr_guid; then
- * unconditionally override TRACE/WARN/ERR to go through raw
- * write(STDERR_FILENO,…) — bypasses Wine's WINEDEBUG channel gating,
- * msvcrt FILE* routing, and stdio buffers that get discarded on
- * abnormal exit. Applies in every build flavor. */
+#include <stdlib.h>   /* getenv for PIPEASIO_DEBUG */
+
+/* Include wine/debug.h for helpers like debugstr_guid, then override
+ * TRACE/WARN/ERR to raw write(STDERR_FILENO,…): bypasses Wine's WINEDEBUG
+ * gating and the stdio buffers discarded on abnormal exit.  Verbose TRACE
+ * is opt-in via the PIPEASIO_DEBUG env var; WARN/ERR always emit. */
 #include "wine/debug.h"
 #undef  TRACE
 #undef  WARN
 #undef  ERR
+static inline int pipeasio_log_on(void)
+{
+    static int on = -1;
+    if (on < 0) on = getenv("PIPEASIO_DEBUG") ? 1 : 0;
+    return on;
+}
 #define PIPEASIO_LOG(pfx, fmt, ...) do {                                       \
     char _buf[1024];                                                           \
     int  _n = snprintf(_buf, sizeof _buf, pfx fmt, ##__VA_ARGS__);             \
@@ -48,7 +55,7 @@
         (void)write(STDERR_FILENO, _buf,                                       \
                     (size_t)_n < sizeof _buf ? (size_t)_n : sizeof _buf - 1);  \
 } while (0)
-#define TRACE(fmt, ...) PIPEASIO_LOG("[pipeasio] ",       fmt, ##__VA_ARGS__)
+#define TRACE(fmt, ...) do { if (pipeasio_log_on()) PIPEASIO_LOG("[pipeasio] ", fmt, ##__VA_ARGS__); } while (0)
 #define WARN(fmt, ...)  PIPEASIO_LOG("[pipeasio] WARN: ", fmt, ##__VA_ARGS__)
 #define ERR(fmt, ...)   PIPEASIO_LOG("[pipeasio] ERR: ",  fmt, ##__VA_ARGS__)
 
@@ -227,15 +234,15 @@ typedef struct IPipeASIOImpl
     BOOL                        pipeasio_fixed_buffersize;
     LONG                        pipeasio_preferred_buffersize;
 
-    /* JACK stuff */
-    audio_client_t               *jack_client;
-    char                        jack_client_name[PIPEASIO_MAX_NAME_LENGTH];
-    int                         jack_num_input_ports;
-    int                         jack_num_output_ports;
-    const char                  **jack_input_ports;
-    const char                  **jack_output_ports;
+    /* PipeWire client + discovered device ports */
+    audio_client_t               *audio_client;
+    char                        client_name[PIPEASIO_MAX_NAME_LENGTH];
+    int                         num_phys_input_ports;
+    int                         num_phys_output_ports;
+    const char                  **phys_input_ports;
+    const char                  **phys_output_ports;
 
-    /* jack process callback buffers */
+    /* host process-callback buffers */
     audio_sample_t *callback_audio_buffer;
     IOChannel                   *input_channel;
     IOChannel                   *output_channel;
@@ -303,13 +310,13 @@ HIDDEN void __thiscall_Future(void);
 HIDDEN void __thiscall_OutputReady(void);
 
 /*
- *  Jack callbacks
+ *  ASIO process callbacks
  */
 
-static inline int  jack_buffer_size_callback (audio_nframes_t nframes, void *arg);
-static inline void jack_latency_callback(audio_latency_mode_t mode, void *arg);
-static inline int  jack_process_callback (audio_nframes_t nframes, void *arg);
-static inline int  jack_sample_rate_callback (audio_nframes_t nframes, void *arg);
+static inline int  buffer_size_callback (audio_nframes_t nframes, void *arg);
+static inline void latency_callback(audio_latency_mode_t mode, void *arg);
+static inline int  process_callback (audio_nframes_t nframes, void *arg);
+static inline int  sample_rate_callback (audio_nframes_t nframes, void *arg);
 
 /*
  *  Support functions
@@ -317,9 +324,6 @@ static inline int  jack_sample_rate_callback (audio_nframes_t nframes, void *arg
 
 HRESULT WINAPI  PipeASIOCreateInstance(REFIID riid, LPVOID *ppobj);
 static  VOID    configure_driver(IPipeASIOImpl *This);
-
-static DWORD WINAPI jack_thread_creator_helper(LPVOID arg);
-static int          jack_thread_creator(pthread_t* thread_id, const pthread_attr_t* attr, void *(*function)(void*), void* arg);
 
 /* {2d3ca9e2-1193-4c5d-b5fd-38798f3dc074} */
 static GUID const CLSID_PipeASIO = {
@@ -353,14 +357,6 @@ static const IPipeASIOVtbl PipeASIO_Vtbl =
     (void *) THISCALL(Future),
     (void *) THISCALL(OutputReady)
 };
-
-/* structure needed to create the JACK callback thread in the wine process context */
-struct {
-    void        *(*jack_callback_thread) (void*);
-    void        *arg;
-    pthread_t   jack_callback_pthread_id;
-    HANDLE      jack_callback_thread_created;
-} jack_thread_creator_privates;
 
 /*****************************************************************************
  * Interface method definitions
@@ -422,25 +418,25 @@ HIDDEN ULONG STDMETHODCALLTYPE Release(LPPIPEASIO iface)
 
     if (This->host_driver_state == Initialized)
     {
-        /* just for good measure we deinitialize IOChannel structures and unregister JACK ports */
+        /* just for good measure we deinitialize IOChannel structures and unregister ports */
         for (int i = 0; i < This->pipeasio_number_inputs; i++)
         {
-            audio_port_unregister (This->jack_client, This->input_channel[i].port);
+            audio_port_unregister (This->audio_client, This->input_channel[i].port);
             This->input_channel[i].active = false;
             This->input_channel[i].port = NULL;
         }
         for (int i = 0; i < This->pipeasio_number_outputs; i++)
         {
-            audio_port_unregister (This->jack_client, This->output_channel[i].port);
+            audio_port_unregister (This->audio_client, This->output_channel[i].port);
             This->output_channel[i].active = false;
             This->output_channel[i].port = NULL;
         }
         This->host_active_inputs = This->host_active_outputs = 0;
         TRACE("%i IOChannel structures released\n", This->pipeasio_number_inputs + This->pipeasio_number_outputs);
 
-        audio_free (This->jack_output_ports);
-        audio_free (This->jack_input_ports);
-        audio_close(This->jack_client);
+        audio_free (This->phys_output_ports);
+        audio_free (This->phys_input_ports);
+        audio_close(This->audio_client);
         if (This->input_channel)
             HeapFree(GetProcessHeap(), 0, This->input_channel);
     }
@@ -462,8 +458,8 @@ DEFINE_THISCALL_WRAPPER(Init,8)
 HIDDEN LONG STDMETHODCALLTYPE Init(LPPIPEASIO iface, void *sysRef)
 {
     IPipeASIOImpl   *This = (IPipeASIOImpl *)iface;
-    uint32_t   jack_status;
-    uint32_t  jack_options = This->pipeasio_autostart_server ? AUDIO_NULL_OPTION : AUDIO_NO_START_SERVER;
+    uint32_t   audio_status;
+    uint32_t  audio_options = This->pipeasio_autostart_server ? AUDIO_NULL_OPTION : AUDIO_NO_START_SERVER;
     int             i;
 
     This->sys_ref = sysRef;
@@ -480,15 +476,15 @@ HIDDEN LONG STDMETHODCALLTYPE Init(LPPIPEASIO iface, void *sysRef)
      * pwasio locks nothing; PipeWire's rt module owns RT paging. */
     configure_driver(This);
 
-    if (!(This->jack_client = audio_open(This->jack_client_name, jack_options, &jack_status)))
+    if (!(This->audio_client = audio_open(This->client_name, audio_options, &audio_status)))
     {
-        WARN("Unable to open a JACK client as: %s\n", This->jack_client_name);
+        WARN("Unable to open an audio client as: %s\n", This->client_name);
         return 0;
     }
-    TRACE("JACK client opened as: '%s'\n", audio_get_client_name(This->jack_client));
+    TRACE("audio client opened as: '%s'\n", audio_get_client_name(This->audio_client));
 
-    This->host_sample_rate = audio_get_sample_rate(This->jack_client);
-    This->host_current_buffersize = audio_get_buffer_size(This->jack_client);
+    This->host_sample_rate = audio_get_sample_rate(This->audio_client);
+    This->host_current_buffersize = audio_get_buffer_size(This->audio_client);
 
     /* Allocate IOChannel structures (zeroed — audio_buffer and active
      * must start NULL/false before CreateBuffers wires them up). */
@@ -496,19 +492,19 @@ HIDDEN LONG STDMETHODCALLTYPE Init(LPPIPEASIO iface, void *sysRef)
                                     (This->pipeasio_number_inputs + This->pipeasio_number_outputs) * sizeof(IOChannel));
     if (!This->input_channel)
     {
-        audio_close(This->jack_client);
+        audio_close(This->audio_client);
         ERR("Unable to allocate IOChannel structures for %i channels\n", This->pipeasio_number_inputs);
         return 0;
     }
     This->output_channel = This->input_channel + This->pipeasio_number_inputs;
     TRACE("%i IOChannel structures allocated\n", This->pipeasio_number_inputs + This->pipeasio_number_outputs);
 
-    /* Get and count physical JACK ports */
-    This->jack_input_ports = audio_get_ports(This->jack_client, NULL, NULL, AUDIO_PORT_IS_PHYSICAL | AUDIO_PORT_IS_OUTPUT);
-    for (This->jack_num_input_ports = 0; This->jack_input_ports && This->jack_input_ports[This->jack_num_input_ports]; This->jack_num_input_ports++)
+    /* Get and count physical device ports */
+    This->phys_input_ports = audio_get_ports(This->audio_client, NULL, NULL, AUDIO_PORT_IS_PHYSICAL | AUDIO_PORT_IS_OUTPUT);
+    for (This->num_phys_input_ports = 0; This->phys_input_ports && This->phys_input_ports[This->num_phys_input_ports]; This->num_phys_input_ports++)
         ;
-    This->jack_output_ports = audio_get_ports(This->jack_client, NULL, NULL, AUDIO_PORT_IS_PHYSICAL | AUDIO_PORT_IS_INPUT);
-    for (This->jack_num_output_ports = 0; This->jack_output_ports && This->jack_output_ports[This->jack_num_output_ports]; This->jack_num_output_ports++)
+    This->phys_output_ports = audio_get_ports(This->audio_client, NULL, NULL, AUDIO_PORT_IS_PHYSICAL | AUDIO_PORT_IS_INPUT);
+    for (This->num_phys_output_ports = 0; This->phys_output_ports && This->phys_output_ports[This->num_phys_output_ports]; This->num_phys_output_ports++)
         ;
 
     /* Initialize IOChannel structures */
@@ -517,7 +513,7 @@ HIDDEN LONG STDMETHODCALLTYPE Init(LPPIPEASIO iface, void *sysRef)
         This->input_channel[i].active = false;
         This->input_channel[i].port = NULL;
         snprintf(This->input_channel[i].port_name, PIPEASIO_MAX_NAME_LENGTH, "in_%i", i + 1);
-        This->input_channel[i].port = audio_port_register(This->jack_client,
+        This->input_channel[i].port = audio_port_register(This->audio_client,
             This->input_channel[i].port_name, AUDIO_DEFAULT_TYPE, AUDIO_PORT_IS_INPUT, i);
         /* TRACE("IOChannel structure initialized for input %d: '%s'\n", i, This->input_channel[i].port_name); */
     }
@@ -526,43 +522,41 @@ HIDDEN LONG STDMETHODCALLTYPE Init(LPPIPEASIO iface, void *sysRef)
         This->output_channel[i].active = false;
         This->output_channel[i].port = NULL;
         snprintf(This->output_channel[i].port_name, PIPEASIO_MAX_NAME_LENGTH, "out_%i", i + 1);
-        This->output_channel[i].port = audio_port_register(This->jack_client,
+        This->output_channel[i].port = audio_port_register(This->audio_client,
             This->output_channel[i].port_name, AUDIO_DEFAULT_TYPE, AUDIO_PORT_IS_OUTPUT, i);
         /* TRACE("IOChannel structure initialized for output %d: '%s'\n", i, This->output_channel[i].port_name); */
     }
     TRACE("%i IOChannel structures initialized\n", This->pipeasio_number_inputs + This->pipeasio_number_outputs);
 
-    audio_set_thread_creator(jack_thread_creator);
-
-    if (!audio_set_buffer_size_callback(This->jack_client, jack_buffer_size_callback, This))
+    if (!audio_set_buffer_size_callback(This->audio_client, buffer_size_callback, This))
     {
-        audio_close(This->jack_client);
+        audio_close(This->audio_client);
         HeapFree(GetProcessHeap(), 0, This->input_channel);
-        ERR("Unable to register JACK buffer size change callback\n");
+        ERR("Unable to register buffer size change callback\n");
         return 0;
     }
     
-    if (!audio_set_latency_callback(This->jack_client, jack_latency_callback, This))
+    if (!audio_set_latency_callback(This->audio_client, latency_callback, This))
     {
-        audio_close(This->jack_client);
+        audio_close(This->audio_client);
         HeapFree(GetProcessHeap(), 0, This->input_channel);
-        ERR("Unable to register JACK latency callback\n");
+        ERR("Unable to register latency callback\n");
         return 0;
     }
 
-    if (!audio_set_process_callback(This->jack_client, jack_process_callback, This))
+    if (!audio_set_process_callback(This->audio_client, process_callback, This))
     {
-        audio_close(This->jack_client);
+        audio_close(This->audio_client);
         HeapFree(GetProcessHeap(), 0, This->input_channel);
-        ERR("Unable to register JACK process callback\n");
+        ERR("Unable to register process callback\n");
         return 0;
     }
 
-    if (!audio_set_sample_rate_callback (This->jack_client, jack_sample_rate_callback, This))
+    if (!audio_set_sample_rate_callback (This->audio_client, sample_rate_callback, This))
     {
-        audio_close(This->jack_client);
+        audio_close(This->audio_client);
         HeapFree(GetProcessHeap(), 0, This->input_channel);
-        ERR("Unable to register JACK sample rate change callback\n");
+        ERR("Unable to register sample rate change callback\n");
         return 0;
     }
 
@@ -613,9 +607,9 @@ HIDDEN void STDMETHODCALLTYPE GetErrorMessage(LPPIPEASIO iface, char *string)
 
 /*
  * LONG Start(void);
- *  Function:    Start JACK IO processing and reset the sample counter to zero
+ *  Function:    Start IO processing and reset the sample counter to zero
  *  Returns:     -1000 if IO is missing
- *               -999 if JACK fails to start
+ *               -999 if the audio backend fails to start
  */
 
 DEFINE_THISCALL_WRAPPER(Start,4)
@@ -638,7 +632,7 @@ HIDDEN LONG STDMETHODCALLTYPE Start(LPPIPEASIO iface)
     This->host_buffer_index =  0;
     This->host_num_samples.hi = This->host_num_samples.lo = 0;
 
-    /* GetTickCount, not timeGetTime — see jack_process_callback for the
+    /* GetTickCount, not timeGetTime — see process_callback for the
      * Wine-winmm RT-thread smash details. Same DWORD ms return type so
      * drop-in. (This call site is on the main thread, but keep both
      * sites consistent.) */
@@ -679,7 +673,7 @@ HIDDEN LONG STDMETHODCALLTYPE Start(LPPIPEASIO iface)
 
 /*
  * LONG Stop(void);
- *  Function:   Stop JACK IO processing
+ *  Function:   Stop IO processing
  *  Returns:    -1000 on missing IO
  *  Note:       swapBuffers() must not called after returning
  */
@@ -1034,9 +1028,9 @@ HIDDEN LONG STDMETHODCALLTYPE CreateBuffers(LPPIPEASIO iface, BufferInformation 
             else
             {
                 This->host_current_buffersize = bufferSize;
-                if (!audio_set_buffer_size(This->jack_client, This->host_current_buffersize))
+                if (!audio_set_buffer_size(This->audio_client, This->host_current_buffersize))
                 {
-                    WARN("JACK is unable to set buffersize to %d\n", (int)This->host_current_buffersize);
+                    WARN("Unable to set buffersize to %d\n", (int)This->host_current_buffersize);
                     return -999;
                 }
                 TRACE("Buffer size changed to %d\n", (int)This->host_current_buffersize);
@@ -1124,27 +1118,27 @@ HIDDEN LONG STDMETHODCALLTYPE CreateBuffers(LPPIPEASIO iface, BufferInformation 
           (int)(This->host_active_inputs + This->host_active_outputs),
           This->host_active_inputs, This->host_active_outputs);
 
-    if (!audio_activate(This->jack_client))
+    if (!audio_activate(This->audio_client))
         return -1000;
 
     /* connect to the hardware io */
     if (This->pipeasio_connect_to_hardware)
     {
-        for (i = 0; i < This->jack_num_input_ports && i < This->pipeasio_number_inputs; i++)
+        for (i = 0; i < This->num_phys_input_ports && i < This->pipeasio_number_inputs; i++)
         {
-            const char *type = audio_port_type(audio_port_by_name(This->jack_client, This->jack_input_ports[i]));
+            const char *type = audio_port_type(audio_port_by_name(This->audio_client, This->phys_input_ports[i]));
             if (type && strstr(type, "audio"))
-                audio_connect(This->jack_client, This->jack_input_ports[i], audio_port_name(This->input_channel[i].port));
+                audio_connect(This->audio_client, This->phys_input_ports[i], audio_port_name(This->input_channel[i].port));
         }
-        for (i = 0; i < This->jack_num_output_ports && i < This->pipeasio_number_outputs; i++)
+        for (i = 0; i < This->num_phys_output_ports && i < This->pipeasio_number_outputs; i++)
         {
-            const char *type = audio_port_type(audio_port_by_name(This->jack_client, This->jack_output_ports[i]));
+            const char *type = audio_port_type(audio_port_by_name(This->audio_client, This->phys_output_ports[i]));
             if (type && strstr(type, "audio"))
-                audio_connect(This->jack_client, audio_port_name(This->output_channel[i].port), This->jack_output_ports[i]);
+                audio_connect(This->audio_client, audio_port_name(This->output_channel[i].port), This->phys_output_ports[i]);
         }
     }
 
-    /* at this point all the connections are made and the jack process callback is outputting silence */
+    /* at this point all the connections are made and the process callback is outputting silence */
     This->host_driver_state = Prepared;
     return 0;
 }
@@ -1170,7 +1164,7 @@ HIDDEN LONG STDMETHODCALLTYPE DisposeBuffers(LPPIPEASIO iface)
     if (This->host_driver_state != Prepared)
         return -1000;
 
-    if (!audio_deactivate(This->jack_client))
+    if (!audio_deactivate(This->audio_client))
         return -1000;
 
     This->host_callbacks = NULL;
@@ -1315,10 +1309,10 @@ HIDDEN LONG STDMETHODCALLTYPE OutputReady(LPPIPEASIO iface)
 }
 
 /****************************************************************************
- *  JACK callbacks
+ *  ASIO process callbacks
  */
 
-static inline int jack_buffer_size_callback(audio_nframes_t nframes, void *arg)
+static inline int buffer_size_callback(audio_nframes_t nframes, void *arg)
 {
     IPipeASIOImpl   *This = (IPipeASIOImpl*)arg;
 
@@ -1330,7 +1324,7 @@ static inline int jack_buffer_size_callback(audio_nframes_t nframes, void *arg)
     return 0;
 }
 
-static inline void jack_latency_callback(audio_latency_mode_t mode, void *arg)
+static inline void latency_callback(audio_latency_mode_t mode, void *arg)
 {
     IPipeASIOImpl   *This = (IPipeASIOImpl*)arg;
 
@@ -1343,13 +1337,13 @@ static inline void jack_latency_callback(audio_latency_mode_t mode, void *arg)
     return;
 }
 
-static inline int jack_process_callback(audio_nframes_t nframes, void *arg)
+static inline int process_callback(audio_nframes_t nframes, void *arg)
 {
     IPipeASIOImpl               *This = (IPipeASIOImpl*)arg;
 
     int                         i;
-    audio_transport_state_t      jack_transport_state;
-    audio_position_t             jack_position;
+    audio_transport_state_t      transport_state;
+    audio_position_t             transport_position;
     DWORD                       time;
 
     /* output silence if the host callback isn't running yet */
@@ -1371,7 +1365,7 @@ static inline int jack_process_callback(audio_nframes_t nframes, void *arg)
     if (!diag_first_cycle_logged)
     {
         diag_first_cycle_logged = 1;
-        TRACE("first jack_process_callback: nframes=%u host_buffer_index=%d\n",
+        TRACE("first process_callback: nframes=%u host_buffer_index=%d\n",
               (unsigned)nframes, (int)This->host_buffer_index);
         for (i = 0; i < This->pipeasio_number_inputs; i++)
             if (This->input_channel[i].active)
@@ -1391,7 +1385,7 @@ static inline int jack_process_callback(audio_nframes_t nframes, void *arg)
                       (void *)This->output_channel[i].audio_buffer);
     }
 
-    /* copy jack to host buffers */
+    /* copy device input to host buffers */
     for (i = 0; i < This->pipeasio_number_inputs; i++)
         if (This->input_channel[i].active)
         {
@@ -1438,9 +1432,9 @@ static inline int jack_process_callback(audio_nframes_t nframes, void *arg)
 
         if (This->host_can_time_code) /* FIXME addionally use time code if supported */
         {
-            jack_transport_state = audio_transport_query(This->jack_client, &jack_position);
+            transport_state = audio_transport_query(This->audio_client, &transport_position);
             This->host_time.flagsForTimeCode = 0x1;
-            if (jack_transport_state == AUDIO_TRANSPORT_ROLLING)
+            if (transport_state == AUDIO_TRANSPORT_ROLLING)
                 This->host_time.flagsForTimeCode |= 0x2;
         }
         This->host_callbacks->swapBuffersWithTimeInfo(&This->host_time, This->host_buffer_index, 1);
@@ -1450,7 +1444,7 @@ static inline int jack_process_callback(audio_nframes_t nframes, void *arg)
         This->host_callbacks->swapBuffers(This->host_buffer_index, 1);
     }
 
-    /* copy host to jack buffers */
+    /* copy host to device output buffers */
     for (i = 0; i < This->pipeasio_number_outputs; i++)
         if (This->output_channel[i].active)
         {
@@ -1467,7 +1461,7 @@ static inline int jack_process_callback(audio_nframes_t nframes, void *arg)
     return 0;
 }
 
-static inline int jack_sample_rate_callback(audio_nframes_t nframes, void *arg)
+static inline int sample_rate_callback(audio_nframes_t nframes, void *arg)
 {
     IPipeASIOImpl   *This = (IPipeASIOImpl*)arg;
 
@@ -1492,32 +1486,6 @@ static WCHAR *strrchrW(const WCHAR* str, WCHAR ch)
     return ret;
 }
 #endif
-
-/* Function called by JACK to create a thread in the wine process context,
- *  uses the global structure jack_thread_creator_privates to communicate with jack_thread_creator_helper() */
-static int jack_thread_creator(pthread_t* thread_id, const pthread_attr_t* attr, void *(*function)(void*), void* arg)
-{
-    TRACE("arg: %p, thread_id: %p, attr: %p, function: %p\n", arg, thread_id, attr, function);
-
-    jack_thread_creator_privates.jack_callback_thread = function;
-    jack_thread_creator_privates.arg = arg;
-    jack_thread_creator_privates.jack_callback_thread_created = CreateEventW(NULL, FALSE, FALSE, NULL);
-    CreateThread( NULL, 0, jack_thread_creator_helper, arg, 0,0 );
-    WaitForSingleObject(jack_thread_creator_privates.jack_callback_thread_created, INFINITE);
-    *thread_id = jack_thread_creator_privates.jack_callback_pthread_id;
-    return 0;
-}
-
-/* internal helper function for returning the posix thread_id of the newly created callback thread */
-static DWORD WINAPI jack_thread_creator_helper(LPVOID arg)
-{
-    TRACE("arg: %p\n", arg);
-
-    jack_thread_creator_privates.jack_callback_pthread_id = pthread_self();
-    SetEvent(jack_thread_creator_privates.jack_callback_thread_created);
-    jack_thread_creator_privates.jack_callback_thread(jack_thread_creator_privates.arg);
-    return 0;
-}
 
 static VOID configure_driver(IPipeASIOImpl *This)
 {
@@ -1548,7 +1516,7 @@ static VOID configure_driver(IPipeASIOImpl *This)
 
     /* Initialise most member variables,
      * host_num_samples, host_time, & host_time_stamp are initialized in Start()
-     * jack_num_input_ports & jack_num_output_ports are initialized in Init() */
+     * num_phys_input_ports & num_phys_output_ports are initialized in Init() */
     This->host_active_inputs = 0;
     This->host_active_outputs = 0;
     This->host_buffer_index = 0;
@@ -1567,10 +1535,10 @@ static VOID configure_driver(IPipeASIOImpl *This)
     This->pipeasio_fixed_buffersize = TRUE;
     This->pipeasio_preferred_buffersize = PIPEASIO_PREFERRED_BUFFERSIZE;
 
-    This->jack_client = NULL;
-    This->jack_client_name[0] = 0;
-    This->jack_input_ports = NULL;
-    This->jack_output_ports = NULL;
+    This->audio_client = NULL;
+    This->client_name[0] = 0;
+    This->phys_input_ports = NULL;
+    This->phys_output_ports = NULL;
     This->callback_audio_buffer = NULL;
     This->input_channel = NULL;
     This->output_channel = NULL;
@@ -1638,7 +1606,7 @@ static VOID configure_driver(IPipeASIOImpl *This)
         result = RegSetValueExW(hkey, value_pipeasio_preferred_buffersize, 0, REG_DWORD, (LPBYTE) &value, size);
     }
 
-    /* get/set JACK autostart */
+    /* get/set autostart */
     size = sizeof(DWORD);
     if (RegQueryValueExW(hkey, pipeasio_autostart_server, NULL, &type, (LPBYTE) &value, &size) == ERROR_SUCCESS)
     {
@@ -1653,7 +1621,7 @@ static VOID configure_driver(IPipeASIOImpl *This)
         result = RegSetValueExW(hkey, pipeasio_autostart_server, 0, REG_DWORD, (LPBYTE) &value, size);
     }
 
-    /* get/set JACK connect to physical io */
+    /* get/set connect to physical io */
     size = sizeof(DWORD);
     if (RegQueryValueExW(hkey, value_pipeasio_connect_to_hardware, NULL, &type, (LPBYTE) &value, &size) == ERROR_SUCCESS)
     {
@@ -1674,7 +1642,7 @@ static VOID configure_driver(IPipeASIOImpl *This)
     *application_name = 0;
     application_name = strrchrW(application_path, L'\\');
     application_name++;
-    WideCharToMultiByte(CP_ACP, WC_SEPCHARS, application_name, -1, This->jack_client_name, PIPEASIO_MAX_NAME_LENGTH, NULL, NULL);
+    WideCharToMultiByte(CP_ACP, WC_SEPCHARS, application_name, -1, This->client_name, PIPEASIO_MAX_NAME_LENGTH, NULL, NULL);
 
     RegCloseKey(hkey);
 
@@ -1728,10 +1696,10 @@ static VOID configure_driver(IPipeASIOImpl *This)
             This->pipeasio_preferred_buffersize = result;
     }
 
-    /* over ride the JACK client name gotten from the application name */
+    /* override the audio client name gotten from the application name */
     size = GetEnvironmentVariableA("PIPEASIO_CLIENT_NAME", environment_variable, PIPEASIO_MAX_NAME_LENGTH);
     if (size > 0 && size < PIPEASIO_MAX_NAME_LENGTH)
-        strcpy(This->jack_client_name, environment_variable);
+        strcpy(This->client_name, environment_variable);
 
     /* if pipeasio_preferred_buffersize is not a power of two or if out of range, then set to PIPEASIO_PREFERRED_BUFFERSIZE */
     if (!(This->pipeasio_preferred_buffersize > 0 && !(This->pipeasio_preferred_buffersize&(This->pipeasio_preferred_buffersize-1))
