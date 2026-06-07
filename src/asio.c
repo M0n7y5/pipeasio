@@ -68,12 +68,13 @@ static inline int pipeasio_log_on(void)
 
 #include "audio.h"
 #include "pipeasio_offsets.h"
+#include "pipeasio_config.h"
 
 #ifdef DEBUG
 WINE_DEFAULT_DEBUG_CHANNEL(asio);
 #endif
 
-#define MAX_ENVIRONMENT_SIZE            6
+#define MAX_ENVIRONMENT_SIZE            64
 #define PIPEASIO_MAX_NAME_LENGTH        32
 #define PIPEASIO_MINIMUM_BUFFERSIZE     16
 #define PIPEASIO_MAXIMUM_BUFFERSIZE     8192
@@ -229,10 +230,12 @@ typedef struct IPipeASIOImpl
     /* PipeASIO configuration options */
     int                         pipeasio_number_inputs;
     int                         pipeasio_number_outputs;
-    BOOL                        pipeasio_autostart_server;
     BOOL                        pipeasio_connect_to_hardware;
     BOOL                        pipeasio_fixed_buffersize;
     LONG                        pipeasio_preferred_buffersize;
+    int                         pipeasio_sample_rate;          /* 0 = follow graph */
+    char                        pipeasio_output_device[PIPEASIO_DEVICE_NAME_MAX];
+    char                        pipeasio_input_device[PIPEASIO_DEVICE_NAME_MAX];
 
     /* PipeWire client + discovered device ports */
     audio_client_t               *audio_client;
@@ -459,7 +462,7 @@ HIDDEN LONG STDMETHODCALLTYPE Init(LPPIPEASIO iface, void *sysRef)
 {
     IPipeASIOImpl   *This = (IPipeASIOImpl *)iface;
     uint32_t   audio_status;
-    uint32_t  audio_options = This->pipeasio_autostart_server ? AUDIO_NULL_OPTION : AUDIO_NO_START_SERVER;
+    uint32_t  audio_options = AUDIO_NULL_OPTION;
     int             i;
 
     This->sys_ref = sysRef;
@@ -482,6 +485,8 @@ HIDDEN LONG STDMETHODCALLTYPE Init(LPPIPEASIO iface, void *sysRef)
         return 0;
     }
     TRACE("audio client opened as: '%s'\n", audio_get_client_name(This->audio_client));
+
+    audio_set_forced_rate(This->audio_client, (audio_nframes_t)This->pipeasio_sample_rate);
 
     This->host_sample_rate = audio_get_sample_rate(This->audio_client);
     This->host_current_buffersize = audio_get_buffer_size(This->audio_client);
@@ -1121,21 +1126,35 @@ HIDDEN LONG STDMETHODCALLTYPE CreateBuffers(LPPIPEASIO iface, BufferInformation 
     if (!audio_activate(This->audio_client))
         return -1000;
 
-    /* connect to the hardware io */
+    /* Connect to hardware: a chosen device (by node.name) or the first
+     * available one ("" => default).  Our inputs read FROM a source's output
+     * ports; our outputs write TO a sink's input ports. */
     if (This->pipeasio_connect_to_hardware)
     {
-        for (i = 0; i < This->num_phys_input_ports && i < This->pipeasio_number_inputs; i++)
+        const char **in_src  = This->pipeasio_input_device[0]
+            ? audio_get_device_ports(This->audio_client, This->pipeasio_input_device, AUDIO_PORT_IS_OUTPUT)
+            : NULL;
+        const char **out_dst = This->pipeasio_output_device[0]
+            ? audio_get_device_ports(This->audio_client, This->pipeasio_output_device, AUDIO_PORT_IS_INPUT)
+            : NULL;
+        const char **use_in  = in_src  ? in_src  : This->phys_input_ports;
+        const char **use_out = out_dst ? out_dst : This->phys_output_ports;
+
+        for (i = 0; use_in && use_in[i] && i < This->pipeasio_number_inputs; i++)
         {
-            const char *type = audio_port_type(audio_port_by_name(This->audio_client, This->phys_input_ports[i]));
+            const char *type = audio_port_type(audio_port_by_name(This->audio_client, use_in[i]));
             if (type && strstr(type, "audio"))
-                audio_connect(This->audio_client, This->phys_input_ports[i], audio_port_name(This->input_channel[i].port));
+                audio_connect(This->audio_client, use_in[i], audio_port_name(This->input_channel[i].port));
         }
-        for (i = 0; i < This->num_phys_output_ports && i < This->pipeasio_number_outputs; i++)
+        for (i = 0; use_out && use_out[i] && i < This->pipeasio_number_outputs; i++)
         {
-            const char *type = audio_port_type(audio_port_by_name(This->audio_client, This->phys_output_ports[i]));
+            const char *type = audio_port_type(audio_port_by_name(This->audio_client, use_out[i]));
             if (type && strstr(type, "audio"))
-                audio_connect(This->audio_client, audio_port_name(This->output_channel[i].port), This->phys_output_ports[i]);
+                audio_connect(This->audio_client, audio_port_name(This->output_channel[i].port), use_out[i]);
         }
+
+        if (in_src)  audio_free((void *)in_src);
+        if (out_dst) audio_free((void *)out_dst);
     }
 
     /* at this point all the connections are made and the process callback is outputting silence */
@@ -1489,32 +1508,16 @@ static WCHAR *strrchrW(const WCHAR* str, WCHAR ch)
 
 static VOID configure_driver(IPipeASIOImpl *This)
 {
-    HKEY    hkey;
-    LONG    result, value;
-    DWORD   type, size;
-    WCHAR   application_path [MAX_PATH];
-    WCHAR   *application_name;
+    WCHAR   application_path[MAX_PATH];
+    WCHAR  *application_name;
     char    environment_variable[MAX_ENVIRONMENT_SIZE];
+    char    name_env[PIPEASIO_MAX_NAME_LENGTH];
+    char    dev_env[PIPEASIO_DEVICE_NAME_MAX];
+    LONG    result;
+    DWORD   n;
+    struct pipeasio_config cfg;
 
-    /* Unicode strings used for the registry */
-    static const WCHAR key_software_wine_pipeasio[] =
-        { 'S','o','f','t','w','a','r','e','\\',
-          'W','i','n','e','\\',
-          'P','i','p','e','A','S','I','O',0 };
-    static const WCHAR value_pipeasio_number_inputs[] =
-        { 'N','u','m','b','e','r',' ','o','f',' ','i','n','p','u','t','s',0 };
-    static const WCHAR value_pipeasio_number_outputs[] =
-        { 'N','u','m','b','e','r',' ','o','f',' ','o','u','t','p','u','t','s',0 };
-    static const WCHAR value_pipeasio_fixed_buffersize[] =
-        { 'F','i','x','e','d',' ','b','u','f','f','e','r','s','i','z','e',0 };
-    static const WCHAR value_pipeasio_preferred_buffersize[] =
-        { 'P','r','e','f','e','r','r','e','d',' ','b','u','f','f','e','r','s','i','z','e',0 };
-    static const WCHAR pipeasio_autostart_server[] =
-        { 'A','u','t','o','s','t','a','r','t',' ','s','e','r','v','e','r',0 };
-    static const WCHAR value_pipeasio_connect_to_hardware[] =
-        { 'C','o','n','n','e','c','t',' ','t','o',' ','h','a','r','d','w','a','r','e',0 };
-
-    /* Initialise most member variables,
+    /* Initialise most member variables.
      * host_num_samples, host_time, & host_time_stamp are initialized in Start()
      * num_phys_input_ports & num_phys_output_ports are initialized in Init() */
     This->host_active_inputs = 0;
@@ -1528,12 +1531,17 @@ static VOID configure_driver(IPipeASIOImpl *This)
     This->host_time_info_mode = FALSE;
     This->host_version = 92;
 
-    This->pipeasio_number_inputs = 16;
-    This->pipeasio_number_outputs = 16;
-    This->pipeasio_autostart_server = FALSE;
-    This->pipeasio_connect_to_hardware = TRUE;
-    This->pipeasio_fixed_buffersize = TRUE;
-    This->pipeasio_preferred_buffersize = PIPEASIO_PREFERRED_BUFFERSIZE;
+    /* Load settings from the flat INI the pipeasio-settings panel writes
+     * ($XDG_CONFIG_HOME/pipeasio/config.ini).  A missing file yields defaults. */
+    pipeasio_config_load(&cfg);
+    This->pipeasio_number_inputs        = cfg.inputs;
+    This->pipeasio_number_outputs       = cfg.outputs;
+    This->pipeasio_connect_to_hardware  = cfg.auto_connect ? TRUE : FALSE;
+    This->pipeasio_fixed_buffersize     = cfg.fixed_buffer_size ? TRUE : FALSE;
+    This->pipeasio_preferred_buffersize = cfg.buffer_size;
+    This->pipeasio_sample_rate          = cfg.sample_rate;
+    lstrcpynA(This->pipeasio_output_device, cfg.output_device, sizeof This->pipeasio_output_device);
+    lstrcpynA(This->pipeasio_input_device,  cfg.input_device,  sizeof This->pipeasio_input_device);
 
     This->audio_client = NULL;
     This->client_name[0] = 0;
@@ -1543,111 +1551,24 @@ static VOID configure_driver(IPipeASIOImpl *This)
     This->input_channel = NULL;
     This->output_channel = NULL;
 
-    /* create registry entries with defaults if not present */
-    result = RegCreateKeyExW(HKEY_CURRENT_USER, key_software_wine_pipeasio, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &hkey, NULL);
-
-    /* get/set number of pipeasio inputs */
-    size = sizeof(DWORD);
-    if (RegQueryValueExW(hkey, value_pipeasio_number_inputs, NULL, &type, (LPBYTE) &value, &size) == ERROR_SUCCESS)
+    /* Client (PipeWire node) name: the INI may pin one, otherwise derive it
+     * from the host application's executable name. */
+    if (cfg.node_name[0])
     {
-        if (type == REG_DWORD)
-            This->pipeasio_number_inputs = value;
+        lstrcpynA(This->client_name, cfg.node_name, PIPEASIO_MAX_NAME_LENGTH);
     }
     else
     {
-        type = REG_DWORD;
-        size = sizeof(DWORD);
-        value = This->pipeasio_number_inputs;
-        result = RegSetValueExW(hkey, value_pipeasio_number_inputs, 0, REG_DWORD, (LPBYTE) &value, size);
+        GetModuleFileNameW(0, application_path, MAX_PATH);
+        application_name = strrchrW(application_path, L'.');
+        if (application_name) *application_name = 0;
+        application_name = strrchrW(application_path, L'\\');
+        application_name = application_name ? application_name + 1 : application_path;
+        WideCharToMultiByte(CP_ACP, WC_SEPCHARS, application_name, -1,
+                            This->client_name, PIPEASIO_MAX_NAME_LENGTH, NULL, NULL);
     }
 
-    /* get/set number of pipeasio outputs */
-    size = sizeof(DWORD);
-    if (RegQueryValueExW(hkey, value_pipeasio_number_outputs, NULL, &type, (LPBYTE) &value, &size) == ERROR_SUCCESS)
-    {
-        if (type == REG_DWORD)
-            This->pipeasio_number_outputs = value;
-    }
-    else
-    {
-        type = REG_DWORD;
-        size = sizeof(DWORD);
-        value = This->pipeasio_number_outputs;
-        result = RegSetValueExW(hkey, value_pipeasio_number_outputs, 0, REG_DWORD, (LPBYTE) &value, size);
-    }
-
-    /* allow changing of pipeasio buffer sizes */
-    size = sizeof(DWORD);
-    if (RegQueryValueExW(hkey, value_pipeasio_fixed_buffersize, NULL, &type, (LPBYTE) &value, &size) == ERROR_SUCCESS)
-    {
-        if (type == REG_DWORD)
-            This->pipeasio_fixed_buffersize = value;
-    }
-    else
-    {
-        type = REG_DWORD;
-        size = sizeof(DWORD);
-        value = This->pipeasio_fixed_buffersize;
-        result = RegSetValueExW(hkey, value_pipeasio_fixed_buffersize, 0, REG_DWORD, (LPBYTE) &value, size);
-    }
-
-    /* preferred buffer size (if changing buffersize is allowed) */
-    size = sizeof(DWORD);
-    if (RegQueryValueExW(hkey, value_pipeasio_preferred_buffersize, NULL, &type, (LPBYTE) &value, &size) == ERROR_SUCCESS)
-    {
-        if (type == REG_DWORD)
-            This->pipeasio_preferred_buffersize = value;
-    }
-    else
-    {
-        type = REG_DWORD;
-        size = sizeof(DWORD);
-        value = This->pipeasio_preferred_buffersize;
-        result = RegSetValueExW(hkey, value_pipeasio_preferred_buffersize, 0, REG_DWORD, (LPBYTE) &value, size);
-    }
-
-    /* get/set autostart */
-    size = sizeof(DWORD);
-    if (RegQueryValueExW(hkey, pipeasio_autostart_server, NULL, &type, (LPBYTE) &value, &size) == ERROR_SUCCESS)
-    {
-        if (type == REG_DWORD)
-            This->pipeasio_autostart_server = value;
-    }
-    else
-    {
-        type = REG_DWORD;
-        size = sizeof(DWORD);
-        value = This->pipeasio_autostart_server;
-        result = RegSetValueExW(hkey, pipeasio_autostart_server, 0, REG_DWORD, (LPBYTE) &value, size);
-    }
-
-    /* get/set connect to physical io */
-    size = sizeof(DWORD);
-    if (RegQueryValueExW(hkey, value_pipeasio_connect_to_hardware, NULL, &type, (LPBYTE) &value, &size) == ERROR_SUCCESS)
-    {
-        if (type == REG_DWORD)
-            This->pipeasio_connect_to_hardware = value;
-    }
-    else
-    {
-        type = REG_DWORD;
-        size = sizeof(DWORD);
-        value = This->pipeasio_connect_to_hardware;
-        result = RegSetValueExW(hkey, value_pipeasio_connect_to_hardware, 0, REG_DWORD, (LPBYTE) &value, size);
-    }
-
-    /* get client name by stripping path and extension */
-    GetModuleFileNameW(0, application_path, MAX_PATH);
-    application_name = strrchrW(application_path, L'.');
-    *application_name = 0;
-    application_name = strrchrW(application_path, L'\\');
-    application_name++;
-    WideCharToMultiByte(CP_ACP, WC_SEPCHARS, application_name, -1, This->client_name, PIPEASIO_MAX_NAME_LENGTH, NULL, NULL);
-
-    RegCloseKey(hkey);
-
-    /* Look for environment variables to override registry config values */
-
+    /* Environment variables override INI values. */
     if (GetEnvironmentVariableA("PIPEASIO_NUMBER_INPUTS", environment_variable, MAX_ENVIRONMENT_SIZE))
     {
         errno = 0;
@@ -1655,7 +1576,6 @@ static VOID configure_driver(IPipeASIOImpl *This)
         if (errno != ERANGE)
             This->pipeasio_number_inputs = result;
     }
-
     if (GetEnvironmentVariableA("PIPEASIO_NUMBER_OUTPUTS", environment_variable, MAX_ENVIRONMENT_SIZE))
     {
         errno = 0;
@@ -1663,15 +1583,6 @@ static VOID configure_driver(IPipeASIOImpl *This)
         if (errno != ERANGE)
             This->pipeasio_number_outputs = result;
     }
-
-    if (GetEnvironmentVariableA("PIPEASIO_AUTOSTART_SERVER", environment_variable, MAX_ENVIRONMENT_SIZE))
-    {
-        if (!strcasecmp(environment_variable, "on"))
-            This->pipeasio_autostart_server = TRUE;
-        else if (!strcasecmp(environment_variable, "off"))
-            This->pipeasio_autostart_server = FALSE;
-    }
-
     if (GetEnvironmentVariableA("PIPEASIO_CONNECT_TO_HARDWARE", environment_variable, MAX_ENVIRONMENT_SIZE))
     {
         if (!strcasecmp(environment_variable, "on"))
@@ -1679,7 +1590,6 @@ static VOID configure_driver(IPipeASIOImpl *This)
         else if (!strcasecmp(environment_variable, "off"))
             This->pipeasio_connect_to_hardware = FALSE;
     }
-
     if (GetEnvironmentVariableA("PIPEASIO_FIXED_BUFFERSIZE", environment_variable, MAX_ENVIRONMENT_SIZE))
     {
         if (!strcasecmp(environment_variable, "on"))
@@ -1687,7 +1597,6 @@ static VOID configure_driver(IPipeASIOImpl *This)
         else if (!strcasecmp(environment_variable, "off"))
             This->pipeasio_fixed_buffersize = FALSE;
     }
-
     if (GetEnvironmentVariableA("PIPEASIO_PREFERRED_BUFFERSIZE", environment_variable, MAX_ENVIRONMENT_SIZE))
     {
         errno = 0;
@@ -1695,16 +1604,31 @@ static VOID configure_driver(IPipeASIOImpl *This)
         if (errno != ERANGE)
             This->pipeasio_preferred_buffersize = result;
     }
+    if (GetEnvironmentVariableA("PIPEASIO_SAMPLE_RATE", environment_variable, MAX_ENVIRONMENT_SIZE))
+    {
+        errno = 0;
+        result = strtol(environment_variable, 0, 10);
+        if (errno != ERANGE)
+            This->pipeasio_sample_rate = result;
+    }
+    n = GetEnvironmentVariableA("PIPEASIO_OUTPUT_DEVICE", dev_env, sizeof dev_env);
+    if (n > 0 && n < sizeof dev_env)
+        lstrcpynA(This->pipeasio_output_device, dev_env, sizeof This->pipeasio_output_device);
+    n = GetEnvironmentVariableA("PIPEASIO_INPUT_DEVICE", dev_env, sizeof dev_env);
+    if (n > 0 && n < sizeof dev_env)
+        lstrcpynA(This->pipeasio_input_device, dev_env, sizeof This->pipeasio_input_device);
 
-    /* override the audio client name gotten from the application name */
-    size = GetEnvironmentVariableA("PIPEASIO_CLIENT_NAME", environment_variable, PIPEASIO_MAX_NAME_LENGTH);
-    if (size > 0 && size < PIPEASIO_MAX_NAME_LENGTH)
-        strcpy(This->client_name, environment_variable);
+    /* override the audio client name */
+    n = GetEnvironmentVariableA("PIPEASIO_CLIENT_NAME", name_env, sizeof name_env);
+    if (n > 0 && n < sizeof name_env)
+        lstrcpynA(This->client_name, name_env, PIPEASIO_MAX_NAME_LENGTH);
 
-    /* if pipeasio_preferred_buffersize is not a power of two or if out of range, then set to PIPEASIO_PREFERRED_BUFFERSIZE */
-    if (!(This->pipeasio_preferred_buffersize > 0 && !(This->pipeasio_preferred_buffersize&(This->pipeasio_preferred_buffersize-1))
-            && This->pipeasio_preferred_buffersize >= PIPEASIO_MINIMUM_BUFFERSIZE
-            && This->pipeasio_preferred_buffersize <= PIPEASIO_MAXIMUM_BUFFERSIZE))
+    /* if pipeasio_preferred_buffersize is not a power of two or out of range,
+     * fall back to PIPEASIO_PREFERRED_BUFFERSIZE */
+    if (!(This->pipeasio_preferred_buffersize > 0
+          && !(This->pipeasio_preferred_buffersize & (This->pipeasio_preferred_buffersize - 1))
+          && This->pipeasio_preferred_buffersize >= PIPEASIO_MINIMUM_BUFFERSIZE
+          && This->pipeasio_preferred_buffersize <= PIPEASIO_MAXIMUM_BUFFERSIZE))
         This->pipeasio_preferred_buffersize = PIPEASIO_PREFERRED_BUFFERSIZE;
 
     return;

@@ -15,4 +15,5 @@ reserach/
 .cache/
 compile_commands.json
 .firecrawl/
+.claude/
 .vscode/*.local.json

@@ -78,6 +78,10 @@ audio_nframes_t audio_get_sample_rate(audio_client_t *client);
 audio_nframes_t audio_get_buffer_size(audio_client_t *client);
 bool            audio_set_buffer_size(audio_client_t *client, audio_nframes_t nframes);
 
+/* Pin the graph sample rate (FORCE_RATE) on the next audio_activate.
+ * rate == 0 means follow the PipeWire graph (no FORCE_RATE). */
+void            audio_set_forced_rate(audio_client_t *client, audio_nframes_t rate);
+
 /* --- Ports -------------------------------------------------------------- */
 
 audio_port_t *audio_port_register  (audio_client_t *client,
@@ -92,6 +96,11 @@ const char  **audio_get_ports      (audio_client_t *client,
                                     const char *port_name_pattern,
                                     const char *type_name_pattern,
                                     uint64_t flags);
+/* Like audio_get_ports, but restricted to the device whose PipeWire
+ * node.name == node_name.  node_name NULL/"" falls back to the first
+ * available device (same as audio_get_ports). Caller frees with audio_free. */
+const char  **audio_get_device_ports(audio_client_t *client,
+                                     const char *node_name, uint64_t flags);
 void          audio_port_get_latency_range(audio_port_t *port, uint32_t mode,
                                            audio_latency_range_t *range);
 

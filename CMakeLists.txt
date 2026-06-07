@@ -27,6 +27,7 @@ add_wine_dll(
     SPEC      ${CMAKE_SOURCE_DIR}/pipeasio.dll.spec
     SOURCES   src/asio.c
               src/audio.c
+              src/config.c
               src/main.c
               src/regsvr.c
     INCLUDES  ${CMAKE_SOURCE_DIR}/include
@@ -39,6 +40,28 @@ include(GNUInstallDirs)
 install(PROGRAMS ${CMAKE_SOURCE_DIR}/pipeasio-register
         DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+# Native Qt6 settings panel (pipeasio-settings), launched by ControlPanel on the
+# user's Linux desktop.  Optional and self-contained: the core Wine driver builds
+# fine without it.  Skips gracefully if no C++ compiler or Qt6 Widgets is present.
+option(BUILD_SETTINGS_PANEL "Build the Qt6 settings panel" ON)
+if(BUILD_SETTINGS_PANEL)
+    include(CheckLanguage)
+    check_language(CXX)
+    if(CMAKE_CXX_COMPILER)
+        enable_language(CXX)
+        set(CMAKE_CXX_STANDARD 17)
+        find_package(Qt6 QUIET COMPONENTS Widgets)
+        if(Qt6_FOUND)
+            add_subdirectory(gui)
+        else()
+            message(WARNING "Qt6 Widgets not found — skipping the settings panel "
+                            "(set -DBUILD_SETTINGS_PANEL=OFF to silence).")
+        endif()
+    else()
+        message(WARNING "No C++ compiler — skipping the settings panel.")
+    endif()
+endif()
+
 # Test rig: standalone Wine probe host + Linux-native unit tests.
 option(BUILD_TESTS "Build the asio_probe Wine host and unit tests" ON)
 if(BUILD_TESTS)
@@ -46,4 +69,7 @@ if(BUILD_TESTS)
     add_subdirectory(tests/asio_probe)
     add_subdirectory(tests/unit)
     add_subdirectory(tests/pw_probe)
+    if(BUILD_SETTINGS_PANEL AND Qt6_FOUND)
+        add_subdirectory(tests/gui)
+    endif()
 endif()

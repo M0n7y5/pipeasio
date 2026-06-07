@@ -15,3 +15,4 @@ function(pipeasio_add_unit_test name)
 endfunction()
 
 pipeasio_add_unit_test(test_offsets test_offsets.c)
+pipeasio_add_unit_test(test_config test_config.c ${CMAKE_SOURCE_DIR}/src/config.c)

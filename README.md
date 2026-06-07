@@ -4,7 +4,7 @@ PipeASIO is an ASIO driver for Wine that talks to PipeWire directly — no `libj
 
 It's a fork of [WineASIO](https://github.com/wineasio/wineasio), created so the driver loads cleanly inside the Steam Runtime `steamrt4` container that FL Studio runs in under Faugus / Proton-CachyOS — that container ships `libpipewire-0.3` but not `libjack.so.0`, which makes upstream WineASIO SEGV on `dlopen`.
 
-PipeASIO has its own distinct COM identity — CLSID `{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}`, registry paths `HKCU\Software\Wine\PipeASIO` and `HKCU\Software\ASIO\PipeASIO`, DLL filename `pipeasio64.dll`. Installing PipeASIO alongside WineASIO is safe; neither overrides the other, and hosts (FL Studio etc.) see them as separate ASIO drivers.
+PipeASIO has its own distinct COM identity — CLSID `{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}`, ASIO registration under `HKCU\Software\ASIO\PipeASIO`, DLL filename `pipeasio64.dll`. Installing PipeASIO alongside WineASIO is safe; neither overrides the other, and hosts (FL Studio etc.) see them as separate ASIO drivers.
 
 ASIO is the most common Windows low-latency driver, so is commonly used in audio workstation programs like FL Studio, Ableton Live, and Reaper.
 
@@ -16,8 +16,9 @@ This fork uses CMake. x86_64 only.
 
 Build requirements: `cmake` (≥ 3.20), `ninja-build` (recommended) or GNU make,
 `gcc`, Wine SDK (`wine-devel` / `winehq-stable-dev`), `pkg-config`, and
-`libpipewire-0.3-dev` (declared at configure time; native PipeWire backend
-is in progress).
+`libpipewire-0.3-dev`.  The optional Qt6 settings panel additionally needs a
+C++ compiler and `qt6-base-dev` (Qt6 Widgets); it builds by default when those
+are present and is skipped otherwise (`-DBUILD_SETTINGS_PANEL=OFF` to force off).
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -72,8 +73,10 @@ clangd; the in-tree `.clang-format` and `.editorconfig` keep diffs clean.
 
 For user convenience a `pipeasio-register` script is included in this repo, if you are packaging PipeASIO consider installing it as part of PipeASIO.
 
-Additionally a control panel GUI is provided in this repository's `gui` subdir, which requires PyQt6 or PyQt5 to build and run.  
-The PipeASIO driver will use this GUI as the ASIO control panel.
+Additionally a native settings panel (`pipeasio-settings`, C++/Qt6 Widgets) is
+built from this repository's `gui` subdir and installed to `bin`.  PipeASIO
+launches it as the ASIO control panel.  It needs Qt6 Widgets at build time; pass
+`-DBUILD_SETTINGS_PANEL=OFF` to skip it.
 
 ### REGISTERING
 
@@ -143,51 +146,62 @@ across Wine versions.
 ### GENERAL INFORMATION
 
 PipeASIO talks to PipeWire 1.6+ natively via `libpipewire-0.3`. The graph
-quantum and sample rate are locked to the ASIO host's negotiated values
-via `PW_KEY_NODE_FORCE_QUANTUM` / `PW_KEY_NODE_FORCE_RATE`.
+quantum is locked to the ASIO host's negotiated buffer size via
+`PW_KEY_NODE_FORCE_QUANTUM`; the sample rate follows the graph unless pinned
+(see `sample_rate`), in which case `PW_KEY_NODE_FORCE_RATE` is set.
 
-The configuration of PipeASIO is done with Windows registry (`HKEY_CURRENT_USER\Software\Wine\PipeASIO`).  
-All these options can be overridden by environment variables.  
-There is also a GUI for changing these settings, which PipeASIO will try to launch when the ASIO "panel" is clicked.
+PipeASIO is configured by a flat INI file at
+`$XDG_CONFIG_HOME/pipeasio/config.ini` (fallback `~/.config/pipeasio/config.ini`).
+The driver reads it natively at startup; the settings panel writes it.  Every
+option can also be overridden by an environment variable.  A missing file means
+built-in defaults, and unknown keys are ignored.  The file has a single
+`[pipeasio]` section:
 
-The registry keys are automatically created with default values if they doesn't exist when the driver initializes.
-The available options are:
+#### inputs / outputs
+Number of PipeWire DSP ports PipeASIO opens.  Defaults 16 / 16.
+Env: `PIPEASIO_NUMBER_INPUTS`, `PIPEASIO_NUMBER_OUTPUTS`.
 
-#### [Number of inputs] & [Number of outputs]
-These two settings control the number of PipeWire DSP ports that PipeASIO will try to open.  
-Defaults are 16 in and 16 out.  Environment variables are `PIPEASIO_NUMBER_INPUTS` and `PIPEASIO_NUMBER_OUTPUTS`.
+#### auto_connect
+Defaults to 1: PipeASIO connects its channels to a hardware device on start.
+Set to 0 to leave the node unconnected and patch it yourself in a PipeWire
+patchbay.  Env: `PIPEASIO_CONNECT_TO_HARDWARE` (`on`/`off`).
 
-#### [Autostart server]
+#### output_device / input_device
+The PipeWire `node.name` of the sink (output) and source (input) to
+auto-connect to.  Empty (the default) means the first available device.
+Env: `PIPEASIO_OUTPUT_DEVICE`, `PIPEASIO_INPUT_DEVICE`.
 
-Honored as a no-op under PipeWire — the daemon is always running, so
-there is no equivalent of JACK's "start the server" behavior. The
-registry key is retained so existing migration scripts can write to it
-without erroring; PipeASIO ignores its value.
+#### sample_rate
+`0` (default) follows the PipeWire graph rate; a non-zero value pins the rate
+via `PW_KEY_NODE_FORCE_RATE`.  Env: `PIPEASIO_SAMPLE_RATE`.
 
-#### [Connect to hardware]
-Defaults to on (1), makes PipeASIO try to connect the ASIO channels to the physical I/O ports on your hardware.  
-Setting it to 0 disables it.  
-The environment variable is `PIPEASIO_CONNECT_TO_HARDWARE`, and it can be set to on or off.
+#### fixed_buffer_size
+Defaults to 1: the buffer size is controlled by PipeWire and the ASIO host
+cannot change it.  Set to 0 to let the host change PipeWire's quantum (via
+`PW_KEY_NODE_FORCE_QUANTUM`) in `CreateBuffers()`.
+Env: `PIPEASIO_FIXED_BUFFERSIZE` (`on`/`off`).
 
-#### [Fixed buffersize]
-Defaults to on (1) which means the buffer size is controlled by PipeWire and PipeASIO has no say in the matter.  
-When set to 0, an ASIO app will be able to change PipeWire's quantum (via `PW_KEY_NODE_FORCE_QUANTUM`) when calling `CreateBuffers()`.  
-The environment variable is `PIPEASIO_FIXED_BUFFERSIZE` and it can be set to on or off.
+#### buffer_size
+The preferred size returned by `GetBufferSize()` (see the ASIO docs).  Must be
+a power of two within [16, 8192] (`PIPEASIO_MINIMUM_BUFFERSIZE` /
+`PIPEASIO_MAXIMUM_BUFFERSIZE` in the source); out-of-range values fall back to
+1024.  Env: `PIPEASIO_PREFERRED_BUFFERSIZE`.
 
-#### [Preferred buffersize]
-Defaults to 1024, and is one of the sizes returned by `GetBufferSize()`, see the ASIO documentation for details.  
-Must be a power of 2.
+Be careful: a size the hardware doesn't support makes PipeWire reject the
+request or insert resampling — either way you may get xruns.
 
-The other values returned by the driver are hardcoded in the source,  
-see `ASIO_MINIMUM_BUFFERSIZE` which is set at 16, and `ASIO_MAXIMUM_BUFFERSIZE` which is set to 8192.  
-The environment variable is `PIPEASIO_PREFERRED_BUFFERSIZE`.
-
-Be careful, if you set a size that isn't supported by the hardware, PipeWire will either reject the request or insert resampling — either way you may get xruns. Consider changing `ASIO_MINIMUM_BUFFERSIZE` / `ASIO_MAXIMUM_BUFFERSIZE` to values you know work on your system before building.
-
-In addition there is a `PIPEASIO_CLIENT_NAME` environment variable,
-that overrides the PipeWire client/node name derived from the program name.
+#### node_name
+Overrides the PipeWire client/node name (otherwise derived from the host
+program name).  Env: `PIPEASIO_CLIENT_NAME`.
 
 ### CHANGE LOG
+
+#### Unreleased
+* 07-JUN-2026: New native C++/Qt6 settings panel (replaces the PyQt GUI), with Settings and live Monitor (PipeWire DSP load / xruns / quantum) tabs
+* 07-JUN-2026: Move configuration from the Windows registry to a flat INI at `$XDG_CONFIG_HOME/pipeasio/config.ini`
+* 07-JUN-2026: Add PipeWire output/input device selection (`output_device` / `input_device`), honored by autoconnect
+* 07-JUN-2026: Add `sample_rate` setting (0 = follow the graph, else `FORCE_RATE`)
+* 07-JUN-2026: Drop the dead "Autostart server" option
 
 #### 1.3.0
 * 24-JUL-2025: Make GUI settings panel compatible with PyQt6 or PyQt5

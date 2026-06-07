@@ -229,6 +229,7 @@ struct audio_client {
     char                       *name;
     audio_nframes_t             sample_rate;
     audio_nframes_t             buffer_size;
+    audio_nframes_t             forced_rate;   /* 0 = follow graph, else FORCE_RATE */
 
     struct pw_thread_loop      *loop;
     struct pw_context          *ctx;
@@ -559,9 +560,10 @@ bool audio_activate(audio_client_t *c)
     const size_t bsize_samples = c->buffer_size;
     const size_t bsize_bytes   = bsize_samples * sizeof(audio_sample_t);
 
-    /* Build the filter's node-level properties.  FORCE_QUANTUM/RATE lock
-     * the PipeWire graph to the ASIO host's negotiated buffer size and
-     * the configured sample rate. */
+    /* Build the filter's node-level properties.  FORCE_QUANTUM locks the
+     * PipeWire graph to the ASIO host's negotiated buffer size; FORCE_RATE
+     * is applied only when the user pins a sample rate (forced_rate != 0),
+     * otherwise the node follows the graph rate. */
     struct pw_properties *filter_props = pw_properties_new(
         PW_KEY_NODE_NAME,            c->name,
         PW_KEY_NODE_DESCRIPTION,     c->name,
@@ -576,7 +578,8 @@ bool audio_activate(audio_client_t *c)
         goto fail;
     }
     pw_properties_setf(filter_props, PW_KEY_NODE_FORCE_QUANTUM, "%u", (unsigned)bsize_samples);
-    pw_properties_setf(filter_props, PW_KEY_NODE_FORCE_RATE,    "%u", (unsigned)c->sample_rate);
+    if (c->forced_rate)
+        pw_properties_setf(filter_props, PW_KEY_NODE_FORCE_RATE, "%u", (unsigned)c->forced_rate);
     pw_properties_setf(filter_props, PW_KEY_NODE_LATENCY,       "%u/%u",
                        (unsigned)bsize_samples, (unsigned)c->sample_rate);
 
@@ -771,6 +774,14 @@ bool audio_set_buffer_size(audio_client_t *c, audio_nframes_t nframes)
     return true;
 }
 
+void audio_set_forced_rate(audio_client_t *c, audio_nframes_t rate)
+{
+    if (!c) return;
+    c->forced_rate = rate;
+    if (rate)
+        c->sample_rate = rate;   /* report the pinned rate immediately */
+}
+
 /* ----------------------------------------------------------------------
  * Ports.  audio_port_register allocates an audio_port_t and appends it to
  * the client's port array; audio_activate turns each into a pw_filter
@@ -905,6 +916,48 @@ const char **audio_get_ports(audio_client_t *c,
     result[n_match] = NULL;
 
     free(match_idx);
+    return result;
+}
+
+const char **audio_get_device_ports(audio_client_t *c, const char *node_name,
+                                     uint64_t flags)
+{
+    if (!c) return NULL;
+    if (!node_name || !node_name[0])
+        return audio_get_ports(c, NULL, NULL, flags);
+
+    uint32_t target = SPA_ID_INVALID;
+    for (uint32_t i = 0; i < c->n_nodes; i++)
+        if (c->nodes[i]->node_name && !strcmp(c->nodes[i]->node_name, node_name)) {
+            target = c->nodes[i]->id;
+            break;
+        }
+    if (target == SPA_ID_INVALID) {
+        WARN("audio_get_device_ports: node '%s' not in discovery; "
+             "falling back to first available\n", node_name);
+        return audio_get_ports(c, NULL, NULL, flags);
+    }
+
+    uint32_t *idx = NULL, n = 0, cap = 0;
+    for (uint32_t i = 0; i < c->n_discovered; i++) {
+        audio_port_t *p = c->discovered[i];
+        if (p->pw_node_id != target) continue;
+        if ((p->flags & flags) != flags) continue;
+        if (n == cap) {
+            cap = cap ? cap * 2 : 16;
+            uint32_t *grown = realloc(idx, cap * sizeof(*grown));
+            if (!grown) { free(idx); return NULL; }
+            idx = grown;
+        }
+        idx[n++] = i;
+    }
+
+    const char **result = calloc(n + 1, sizeof(*result));
+    if (!result) { free(idx); return NULL; }
+    for (uint32_t i = 0; i < n; i++)
+        result[i] = c->discovered[idx[i]]->name;
+    result[n] = NULL;
+    free(idx);
     return result;
 }
 
