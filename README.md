@@ -149,8 +149,10 @@ across Wine versions.
 
 PipeASIO talks to PipeWire 1.6+ natively via `libpipewire-0.3`. The graph
 quantum is locked to the ASIO host's negotiated buffer size via
-`PW_KEY_NODE_FORCE_QUANTUM`; the sample rate follows the graph unless pinned
-(see `sample_rate`), in which case `PW_KEY_NODE_FORCE_RATE` is set.
+`PW_KEY_NODE_FORCE_QUANTUM` (unless `follow_device_clock` is set, in which case
+the target device drives the cycle — see below); the sample rate follows the
+graph unless pinned (see `sample_rate`), in which case `PW_KEY_NODE_FORCE_RATE`
+is set.
 
 PipeASIO is configured by a flat INI file at
 `$XDG_CONFIG_HOME/pipeasio/config.ini` (fallback `~/.config/pipeasio/config.ini`).
@@ -207,6 +209,22 @@ request or insert resampling — either way you may get xruns.
 #### node_name
 Overrides the PipeWire client/node name (otherwise derived from the host
 program name).  Env: `PIPEASIO_CLIENT_NAME`.
+
+### LICENSE
+
+PipeASIO is a fork of [WineASIO](https://github.com/wineasio/wineasio).
+
+The driver (the `pipeasio64.dll` library — everything under `src/` and
+`include/`) is licensed under the **GNU Lesser General Public License v2.1 or
+later**; see [`COPYING.LIB`](COPYING.LIB).  The original WineASIO copyright
+notices are preserved.
+
+The settings panel (`pipeasio-settings` — everything under `gui/`) is a separate
+program licensed under the **GNU General Public License v2 or later**; see
+[`COPYING.GUI`](COPYING.GUI).
+
+Every source file carries an `SPDX-License-Identifier:` tag naming the license
+that applies to it.
 
 ### CHANGE LOG
 

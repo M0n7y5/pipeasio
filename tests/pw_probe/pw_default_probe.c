@@ -18,7 +18,9 @@
  * reachable, or when the session reports no default sink AND no default
  * source (nothing to verify).
  *
- * Copyright (C) 2026 PipeASIO contributors
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
+ * Copyright (C) 2026 PipeASIO contributors.  LGPL v2.1+ (see COPYING.LIB).
  */
 #include <pipewire/pipewire.h>
 #include <pipewire/extensions/metadata.h>

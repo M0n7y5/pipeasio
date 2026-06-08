@@ -7,6 +7,7 @@
  * Creates a duplex pw_filter with MAP_BUFFERS ports and walks the registry
  * for port discovery and audio_connect.
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  * Copyright (C) 2026 PipeASIO contributors
  *
  * This library is free software; you can redistribute it and/or modify

@@ -6,6 +6,7 @@
  * than the Windows registry. The format is deliberately trivial: an optional
  * "[pipeasio]" section header, "key = value" lines, "#"/";" comments.
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  * Copyright (C) 2026 PipeASIO contributors
  *
  * This library is free software; you can redistribute it and/or modify it

@@ -1,4 +1,6 @@
 /*
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
  * Copyright (C) 2006 Robert Reif
  * Portions copyright (C) 2007 Ralf Beck
  * Portions copyright (C) 2007 Johnny Petrantoni
@@ -8,6 +10,7 @@
  * Portions copyright (C) 2010 Torben Hohn
  * Portions copyright (C) 2010 Nedko Arnaudov
  * Portions copyright (C) 2013 Joakim Hernberg
+ * Portions copyright (C) 2026 PipeASIO contributors
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -175,7 +178,7 @@ typedef struct Callbacks
 } Callbacks;
 
 /*****************************************************************************
- * IWineAsio interface
+ * IPipeASIO interface
  */
 
 #define INTERFACE IPipeASIO

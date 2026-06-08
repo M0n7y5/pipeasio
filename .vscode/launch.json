@@ -16,7 +16,7 @@
             "type": "lldb",
             "request": "launch",
             "program": "wine",
-            "args": ["regsvr32", "${workspaceFolder}/build/wineasio64.dll.so"],
+            "args": ["regsvr32", "${workspaceFolder}/build/pipeasio64.dll.so"],
             "env": {
                 "WINEPREFIX": "${env:HOME}/.wine-test",
                 "WINEDEBUG": "+module,+loaddll,trace+asio"

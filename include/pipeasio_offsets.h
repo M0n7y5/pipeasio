@@ -1,4 +1,15 @@
 /*
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
+ * Copyright (C) 2026 PipeASIO contributors
+ *
+ * This library is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU Lesser General Public License as published by the
+ * Free Software Foundation; either version 2.1 of the License, or (at your
+ * option) any later version.  See COPYING.LIB for the full license text.
+ */
+
+/*
  * pipeasio_offsets.h — pure buffer-arithmetic helpers shared between the
  * Wine-side driver (src/audio.c, src/asio.c) and the Linux-native unit
  * tests (tests/unit/).
@@ -41,33 +52,27 @@
 /* Total bytes for the shared memfd backing n_ports channels of
  * buffer_size samples each, double-buffered. */
 static inline size_t
-pipeasio_memfd_size_bytes(uint32_t n_ports,
-                          size_t buffer_size_samples,
-                          size_t sample_size_bytes)
+pipeasio_memfd_size_bytes(uint32_t n_ports, size_t buffer_size_samples, size_t sample_size_bytes)
 {
-    return (size_t)n_ports * PIPEASIO_BUFFER_HALVES
-         * buffer_size_samples * sample_size_bytes;
+    return (size_t)n_ports * PIPEASIO_BUFFER_HALVES * buffer_size_samples * sample_size_bytes;
 }
 
 /* Byte offset into the memfd for (channel_idx, half).  Used to set
  * spa_data->mapoffset when wiring PipeWire DSP buffers. */
 static inline size_t
-pipeasio_mapoffset_bytes(uint32_t channel_idx, uint32_t half,
-                         size_t buffer_size_samples,
+pipeasio_mapoffset_bytes(uint32_t channel_idx, uint32_t half, size_t buffer_size_samples,
                          size_t sample_size_bytes)
 {
-    return ((size_t)channel_idx * PIPEASIO_BUFFER_HALVES + half)
-         * buffer_size_samples * sample_size_bytes;
+    return ((size_t)channel_idx * PIPEASIO_BUFFER_HALVES + half) * buffer_size_samples
+           * sample_size_bytes;
 }
 
 /* Sample offset into a float* view of the memfd for (channel_idx, half).
  * Used by audio_port_get_buffer. */
 static inline size_t
-pipeasio_port_buffer_offset_samples(uint32_t channel_idx, uint32_t half,
-                                    size_t buffer_size_samples)
+pipeasio_port_buffer_offset_samples(uint32_t channel_idx, uint32_t half, size_t buffer_size_samples)
 {
-    return ((size_t)channel_idx * PIPEASIO_BUFFER_HALVES + half)
-         * buffer_size_samples;
+    return ((size_t)channel_idx * PIPEASIO_BUFFER_HALVES + half) * buffer_size_samples;
 }
 
 /* ----------------------------------------------------------------------
@@ -77,18 +82,16 @@ pipeasio_port_buffer_offset_samples(uint32_t channel_idx, uint32_t half,
 /* Total bytes for the host's callback_audio_buffer covering n_in inputs
  * plus n_out outputs, each double-buffered. */
 static inline size_t
-pipeasio_host_callback_size_bytes(uint32_t n_in, uint32_t n_out,
-                                  size_t buffer_size_samples,
+pipeasio_host_callback_size_bytes(uint32_t n_in, uint32_t n_out, size_t buffer_size_samples,
                                   size_t sample_size_bytes)
 {
-    return (size_t)(n_in + n_out) * PIPEASIO_BUFFER_HALVES
-         * buffer_size_samples * sample_size_bytes;
+    return (size_t)(n_in + n_out) * PIPEASIO_BUFFER_HALVES * buffer_size_samples
+           * sample_size_bytes;
 }
 
 /* Sample offset into callback_audio_buffer for input channel i. */
 static inline size_t
-pipeasio_host_input_offset_samples(uint32_t input_idx,
-                                   size_t buffer_size_samples)
+pipeasio_host_input_offset_samples(uint32_t input_idx, size_t buffer_size_samples)
 {
     return (size_t)input_idx * PIPEASIO_BUFFER_HALVES * buffer_size_samples;
 }
@@ -96,18 +99,15 @@ pipeasio_host_input_offset_samples(uint32_t input_idx,
 /* Sample offset into callback_audio_buffer for output channel i, given
  * n_in inputs ahead of it. */
 static inline size_t
-pipeasio_host_output_offset_samples(uint32_t output_idx, uint32_t n_in,
-                                    size_t buffer_size_samples)
+pipeasio_host_output_offset_samples(uint32_t output_idx, uint32_t n_in, size_t buffer_size_samples)
 {
-    return ((size_t)n_in + output_idx) * PIPEASIO_BUFFER_HALVES
-         * buffer_size_samples;
+    return ((size_t)n_in + output_idx) * PIPEASIO_BUFFER_HALVES * buffer_size_samples;
 }
 
 /* Sample offset for the current host_buffer_index'd half of a channel
  * slice (the [0 .. buffer_size) or [buffer_size .. 2*buffer_size) part). */
 static inline size_t
-pipeasio_host_half_offset_samples(uint32_t host_buffer_index,
-                                  size_t buffer_size_samples)
+pipeasio_host_half_offset_samples(uint32_t host_buffer_index, size_t buffer_size_samples)
 {
     return (size_t)host_buffer_index * buffer_size_samples;
 }

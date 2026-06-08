@@ -7,6 +7,7 @@
  * same file. Keeping the key names and defaults in one header is what keeps the
  * two sides from drifting.
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  * Copyright (C) 2026 PipeASIO contributors
  *
  * This library is free software; you can redistribute it and/or modify it

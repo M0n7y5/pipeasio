@@ -1,4 +1,15 @@
 /*
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
+ * Copyright (C) 2026 PipeASIO contributors
+ *
+ * This library is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU Lesser General Public License as published by the
+ * Free Software Foundation; either version 2.1 of the License, or (at your
+ * option) any later version.  See COPYING.LIB for the full license text.
+ */
+
+/*
  * audio.h — backend-agnostic audio API surface for PipeASIO.
  *
  * Implemented natively on libpipewire-0.3 in src/audio.c: a single

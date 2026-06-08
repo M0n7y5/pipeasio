@@ -2,9 +2,9 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "wineasio: regsvr32 in test prefix",
+            "label": "pipeasio: regsvr32 in test prefix",
             "type": "shell",
-            "command": "env WINEPREFIX=${env:HOME}/.wine-test wine regsvr32 ${workspaceFolder}/build/wineasio64.dll.so",
+            "command": "env WINEPREFIX=${env:HOME}/.wine-test wine regsvr32 ${workspaceFolder}/build/pipeasio64.dll.so",
             "presentation": {
                 "reveal": "always",
                 "panel": "new"
@@ -12,7 +12,7 @@
             "problemMatcher": []
         },
         {
-            "label": "wineasio: tail wine debug log",
+            "label": "pipeasio: tail wine debug log",
             "type": "shell",
             "command": "tail -F ${env:HOME}/.wine-test/wine.log",
             "isBackground": true,
@@ -23,7 +23,7 @@
             "problemMatcher": []
         },
         {
-            "label": "wineasio: install to /usr (sudo)",
+            "label": "pipeasio: install to /usr (sudo)",
             "type": "shell",
             "command": "sudo cmake --install ${workspaceFolder}/build --prefix /usr",
             "dependsOn": "CMake: build",
