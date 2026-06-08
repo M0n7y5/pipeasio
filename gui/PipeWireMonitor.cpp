@@ -182,13 +182,14 @@ PipeWireMonitor::onTopFinished()
     m_proc->deleteLater();
     m_proc = nullptr;
 
-    const NodeStats st = parsePwTop(m_lastTop, m_target);
+    NodeStats st = parsePwTop(m_lastTop, m_target);
     /* The host names our node after its own executable, so when no explicit
      * node_name is configured we resolve it from the "pipeasio.node" marker the
      * driver stamps on the filter — refreshed whenever the current target isn't
      * present (e.g. the host (re)started since we last looked). */
-    if (st.found || !m_autoDiscover)
+    if ((st.found || !m_autoDiscover) && m_rtPriority >= 0)
     {
+        st.rtPriority = m_rtPriority;
         emit updated(st);
         m_busy = false;
         return;
@@ -217,6 +218,11 @@ PipeWireMonitor::onDumpFinished()
     const QString name = DeviceEnumerator::findOwnNode(dump);
     if (!name.isEmpty())
         m_target = name;
-    emit updated(parsePwTop(m_lastTop, m_target));
+    const int p = DeviceEnumerator::findRtPriority(dump);
+    if (p >= 0)
+        m_rtPriority = p;
+    NodeStats st  = parsePwTop(m_lastTop, m_target);
+    st.rtPriority = m_rtPriority;
+    emit updated(st);
     m_busy = false;
 }

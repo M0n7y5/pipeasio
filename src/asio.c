@@ -783,7 +783,6 @@ Start(LPPIPEASIO iface)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
     int            i;
-    DWORD          time;
 
     TRACE("iface: %p\n", iface);
 
@@ -799,13 +798,11 @@ Start(LPPIPEASIO iface)
     This->host_buffer_index   = 0;
     This->host_num_samples.hi = This->host_num_samples.lo = 0;
 
-    /* GetTickCount, not timeGetTime — see process_callback for the
-     * Wine-winmm RT-thread smash details. Same DWORD ms return type so
-     * drop-in. (This call site is on the main thread, but keep both
-     * sites consistent.) */
-    time                     = GetTickCount();
-    This->host_time_stamp.lo = time * 1000000;
-    This->host_time_stamp.hi = ((unsigned long long)time * 1000000) >> 32;
+    /* systemTime from the PipeWire graph clock — monotonic and audio-domain.
+     * 0 here until the first process cycle runs; fine for the one-shot prime. */
+    uint64_t ns              = audio_get_time_nsec(This->audio_client);
+    This->host_time_stamp.lo = (ULONG)(ns & 0xFFFFFFFFu);
+    This->host_time_stamp.hi = (ULONG)(ns >> 32);
 
     if (This->host_time_info_mode) /* use the newer swapBuffersWithTimeInfo method if supported */
     {
@@ -1540,7 +1537,6 @@ process_callback(audio_nframes_t nframes, void *arg)
     int                     i;
     audio_transport_state_t transport_state;
     audio_position_t        transport_position;
-    DWORD                   time;
 
     /* output silence if the host callback isn't running yet */
     if (This->host_driver_state != Running)
@@ -1601,22 +1597,11 @@ process_callback(audio_nframes_t nframes, void *arg)
         This->host_num_samples.hi++;
     This->host_num_samples.lo += nframes;
 
-    /* GetTickCount instead of timeGetTime: WINMM's timeGetTime, when
-     * called from the PipeWire RT thread (CreateThread'd via our
-     * spa_thread_utils override), corrupts the calling process's
-     * Wine PE main thread stack — overwriting a saved RIP on main's
-     * frame with a small constant.  The corruption is detected ~40
-     * audio cycles later when main's Sleep() polls clock_gettime
-     * and its FORTIFY canary check trips.
-     *
-     * GetTickCount (kernel32) doesn't have this issue.  Both return
-     * DWORD milliseconds since system start, so it's a drop-in.
-     * Bisected via Step 1-2 of the smash-hunt plan; ruled in by
-     * gating timeGetTime alone, ruled in further by swapping in
-     * GetTickCount (no smash). */
-    time                     = GetTickCount();
-    This->host_time_stamp.lo = time * 1000000;
-    This->host_time_stamp.hi = ((unsigned long long)time * 1000000) >> 32;
+    /* systemTime from the PipeWire graph clock captured this cycle — a monotonic,
+     * audio-domain nanosecond clock (also avoids a per-cycle Wine call). */
+    uint64_t ns              = audio_get_time_nsec(This->audio_client);
+    This->host_time_stamp.lo = (ULONG)(ns & 0xFFFFFFFFu);
+    This->host_time_stamp.hi = (ULONG)(ns >> 32);
 
     if (This->host_time_info_mode) /* use the newer swapBuffersWithTimeInfo method if supported */
     {

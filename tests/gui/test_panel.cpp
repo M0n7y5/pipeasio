@@ -212,6 +212,33 @@ test_find_own_node()
     CHECK(DeviceEnumerator::findOwnNode(none).isEmpty());
 }
 
+static void
+test_find_rt_priority()
+{
+    /* Numeric form: pw-dump serialises the priority as a JSON number. */
+    const QByteArray num = "[ {\"id\":7,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
+                           "{\"node.name\":\"FL64\",\"pipeasio.node\":1,"
+                           "\"pipeasio.rt.priority\":80}}} ]";
+    CHECK(DeviceEnumerator::findRtPriority(num) == 80);
+
+    /* String form is equally valid (the driver publishes a string). */
+    const QByteArray str = "[ {\"id\":7,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
+                           "{\"node.name\":\"FL64\",\"pipeasio.node\":\"1\","
+                           "\"pipeasio.rt.priority\":\"80\"}}} ]";
+    CHECK(DeviceEnumerator::findRtPriority(str) == 80);
+
+    /* Our node present but no priority prop -> -1. */
+    const QByteArray noprop
+            = "[ {\"id\":7,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
+              "{\"node.name\":\"FL64\",\"pipeasio.node\":1}}} ]";
+    CHECK(DeviceEnumerator::findRtPriority(noprop) == -1);
+
+    /* No pipeasio node at all -> -1. */
+    const QByteArray none = "[ {\"id\":7,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
+                            "{\"node.name\":\"alsa_output.x\"}}} ]";
+    CHECK(DeviceEnumerator::findRtPriority(none) == -1);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -223,6 +250,7 @@ main(int argc, char **argv)
     test_parse_pwdump();
     test_parse_pwtop();
     test_find_own_node();
+    test_find_rt_priority();
 
     std::fprintf(stderr, "[%s] %d checks, %d failed\n", g_fail ? "FAIL" : "PASS", g_total, g_fail);
     return g_fail ? 1 : 0;

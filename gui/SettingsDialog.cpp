@@ -216,6 +216,12 @@ SettingsDialog::buildMonitorTab()
     addRow(QStringLiteral("State"), m_monState,
            QStringLiteral("PipeWire node state: R running, I idle, S suspended, E error."));
 
+    m_monRt = new QLabel(QStringLiteral("waiting for audio..."), page);
+    addRow(QStringLiteral("Realtime"), m_monRt,
+           QStringLiteral("Whether the driver's audio thread runs at realtime (SCHED_FIFO) "
+                          "priority. \"NOT realtime\" means dropouts are likely under load — "
+                          "grant RT privileges (audio/realtime group or an rtprio limit)."));
+
     return page;
 }
 
@@ -323,6 +329,7 @@ SettingsDialog::onMonitorUpdated(const NodeStats &stats)
         m_monRate->setText(waiting);
         m_monXruns->setText(waiting);
         m_monState->setText(waiting);
+        m_monRt->setText(waiting);
         m_monLoad->setWaiting();
         return;
     }
@@ -332,4 +339,10 @@ SettingsDialog::onMonitorUpdated(const NodeStats &stats)
     m_monXruns->setText(QString::number(stats.xruns));
     m_monState->setText(stats.state);
     m_monLoad->pushSample(stats.dspLoad);
+    if (stats.rtPriority > 0)
+        m_monRt->setText(QStringLiteral("realtime (SCHED_FIFO %1)").arg(stats.rtPriority));
+    else if (stats.rtPriority == 0)
+        m_monRt->setText(QStringLiteral("NOT realtime — expect dropouts"));
+    else
+        m_monRt->setText(QStringLiteral("—"));
 }

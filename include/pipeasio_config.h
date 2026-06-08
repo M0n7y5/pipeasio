@@ -38,8 +38,8 @@
 #define PIPEASIO_KEY_FOLLOW_DEVICE_CLOCK "follow_device_clock"
 
 /* --- Defaults ------------------------------------------------------------- */
-#define PIPEASIO_DEFAULT_INPUTS 16
-#define PIPEASIO_DEFAULT_OUTPUTS 16
+#define PIPEASIO_DEFAULT_INPUTS 2
+#define PIPEASIO_DEFAULT_OUTPUTS 2
 #define PIPEASIO_DEFAULT_BUFFER_SIZE 1024
 #define PIPEASIO_DEFAULT_FIXED_BUFFER_SIZE true
 #define PIPEASIO_DEFAULT_SAMPLE_RATE 0 /* 0 = follow the PipeWire graph */

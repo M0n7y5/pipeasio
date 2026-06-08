@@ -102,6 +102,39 @@ findOwnNode(const QByteArray &json)
     return {};
 }
 
+int
+findRtPriority(const QByteArray &json)
+{
+    QJsonParseError     err{};
+    const QJsonDocument doc = QJsonDocument::fromJson(json, &err);
+    if (err.error != QJsonParseError::NoError || !doc.isArray())
+        return -1;
+
+    const QJsonArray arr = doc.array();
+    for (const QJsonValue &v : arr)
+    {
+        if (!v.isObject())
+            continue;
+        const QJsonObject obj = v.toObject();
+        if (obj.value(QStringLiteral("type")).toString()
+            != QLatin1String("PipeWire:Interface:Node"))
+            continue;
+        const QJsonObject props  = obj.value(QStringLiteral("info"))
+                                           .toObject()
+                                           .value(QStringLiteral("props"))
+                                           .toObject();
+        const QJsonValue  marker = props.value(QStringLiteral("pipeasio.node"));
+        if (marker.toString() == QLatin1String("1") || marker.toInt() == 1)
+        {
+            const QJsonValue p = props.value(QStringLiteral("pipeasio.rt.priority"));
+            if (p.isUndefined())
+                return -1;
+            return p.isString() ? p.toString().toInt() : p.toInt();
+        }
+    }
+    return -1;
+}
+
 QByteArray
 runPwDump()
 {

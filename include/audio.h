@@ -108,6 +108,10 @@ void audio_set_follow_device(audio_client_t *client, bool follow);
  * its buffer size to the device-dictated quantum. */
 audio_nframes_t audio_observed_quantum(audio_client_t *client);
 
+/* Nanosecond timestamp (PipeWire graph clock) of the most recent process cycle,
+ * 0 before the first cycle. Feeds the ASIO host's systemTime. */
+uint64_t audio_get_time_nsec(audio_client_t *client);
+
 /* --- Ports -------------------------------------------------------------- */
 
 audio_port_t *audio_port_register(audio_client_t *client, const char *port_name,

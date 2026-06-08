@@ -30,6 +30,7 @@ struct NodeStats
     double  dspLoad = 0.0;
     long    xruns   = 0;
     QString state;
+    int     rtPriority = -1;
 };
 
 /* Parse `pw-top -b -n 1` output, returning stats for the first data row whose
@@ -63,8 +64,9 @@ class PipeWireMonitor : public QObject
 
     QTimer    *m_timer;
     QString    m_target;
-    bool       m_autoDiscover;   /* true => resolve our node via the marker prop */
-    QProcess  *m_proc = nullptr; /* in-flight child (pw-top or pw-dump) */
-    bool       m_busy = false;   /* a poll cycle is in flight */
-    QByteArray m_lastTop;        /* last pw-top output, re-parsed after discovery */
+    bool       m_autoDiscover;    /* true => resolve our node via the marker prop */
+    QProcess  *m_proc = nullptr;  /* in-flight child (pw-top or pw-dump) */
+    bool       m_busy = false;    /* a poll cycle is in flight */
+    QByteArray m_lastTop;         /* last pw-top output, re-parsed after discovery */
+    int        m_rtPriority = -1; /* -1 until pw-dump reveals it */
 };

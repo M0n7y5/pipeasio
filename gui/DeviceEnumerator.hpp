@@ -36,6 +36,11 @@ QList<Device> parsePwDump(const QByteArray &json);
  * or "" if no such node is present.  Pure. */
 QString findOwnNode(const QByteArray &json);
 
+/* SCHED_FIFO priority the driver acquired for its audio thread, read from the
+ * "pipeasio.rt.priority" prop on our node (the one tagged "pipeasio.node").
+ * > 0 realtime, 0 not realtime, -1 if our node or the prop is absent.  Pure. */
+int findRtPriority(const QByteArray &json);
+
 /* Run `pw-dump` and return its stdout (empty on failure). */
 QByteArray runPwDump();
 

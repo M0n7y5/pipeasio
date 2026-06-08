@@ -162,7 +162,7 @@ built-in defaults, and unknown keys are ignored.  The file has a single
 `[pipeasio]` section:
 
 #### inputs / outputs
-Number of PipeWire DSP ports PipeASIO opens.  Defaults 16 / 16.
+Number of PipeWire DSP ports PipeASIO opens.  Defaults 2 / 2.
 Env: `PIPEASIO_NUMBER_INPUTS`, `PIPEASIO_NUMBER_OUTPUTS`.
 
 #### auto_connect
@@ -210,6 +210,25 @@ request or insert resampling — either way you may get xruns.
 Overrides the PipeWire client/node name (otherwise derived from the host
 program name).  Env: `PIPEASIO_CLIENT_NAME`.
 
+### PERFORMANCE
+
+A few knobs affect xrun-free, low-latency operation:
+
+- **Realtime scheduling.** PipeASIO runs its audio thread at `SCHED_FIFO`, which
+  needs realtime privileges: add your user to the `realtime` or `audio` group, or
+  grant `rtprio` in `/etc/security/limits.conf` (e.g. `@audio - rtprio 95`), then
+  re-log. If the driver can't get realtime priority it logs a warning (see it with
+  `PIPEASIO_DEBUG=1`) and the Monitor tab's **Realtime** row shows
+  "NOT realtime — expect dropouts". Audio still plays, but may glitch under load.
+- **Channel count.** Every input/output is a PipeWire port the graph must
+  schedule. Defaults are 2 in / 2 out; raise `inputs` / `outputs` (settings panel
+  or `PIPEASIO_NUMBER_INPUTS` / `PIPEASIO_NUMBER_OUTPUTS`) only to what you route —
+  fewer ports mean a smaller graph and less overhead.
+- **Buffer size.** Smaller buffers cut latency but raise CPU and xrun risk (see
+  `buffer_size` above).
+- **Debug logging.** `PIPEASIO_DEBUG=1` makes the driver log on the audio path;
+  leave it off for normal use.
+
 ### LICENSE
 
 PipeASIO is a fork of [WineASIO](https://github.com/wineasio/wineasio).
@@ -229,6 +248,11 @@ that applies to it.
 ### CHANGE LOG
 
 #### Unreleased
+* 08-JUN-2026: Fix the audio thread never actually getting realtime priority — PipeWire requests it with the "use the configured priority" sentinel (-1), which the driver treated as "no realtime" and silently left the thread at normal scheduling; it now runs at `SCHED_FIFO`, raises the soft RTPRIO limit toward the hard cap first, and logs a clear warning (with how to grant RT privileges) if realtime still can't be obtained
+* 08-JUN-2026: Flush subnormal floats to zero (FTZ/DAZ) on the audio thread, avoiding rare multi-hundred-cycle CPU stalls — and the dropouts they cause — when the host's DSP produces denormals
+* 08-JUN-2026: The Monitor tab now shows a "Realtime" row reporting whether the audio thread acquired realtime priority (e.g. "realtime (SCHED_FIFO 80)" vs "NOT realtime — expect dropouts")
+* 08-JUN-2026: Derive the ASIO host timestamp (`systemTime`) from the PipeWire graph clock instead of the system tick count — a monotonic, audio-domain clock, and one fewer call on the audio path
+* 08-JUN-2026: Lower the default channel count to 2 in / 2 out (was 16 / 16) so a fresh install opens a smaller PipeWire graph; raise inputs/outputs in the settings panel as needed
 * 08-JUN-2026: Fix a potential crash (use-after-free / heap corruption) when a PipeWire device connects or disconnects while the driver is starting or reconnecting — the device-discovery caches are now locked against the registry thread, and returned port-name lists are copied so they can't be freed underfoot
 * 08-JUN-2026: Fix possibly garbled or out-of-bounds output when following a device clock (e.g. Bluetooth) or when PipeWire clamps the forced quantum — the driver no longer publishes more audio per cycle than it actually produced
 * 08-JUN-2026: Fix a memory leak when the audio backend fails to start during buffer setup, and free the discovered-port lists on the driver-init error paths

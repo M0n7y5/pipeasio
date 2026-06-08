@@ -82,7 +82,10 @@ pipeasio_log_on(void)
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h> /* getrlimit/setrlimit(RLIMIT_RTPRIO) */
 #include <unistd.h>
+#include <pmmintrin.h> /* _MM_SET_DENORMALS_ZERO_MODE */
+#include <xmmintrin.h> /* _MM_SET_FLUSH_ZERO_MODE */
 
 WINE_DEFAULT_DEBUG_CHANNEL(asio);
 
@@ -113,6 +116,8 @@ struct audio_rt_state
     void *(*user_entry)(void *); /* PipeWire-provided entry */
     void *user_arg;
     void *user_ret;
+    /* Owning client — lets acquire_rt reach c->filter / c->data_loop. */
+    audio_client_t *client;
 };
 
 static DWORD WINAPI
@@ -124,6 +129,11 @@ audio_rt_trampoline(LPVOID raw)
     atomic_store_explicit(&s->ready, true, memory_order_release);
 
     TRACE("rt thread entry: tid=%lx\n", (unsigned long)GetCurrentThreadId());
+
+    /* Flush subnormal floats to zero on this RT thread: the ASIO host's DSP
+     * runs here, and denormals can stall the CPU for hundreds of cycles. */
+    _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+    _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
 
     s->user_ret = s->user_entry(s->user_arg);
     return 0;
@@ -189,25 +199,9 @@ audio_rt_get_range(void *data, const struct spa_dict *props, int *min, int *max)
     return 0;
 }
 
-static int
-audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
-{
-    struct audio_rt_state *s = data;
-    (void)thread;
-
-    if (priority <= 0)
-        return 0;
-
-    int err = pthread_setschedparam(s->ptid, SCHED_FIFO,
-                                    &(struct sched_param){ .sched_priority = priority });
-    if (err)
-    {
-        WARN("pthread_setschedparam(SCHED_FIFO, %d) failed: %s\n", priority, strerror(err));
-        return -1;
-    }
-    s->rt_priority = priority;
-    return 0;
-}
+/* Defined below struct audio_client — the body reaches into the client to
+ * publish the acquired SCHED_FIFO priority on the filter node. */
+static int audio_rt_acquire(void *data, struct spa_thread *thread, int priority);
 
 static int
 audio_rt_drop(void *data, struct spa_thread *thread)
@@ -344,6 +338,71 @@ struct audio_port
  * back to our audio_port so the filter events can find it. */
 typedef audio_port_t *audio_port_ref_t;
 
+/* Runs on the data loop (marshalled via pw_loop_invoke): stamp the acquired
+ * SCHED_FIFO priority onto the filter node so the settings panel can report
+ * whether audio is actually realtime.  data points at an int priority. */
+static int
+audio_publish_rt_prio(struct spa_loop *loop, bool async, uint32_t seq, const void *data,
+                      size_t size, void *user_data)
+{
+    (void)loop;
+    (void)async;
+    (void)seq;
+    (void)size;
+    audio_client_t *c = user_data;
+    if (!c || !c->filter)
+        return 0;
+    char val[16];
+    snprintf(val, sizeof val, "%d", data ? *(const int *)data : 0);
+    struct spa_dict_item items[1] = { SPA_DICT_ITEM_INIT("pipeasio.rt.priority", val) };
+    struct spa_dict      dict     = SPA_DICT_INIT(items, 1);
+    pw_filter_update_properties(c->filter, NULL, &dict);
+    return 0;
+}
+
+static int
+audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
+{
+    struct audio_rt_state *s = data;
+    audio_client_t        *c = s->client;
+    (void)thread;
+
+    /* PipeWire passes priority == -1 to mean "use the priority configured in the
+     * realtime module" (spa/support/thread.h).  We have no such module, so map
+     * any non-positive request to our advertised maximum.  Without this the data
+     * loop's -1 fell through the old `priority <= 0` guard and the audio thread
+     * silently ran at SCHED_OTHER. */
+    int prio = (priority > 0) ? priority : AUDIO_RT_PRIO_MAX;
+
+    /* Raise the soft RTPRIO limit up to the hard cap before requesting SCHED_FIFO:
+     * many setups grant a high hard limit (audio/realtime group) but leave the
+     * soft limit at 0, so a bare pthread_setschedparam would fail EPERM. */
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_RTPRIO, &rl) == 0 && rl.rlim_cur < (rlim_t)prio)
+    {
+        rl.rlim_cur = (rl.rlim_max == RLIM_INFINITY || rl.rlim_max >= (rlim_t)prio) ? (rlim_t)prio
+                                                                                    : rl.rlim_max;
+        if (setrlimit(RLIMIT_RTPRIO, &rl) != 0)
+            WARN("setrlimit(RLIMIT_RTPRIO, %d) failed: %s\n", (int)rl.rlim_cur, strerror(errno));
+    }
+
+    int err = pthread_setschedparam(s->ptid, SCHED_FIFO,
+                                    &(struct sched_param){ .sched_priority = prio });
+    int pub = err ? 0 : prio;
+    if (err)
+        WARN("could not enable realtime scheduling (SCHED_FIFO prio %d): %s. "
+             "Audio will run at normal priority and may glitch under load. "
+             "Add your user to the 'realtime' or 'audio' group, or raise "
+             "'rtprio' in /etc/security/limits.conf (e.g. '@audio - rtprio 95').\n",
+             prio, strerror(err));
+    else
+        s->rt_priority = prio;
+
+    pw_loop_invoke(pw_data_loop_get_loop(c->data_loop), audio_publish_rt_prio, 0, &pub, sizeof pub,
+                   false, c);
+    return err ? -1 : 0;
+}
+
 /* --- Forward decls for filter events ------------------------------------ */
 
 static void audio_on_state_changed(void *userdata, enum pw_filter_state old,
@@ -409,6 +468,7 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
     c->buffer_size = AUDIO_DEFAULT_BUFFER_SIZE;
     c->our_node_id = SPA_ID_INVALID;
     atomic_init(&c->rt.ready, false);
+    c->rt.client = c;
 
     pw_init(NULL, NULL);
 
@@ -876,6 +936,12 @@ audio_nframes_t
 audio_observed_quantum(audio_client_t *c)
 {
     return c ? atomic_load(&c->observed_quantum) : 0;
+}
+
+uint64_t
+audio_get_time_nsec(audio_client_t *c)
+{
+    return c ? c->last_clock_nsec : 0;
 }
 
 /* ----------------------------------------------------------------------
