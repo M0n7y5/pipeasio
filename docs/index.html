@@ -102,6 +102,8 @@
   .shot { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--bg-soft); }
   .shot img { display: block; width: 100%; height: auto; }
   figcaption { color: var(--muted); font-size: 13.5px; text-align: center; margin-top: 12px; }
+  .shots { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
+  .shots figure { margin: 0; }
 
   /* Code */
   pre {
@@ -206,11 +208,17 @@
   <section id="screenshot">
     <div class="wrap">
       <h2>The settings panel</h2>
-      <p class="lead">Configure channels and routing, then watch the graph live.</p>
-      <figure style="margin:0">
-        <div class="shot"><img src="screenshot.png" alt="PipeASIO settings panel" loading="lazy"></div>
-        <figcaption>pipeasio-settings &mdash; Settings and live Monitor tabs.</figcaption>
-      </figure>
+      <p class="lead">Configure channels and routing, then watch the graph live &mdash; shown here running under FL Studio.</p>
+      <div class="shots">
+        <figure>
+          <div class="shot"><img src="panel-settings.png" alt="PipeASIO Settings tab over FL Studio" loading="lazy"></div>
+          <figcaption>Settings &mdash; channels, buffer, devices, follow-device clock.</figcaption>
+        </figure>
+        <figure>
+          <div class="shot"><img src="panel-monitor.png" alt="PipeASIO Monitor tab over FL Studio" loading="lazy"></div>
+          <figcaption>Monitor &mdash; live quantum, rate, DSP-load graph, xruns.</figcaption>
+        </figure>
+      </div>
     </div>
   </section>
 

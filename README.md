@@ -8,7 +8,7 @@ PipeASIO has its own distinct COM identity — CLSID `{2D3CA9E2-1193-4C5D-B5FD-3
 
 ASIO is the most common Windows low-latency driver, so is commonly used in audio workstation programs like FL Studio, Ableton Live, and Reaper.
 
-![Screenshot](screenshot.png)
+![PipeASIO settings panel](docs/panel-settings.png)
 
 ### BUILDING
 
