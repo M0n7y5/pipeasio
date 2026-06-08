@@ -82,7 +82,6 @@ pipeasio_log_on(void)
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/resource.h> /* getrlimit/setrlimit(RLIMIT_RTPRIO) */
 #include <unistd.h>
 #include <pmmintrin.h> /* _MM_SET_DENORMALS_ZERO_MODE */
 #include <xmmintrin.h> /* _MM_SET_FLUSH_ZERO_MODE */
@@ -203,37 +202,17 @@ audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
     struct audio_rt_state *s = data;
     (void)thread;
 
-    /* PipeWire passes priority == -1 to mean "use the priority configured in the
-     * realtime module" (spa/support/thread.h).  We have no such module, so map
-     * any non-positive request to our advertised maximum.  Without this the data
-     * loop's -1 fell through the old `priority <= 0` guard and the audio thread
-     * silently ran at SCHED_OTHER. */
-    int prio = (priority > 0) ? priority : AUDIO_RT_PRIO_MAX;
-
-    /* Raise the soft RTPRIO limit up to the hard cap before requesting SCHED_FIFO:
-     * many setups grant a high hard limit (audio/realtime group) but leave the
-     * soft limit at 0, so a bare pthread_setschedparam would fail EPERM. */
-    struct rlimit rl;
-    if (getrlimit(RLIMIT_RTPRIO, &rl) == 0 && rl.rlim_cur < (rlim_t)prio)
-    {
-        rl.rlim_cur = (rl.rlim_max == RLIM_INFINITY || rl.rlim_max >= (rlim_t)prio) ? (rlim_t)prio
-                                                                                    : rl.rlim_max;
-        if (setrlimit(RLIMIT_RTPRIO, &rl) != 0)
-            WARN("setrlimit(RLIMIT_RTPRIO, %d) failed: %s\n", (int)rl.rlim_cur, strerror(errno));
-    }
+    if (priority <= 0)
+        return 0;
 
     int err = pthread_setschedparam(s->ptid, SCHED_FIFO,
-                                    &(struct sched_param){ .sched_priority = prio });
+                                    &(struct sched_param){ .sched_priority = priority });
     if (err)
     {
-        WARN("could not enable realtime scheduling (SCHED_FIFO prio %d): %s. "
-             "Audio will run at normal priority and may glitch under load. "
-             "Add your user to the 'realtime' or 'audio' group, or raise "
-             "'rtprio' in /etc/security/limits.conf (e.g. '@audio - rtprio 95').\n",
-             prio, strerror(err));
+        WARN("pthread_setschedparam(SCHED_FIFO, %d) failed: %s\n", priority, strerror(err));
         return -1;
     }
-    s->rt_priority = prio;
+    s->rt_priority = priority;
     return 0;
 }
 
