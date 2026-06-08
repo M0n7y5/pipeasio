@@ -17,6 +17,53 @@
 <meta name="twitter:title" content="PipeASIO">
 <meta name="twitter:description" content="An ASIO driver for Wine that speaks to PipeWire directly. No libjack, no detours.">
 <meta name="twitter:image" content="https://m0n7y5.github.io/pipeasio/og.png">
+<link rel="canonical" href="https://m0n7y5.github.io/pipeasio/">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#19191c">
+<meta name="author" content="M0n7y5">
+<meta name="application-name" content="PipeASIO">
+<meta name="keywords" content="PipeASIO, ASIO driver, Wine, PipeWire, Proton, FL Studio, Linux audio, WineASIO, low latency audio, Steam Runtime, Faugus, ASIO Linux">
+<meta property="og:site_name" content="PipeASIO">
+<meta property="og:locale" content="en_US">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="PipeASIO, an ASIO driver for Wine, native to PipeWire">
+<meta name="twitter:image:alt" content="PipeASIO, an ASIO driver for Wine, native to PipeWire">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      "name": "PipeASIO",
+      "description": "An ASIO driver for Wine that speaks to PipeWire directly, with no libjack runtime dependency. Built so FL Studio and other ASIO hosts run under Proton.",
+      "url": "https://m0n7y5.github.io/pipeasio/",
+      "image": "https://m0n7y5.github.io/pipeasio/og.png",
+      "applicationCategory": "MultimediaApplication",
+      "operatingSystem": "Linux",
+      "softwareVersion": "1.0.0-rc1",
+      "softwareRequirements": "Wine, PipeWire 1.6+",
+      "license": "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html",
+      "codeRepository": "https://github.com/M0n7y5/pipeasio",
+      "downloadUrl": "https://github.com/M0n7y5/pipeasio",
+      "isBasedOn": "https://github.com/wineasio/wineasio",
+      "author": { "@type": "Person", "name": "M0n7y5" },
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+    },
+    {
+      "@type": "FAQPage",
+      "mainEntity": [
+        { "@type": "Question", "name": "No sound, or the driver does not load under Proton?", "acceptedAnswer": { "@type": "Answer", "text": "Proton's container cannot see /usr/lib/wine. Install under $HOME, set WINEDLLPATH=$HOME/.local/lib/wine in your launcher's per-game environment, then register in that prefix." } },
+        { "@type": "Question", "name": "Registering fails with status c0000135?", "acceptedAnswer": { "@type": "Answer", "text": "Wine could not find the unified PE name. The install creates pipeasio.dll symlinks next to pipeasio64.dll for Wine 10+, so re-run cmake --install to create them, then register again." } },
+        { "@type": "Question", "name": "Bluetooth headphones produce no sound?", "acceptedAnswer": { "@type": "Answer", "text": "Turn on follow device clock in the panel (or set PIPEASIO_FOLLOW_DEVICE_CLOCK=on). A Bluetooth sink's clock is the radio link and cannot be slaved to the host, so the driver follows it instead." } },
+        { "@type": "Question", "name": "Does it conflict with WineASIO?", "acceptedAnswer": { "@type": "Answer", "text": "No. PipeASIO has its own CLSID and registry identity, so it installs side by side with WineASIO and hosts list them as separate drivers." } },
+        { "@type": "Question", "name": "How do I select it in my DAW?", "acceptedAnswer": { "@type": "Answer", "text": "After registering, pick PipeASIO from the host's ASIO device list. In FL Studio that is Options > Audio settings > Device." } }
+      ]
+    }
+  ]
+}
+</script>
 <style>
   :root {
     --bg: #19191c;
