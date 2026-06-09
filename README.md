@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/M0n7y5/pipeasio/releases"><img alt="Release" src="https://img.shields.io/github/v/release/M0n7y5/pipeasio?include_prereleases&amp;label=release&amp;color=ff6a1f"></a>
-  <img alt="License" src="https://img.shields.io/badge/license-LGPL--2.1%20%2F%20GPL--2.0-blue">
+  <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-blue">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20x86__64-lightgrey">
   <img alt="PipeWire" src="https://img.shields.io/badge/PipeWire-1.6%2B-ff6a1f">
 </p>
@@ -291,10 +291,10 @@ PipeASIO builds on [WineASIO](https://github.com/wineasio/wineasio) and the work
 
 ## License
 
-The driver (`src/` and `include/`) is licensed under LGPL v2.1 or later; the
-settings panel (`gui/`) under GPL v2 or later. See [`COPYING.LIB`](COPYING.LIB) and
-[`COPYING.GUI`](COPYING.GUI). PipeASIO is a fork of WineASIO, and source files
-retain their `SPDX-License-Identifier` tags.
+PipeASIO is licensed under the GNU General Public License, version 3 or later
+(`GPL-3.0-or-later`); see [`COPYING`](COPYING). It is a fork of WineASIO and
+retains the original authors' copyright notices, and every source file carries
+an `SPDX-License-Identifier` tag.
 
 ## Changelog
 

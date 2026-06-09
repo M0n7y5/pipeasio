@@ -20,7 +20,9 @@
  *
  * Exit: 0 PASS, 1 FAIL, 77 SKIP (no PipeWire daemon / never scheduled).
  *
- * Copyright (C) 2026 PipeASIO contributors.  LGPL v2.1+ (see COPYING.LIB).
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Copyright (C) 2026 PipeASIO contributors.  GPL v3+ (see COPYING).
  */
 #define _GNU_SOURCE
 #include <pipewire/pipewire.h>

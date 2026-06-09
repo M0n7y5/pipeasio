@@ -9,7 +9,7 @@ It has its own distinct COM identity so it can coexist with WineASIO:
 - Registry: `HKCU\Software\Wine\PipeASIO`, `HKCU\Software\ASIO\PipeASIO`
 - DLL: `pipeasio64.dll`
 
-Scope: **x86_64 only, C11**. Library is LGPL v2.1 (`COPYING.LIB`); the GUI is GPL v2+ (`COPYING.GUI`).
+Scope: **x86_64 only, C11**. Licensed under GPL v3 or later (`COPYING`), retaining the original WineASIO authors' copyright notices.
 
 > Note: the driver is now PipeWire-native, but some callback names still carry **JACK-era terminology** from upstream (e.g. `jack_process_callback` in `asio.c`). Treat `jack_*` symbols as backend bridges into PipeWire, not a JACK dependency. (The old PyQt GUI's "JACK Options" group and "Autostart server" toggle are gone with the C++/Qt6 rewrite.)
 

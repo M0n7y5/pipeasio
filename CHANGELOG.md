@@ -4,6 +4,17 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Relicensed the entire project under GPL-3.0-or-later, replacing the previous
+  split of LGPL-2.1-or-later (driver) and GPL-2.0-or-later (settings panel). The
+  separate `COPYING.LIB` / `COPYING.GUI` files are now a single `COPYING` (the
+  GPLv3 text). The original WineASIO authors' copyright notices are retained; the
+  relicensing uses the "or later" upgrade path (and LGPL 2.1 section 3) that
+  those licenses already grant.
+
 ## [1.0.0-rc1] - 2026-06-08
 
 First PipeASIO release. Forked from WineASIO and reworked to talk to PipeWire
