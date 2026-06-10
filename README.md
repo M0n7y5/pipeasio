@@ -305,6 +305,26 @@ Recommended VS Code extensions are listed in `.vscode/extensions.json`. The buil
 emits `build/compile_commands.json` for clangd; the in-tree `.clang-format` and
 `.editorconfig` keep diffs clean.
 
+### Testing
+
+`ctest --test-dir build` runs the Linux-native unit and contract tests. Two
+Wine-based tools exercise the real driver against a live PipeWire session:
+
+```sh
+./build/tests/asio_probe/run.sh        # COM lifecycle + bufferSwitch cycle rate
+./build/tests/asio_loopback/run.sh     # digital loopback analyzer
+SWEEP=1 ./build/tests/asio_loopback/run.sh   # buffer-size x sample-rate matrix
+```
+
+The loopback analyzer plays a per-channel frame counter out of the driver's
+output ports and verifies it on the input ports after a PipeWire null-sink
+loopback. Because PipeASIO is float32 end-to-end, the round trip must be
+**bit-exact**; the tool fails on any corrupted sample, dropped or duplicated
+buffer, swapped channel, or a measured round-trip latency that disagrees with
+`GetLatencies()` by more than one buffer. `SWEEP=1` repeats this across buffer
+sizes 128–1024 and forced sample rates 44.1/48/96 kHz, re-negotiating buffers
+in-process the same way a DAW does when you change the buffer size.
+
 If you package PipeASIO, consider installing the `pipeasio-register` helper script
 as part of the package.
 

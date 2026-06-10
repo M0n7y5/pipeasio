@@ -12,6 +12,13 @@ follow [Semantic Versioning](https://semver.org/).
   panel and runs the Linux-native test suite on Arch Linux.
 - The integration probe now verifies that the sample position advances during
   the run and that the timecode `Future` selectors are denied.
+- `tests/asio_loopback`: a digital loopback analyzer (RTL-Utility/RMAA
+  equivalent for a converter-less driver). It plays a per-channel frame
+  counter through the driver and a PipeWire null-sink loopback and fails on
+  any non-bit-exact sample, dropped or duplicated buffer, swapped channel, or
+  measured round-trip latency disagreeing with `GetLatencies()`; `SWEEP=1`
+  covers buffer sizes 128–1024 at 44.1/48/96 kHz with in-process buffer
+  re-negotiation.
 
 ### Changed
 
@@ -42,6 +49,9 @@ follow [Semantic Versioning](https://semver.org/).
 - Driver registration and unregistration now report real failures: raw win32
   error codes were previously returned where COM HRESULTs are expected, so
   errors like access-denied counted as success.
+- The Wine test hosts (`asio_probe`, `asio_loopback`) parse their command line
+  themselves: current Wine's CRT startup delivers `argc=0` to `main()`, so the
+  probe's seconds argument was silently ignored.
 
 ## [1.0.0-rc1] - 2026-06-08
 

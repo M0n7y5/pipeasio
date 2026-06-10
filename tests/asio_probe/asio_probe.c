@@ -132,8 +132,37 @@ static int die(const char *what, LONG err)
     return 1;
 }
 
-int main(int argc, char **argv)
+/* winecrt0 hands main() argc=0 under -mno-cygwin on current Wine, so
+ * rebuild argv from GetCommandLineA() (argv[0] may be quoted). */
+static int parse_cmdline(char ***out)
 {
+    static char  buf[1024];
+    static char *args[32];
+    int          n = 0;
+    char        *p = buf;
+
+    lstrcpynA(buf, GetCommandLineA(), sizeof buf);
+    while (*p && n < 32) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        if (*p == '"') {
+            args[n++] = ++p;
+            while (*p && *p != '"') p++;
+        } else {
+            args[n++] = p;
+            while (*p && *p != ' ' && *p != '\t') p++;
+        }
+        if (*p) *p++ = 0;
+    }
+    *out = args;
+    return n;
+}
+
+int main(void)
+{
+    char **argv;
+    int    argc = parse_cmdline(&argv);
+
     /* Make sure every fprintf flushes so we don't lose traces on crash. */
     setvbuf(stderr, NULL, _IONBF, 0);
     setvbuf(stdout, NULL, _IONBF, 0);
