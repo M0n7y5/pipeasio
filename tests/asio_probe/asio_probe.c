@@ -232,6 +232,13 @@ int main(int argc, char **argv)
     }
     fprintf(stderr, "[probe] Start OK, running for %d s...\n", seconds);
 
+    /* Timecode was removed in 1.0.0: both selectors must be denied. */
+    LONG f_en  = asio->lpVtbl->Future(asio, 1, NULL);   /* kAsioEnableTimeCodeRead */
+    LONG f_can = asio->lpVtbl->Future(asio, 11, NULL);  /* kAsioCanTimeCode */
+    int future_ok = (f_en == -998 && f_can == -998);
+    fprintf(stderr, "[probe] Future timecode: enable=%ld can=%ld -> %s\n",
+            (long)f_en, (long)f_can, future_ok ? "denied (ok)" : "UNEXPECTED");
+
     /* Sleep N seconds, printing cycle progress every 1 s. */
     for (int t = 0; t < seconds; t++) {
         LONG before = g_cycles;
@@ -240,6 +247,15 @@ int main(int argc, char **argv)
         fprintf(stderr, "[probe]   t=%d: cycles total=%ld, +%ld this second\n",
                 t + 1, (long)g_cycles, (long)delta);
     }
+
+    /* The 64-bit sample position must advance; hi must not be garbage
+     * (a short run cannot reach 2^32 samples). */
+    w_int64_t spos = {0, 0}, stamp = {0, 0};
+    rc = asio->lpVtbl->GetSamplePosition(asio, &spos, &stamp);
+    int spos_ok = (rc == 0 && spos.hi == 0 && spos.lo > 0);
+    fprintf(stderr, "[probe] GetSamplePosition: rc=%ld hi=%lu lo=%lu -> %s\n",
+            (long)rc, (unsigned long)spos.hi, (unsigned long)spos.lo,
+            spos_ok ? "ok" : "BAD");
 
     asio->lpVtbl->Stop(asio);
     fprintf(stderr, "[probe] Stop OK, total cycles = %ld\n", (long)g_cycles);
@@ -252,7 +268,7 @@ int main(int argc, char **argv)
     /* Expected ~ rate / bufsize / s = 48000 / 1024 ≈ 46.875 cycles/s.
      * Pass if we observed >= ~50% of that over the run. */
     LONG expected = (LONG)((rate / prefBs) * seconds);
-    LONG ok = (g_cycles >= expected / 2);
+    LONG ok = (g_cycles >= expected / 2) && future_ok && spos_ok;
     fprintf(stderr, "[probe] expected ~%ld cycles, got %ld -> %s\n",
             (long)expected, (long)g_cycles, ok ? "PASS" : "FAIL");
     return ok ? 0 : 2;

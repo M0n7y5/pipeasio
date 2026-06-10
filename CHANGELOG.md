@@ -4,7 +4,14 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.0.0] - 2026-06-10
+
+### Added
+
+- CI on GitHub Actions: every push and pull request builds the driver and
+  panel and runs the Linux-native test suite on Arch Linux.
+- The integration probe now verifies that the sample position advances during
+  the run and that the timecode `Future` selectors are denied.
 
 ### Changed
 
@@ -14,6 +21,27 @@ follow [Semantic Versioning](https://semver.org/).
   GPLv3 text). The original WineASIO authors' copyright notices are retained; the
   relicensing uses the "or later" upgrade path (and LGPL 2.1 section 3) that
   those licenses already grant.
+
+### Removed
+
+- Fake ASIO timecode support. The driver no longer answers `kAsioCanTimeCode`
+  / `kAsioEnableTimeCodeRead` affirmatively or fills `ASIOTime.timeCode` with
+  fabricated values — PipeWire has no transport timeline to source timecode
+  from. Hosts fall back to sample-position sync, which is accurate.
+
+### Fixed
+
+- `GetSamplePosition` returned only the low 32 bits of the sample counter,
+  wrapping to zero after about 25 hours at 48 kHz; it now reports the full
+  64-bit position.
+- `regsvr32 /u` now actually removes the driver's registry keys. Unregistration
+  deleted keys through a handle opened without `DELETE` access, so every delete
+  failed and the CLSID and `Software\ASIO\PipeASIO` entries were left behind;
+  the recursive delete is now `RegDeleteTree`, and unregistering an already
+  unregistered driver succeeds.
+- Driver registration and unregistration now report real failures: raw win32
+  error codes were previously returned where COM HRESULTs are expected, so
+  errors like access-denied counted as success.
 
 ## [1.0.0-rc1] - 2026-06-08
 
@@ -79,6 +107,7 @@ the driver loads inside the Steam Runtime container that Proton uses.
 - Hardened channel-count limits from both the INI and the environment overrides,
   and tightened COM teardown and several NULL and error paths.
 
+[1.0.0]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.0.0
 [1.0.0-rc1]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.0.0-rc1
 
 ---

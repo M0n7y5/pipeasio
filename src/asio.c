@@ -239,7 +239,6 @@ typedef struct IPipeASIOImpl
     /* Live-config watcher: polls config.ini, asks the host to reset on change */
     HANDLE          config_watch_thread;
     HANDLE          config_watch_stop;
-    BOOL            host_can_time_code;
     LONG            host_current_buffersize;
     INT             host_driver_state;
     w_int64_t       host_num_samples;
@@ -812,13 +811,6 @@ Start(LPPIPEASIO iface)
         This->host_time.sampleRate                                    = This->host_sample_rate;
         This->host_time.flags                                         = 0x7;
 
-        if (This->host_can_time_code) /* addionally use time code if supported */
-        {
-            This->host_time.speedForTimeCode        = 1; /* FIXME */
-            This->host_time.timeStampForTimeCode.lo = This->host_time_stamp.lo;
-            This->host_time.timeStampForTimeCode.hi = This->host_time_stamp.hi;
-            This->host_time.flagsForTimeCode        = ~(0x3);
-        }
         This->host_callbacks->swapBuffersWithTimeInfo(&This->host_time, This->host_buffer_index, 1);
     }
     else
@@ -1032,7 +1024,7 @@ GetSamplePosition(LPPIPEASIO iface, w_int64_t *sPos, w_int64_t *tStamp)
     tStamp->lo = This->host_time_stamp.lo;
     tStamp->hi = This->host_time_stamp.hi;
     sPos->lo   = This->host_num_samples.lo;
-    sPos->hi   = 0; /* FIXME */
+    sPos->hi   = This->host_num_samples.hi;
 
     return 0;
 }
@@ -1172,14 +1164,10 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
     }
 
     This->host_callbacks      = callbacks;
-    This->host_time_info_mode = This->host_can_time_code = FALSE;
+    This->host_time_info_mode = FALSE;
 
     if (This->host_callbacks->sendNotification(7, 0, 0, 0))
-    {
         This->host_time_info_mode = TRUE;
-        if (This->host_callbacks->sendNotification(8, 0, 0, 0))
-            This->host_can_time_code = TRUE;
-    }
 
     /* Allocate audio buffers */
 
@@ -1417,20 +1405,14 @@ DEFINE_THISCALL_WRAPPER(Future, 12)
 HIDDEN LONG STDMETHODCALLTYPE
 Future(LPPIPEASIO iface, LONG selector, void *opt)
 {
-    IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
-
     TRACE("iface: %p, selector: %d, opt: %p\n", iface, (int)selector, opt);
 
     switch (selector)
     {
     case 1:
-        This->host_can_time_code = TRUE;
-        TRACE("The host enabled TimeCode\n");
-        return 0x3f4847a0;
     case 2:
-        This->host_can_time_code = FALSE;
-        TRACE("The host disabled TimeCode\n");
-        return 0x3f4847a0;
+        TRACE("The driver does not support TimeCode\n");
+        return -998;
     case 3:
         TRACE("The driver denied request to set input monitor\n");
         return -1000;
@@ -1456,8 +1438,8 @@ Future(LPPIPEASIO iface, LONG selector, void *opt)
         TRACE("The driver supports TimeInfo\n");
         return 0x3f4847a0;
     case 11:
-        TRACE("The driver supports TimeCode\n");
-        return 0x3f4847a0;
+        TRACE("The driver does not support TimeCode\n");
+        return -998;
     case 12:
         TRACE("The driver denied request for Transport\n");
         return -998;
@@ -1533,9 +1515,7 @@ process_callback(audio_nframes_t nframes, void *arg)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)arg;
 
-    int                     i;
-    audio_transport_state_t transport_state;
-    audio_position_t        transport_position;
+    int i;
 
     /* output silence if the host callback isn't running yet */
     if (This->host_driver_state != Running)
@@ -1612,13 +1592,6 @@ process_callback(audio_nframes_t nframes, void *arg)
         This->host_time.sampleRate    = This->host_sample_rate;
         This->host_time.flags         = 0x7;
 
-        if (This->host_can_time_code) /* FIXME addionally use time code if supported */
-        {
-            transport_state = audio_transport_query(This->audio_client, &transport_position);
-            This->host_time.flagsForTimeCode = 0x1;
-            if (transport_state == AUDIO_TRANSPORT_ROLLING)
-                This->host_time.flagsForTimeCode |= 0x2;
-        }
         This->host_callbacks->swapBuffersWithTimeInfo(&This->host_time, This->host_buffer_index, 1);
     }
     else
@@ -1692,7 +1665,6 @@ configure_driver(IPipeASIOImpl *This)
     This->host_active_outputs     = 0;
     This->host_buffer_index       = 0;
     This->host_callbacks          = NULL;
-    This->host_can_time_code      = FALSE;
     This->host_current_buffersize = 0;
     This->host_driver_state       = Loaded;
     This->host_sample_rate        = 0;

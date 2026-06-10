@@ -102,7 +102,6 @@ static LONG register_key_defvalueW(HKEY base, WCHAR const *name, WCHAR const *va
 static LONG register_key_defvalueA(HKEY base, WCHAR const *name, char const *value);
 static LONG register_progid(WCHAR const *clsid, char const *progid, char const *curver_progid,
                             char const *name, char const *extra);
-static LONG recursive_delete_key(HKEY key);
 static LONG recursive_delete_keyA(HKEY base, char const *name);
 static LONG recursive_delete_keyW(HKEY base, WCHAR const *name);
 
@@ -455,59 +454,13 @@ error_close_progid_key:
 }
 
 /***********************************************************************
- *		recursive_delete_key
- */
-static LONG
-recursive_delete_key(HKEY key)
-{
-    LONG  res;
-    WCHAR subkey_name[MAX_PATH];
-    DWORD cName;
-    HKEY  subkey;
-
-    for (;;)
-    {
-        cName = sizeof(subkey_name) / sizeof(WCHAR);
-        res   = RegEnumKeyExW(key, 0, subkey_name, &cName, NULL, NULL, NULL, NULL);
-        if (res != ERROR_SUCCESS && res != ERROR_MORE_DATA)
-        {
-            res = ERROR_SUCCESS; /* presumably we're done enumerating */
-            break;
-        }
-        res = RegOpenKeyExW(key, subkey_name, 0, KEY_READ | KEY_WRITE, &subkey);
-        if (res == ERROR_FILE_NOT_FOUND)
-            continue;
-        if (res != ERROR_SUCCESS)
-            break;
-
-        res = recursive_delete_key(subkey);
-        RegCloseKey(subkey);
-        if (res != ERROR_SUCCESS)
-            break;
-    }
-
-    if (res == ERROR_SUCCESS)
-        res = RegDeleteKeyW(key, 0);
-    return res;
-}
-
-/***********************************************************************
  *		recursive_delete_keyA
  */
 static LONG
 recursive_delete_keyA(HKEY base, char const *name)
 {
-    LONG res;
-    HKEY key;
-
-    res = RegOpenKeyExA(base, name, 0, KEY_READ | KEY_WRITE, &key);
-    if (res == ERROR_FILE_NOT_FOUND)
-        return ERROR_SUCCESS;
-    if (res != ERROR_SUCCESS)
-        return res;
-    res = recursive_delete_key(key);
-    RegCloseKey(key);
-    return res;
+    LONG res = RegDeleteTreeA(base, name);
+    return res == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : res;
 }
 
 /***********************************************************************
@@ -516,17 +469,8 @@ recursive_delete_keyA(HKEY base, char const *name)
 static LONG
 recursive_delete_keyW(HKEY base, WCHAR const *name)
 {
-    LONG res;
-    HKEY key;
-
-    res = RegOpenKeyExW(base, name, 0, KEY_READ | KEY_WRITE, &key);
-    if (res == ERROR_FILE_NOT_FOUND)
-        return ERROR_SUCCESS;
-    if (res != ERROR_SUCCESS)
-        return res;
-    res = recursive_delete_key(key);
-    RegCloseKey(key);
-    return res;
+    LONG res = RegDeleteTreeW(base, name);
+    return res == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : res;
 }
 
 /***********************************************************************
@@ -587,7 +531,7 @@ register_driver(void)
         RegCloseKey(key);
     }
 
-    return rc;
+    return rc != ERROR_SUCCESS ? HRESULT_FROM_WIN32(rc) : S_OK;
 }
 
 /***********************************************************************
@@ -609,15 +553,16 @@ DllRegisterServer(void)
 }
 
 /***********************************************************************
- *		register driver
+ *		unregister driver
  */
 static HRESULT
 unregister_driver(void)
 {
     LPCSTR asio_key = "Software\\ASIO\\PipeASIO";
+    LONG   rc;
 
-    /* FIXME */
-    return recursive_delete_keyA(HKEY_LOCAL_MACHINE, asio_key);
+    rc = recursive_delete_keyA(HKEY_LOCAL_MACHINE, asio_key);
+    return rc != ERROR_SUCCESS ? HRESULT_FROM_WIN32(rc) : S_OK;
 }
 
 /***********************************************************************

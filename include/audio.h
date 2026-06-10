@@ -48,24 +48,11 @@ typedef struct
     audio_nframes_t max;
 } audio_latency_range_t;
 
-typedef struct
-{
-    audio_nframes_t frame;      /* current playback frame */
-    uint64_t        usecs;      /* wall-clock microseconds */
-    audio_nframes_t frame_rate; /* sample rate */
-} audio_position_t;
-
 typedef enum
 {
     AUDIO_CAPTURE_LATENCY  = 0,
     AUDIO_PLAYBACK_LATENCY = 1,
 } audio_latency_mode_t;
-
-typedef enum
-{
-    AUDIO_TRANSPORT_STOPPED = 0,
-    AUDIO_TRANSPORT_ROLLING = 1,
-} audio_transport_state_t;
 
 /* --- Callback signatures ------------------------------------------------ */
 
@@ -150,11 +137,10 @@ bool audio_set_buffer_size_callback(audio_client_t *client, audio_buffer_size_cb
 bool audio_set_sample_rate_callback(audio_client_t *client, audio_sample_rate_cb cb, void *arg);
 bool audio_set_latency_callback(audio_client_t *client, audio_latency_cb cb, void *arg);
 
-/* --- Connections / transport / memory ----------------------------------- */
+/* --- Connections / memory ------------------------------------------------ */
 
-bool     audio_connect(audio_client_t *client, const char *src, const char *dst);
-uint32_t audio_transport_query(const audio_client_t *client, audio_position_t *pos);
-void     audio_free(void *ptr);
+bool audio_connect(audio_client_t *client, const char *src, const char *dst);
+void audio_free(void *ptr);
 /* Frees an array returned by audio_get_ports / audio_get_device_ports,
  * including the duplicated name strings. */
 void audio_free_ports(const char **ports);

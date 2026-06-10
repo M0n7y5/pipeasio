@@ -292,9 +292,8 @@ struct audio_client
     uint32_t       n_ports;
     uint32_t       cap_ports;
 
-    /* Last spa_io_position.clock.nsec — used by audio_transport_query. */
+    /* Last spa_io_position.clock.nsec — feeds audio_get_time_nsec. */
     uint64_t last_clock_nsec;
-    uint64_t last_clock_position;
 
     /* --- registry walker ----------------------------------------- */
 
@@ -1352,18 +1351,6 @@ audio_connect(audio_client_t *c, const char *src, const char *dst)
     return true;
 }
 
-uint32_t
-audio_transport_query(const audio_client_t *c, audio_position_t *pos)
-{
-    if (pos)
-    {
-        pos->frame      = 0;
-        pos->usecs      = 0;
-        pos->frame_rate = c ? c->sample_rate : 0;
-    }
-    return AUDIO_TRANSPORT_STOPPED;
-}
-
 void
 audio_free(void *ptr)
 {
@@ -1437,8 +1424,7 @@ audio_on_process(void *userdata, struct spa_io_position *position)
 
     if (position)
     {
-        c->last_clock_nsec     = position->clock.nsec;
-        c->last_clock_position = position->clock.position;
+        c->last_clock_nsec = position->clock.nsec;
     }
 
     /* Dequeue this cycle's buffer for every port.  Because the ports use

@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install toolchain
+        run: pacman -Syu --noconfirm gcc cmake ninja pkgconf git clang wine libpipewire qt6-base
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Format check (core tree only; tests/ are intentionally hand-aligned)
+        run: clang-format --dry-run --Werror src/*.c include/*.h gui/*.cpp gui/*.hpp
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Show test log on failure
+        if: failure()
+        run: cat build/Testing/Temporary/LastTest.log || true
