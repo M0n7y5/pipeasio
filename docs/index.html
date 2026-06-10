@@ -207,7 +207,7 @@
   .faq summary:hover { color: var(--accent); }
   .faq .ans { padding: 0 18px 16px; color: var(--muted); font-size: 14.5px; line-height: 1.6; }
   .faq .ans b, .note b { color: var(--text); }
-  .faq .ans code, .note code { color: var(--accent); background: #141417; padding: 2px 6px; border-radius: 5px; font-size: 13px; }
+  .faq .ans code, .note code, .hero-note code { color: var(--accent); background: #141417; padding: 2px 6px; border-radius: 5px; font-size: 13px; }
 
   /* Config table */
   table.cfg { width: 100%; border-collapse: collapse; font-size: 14.5px; }
@@ -240,8 +240,8 @@
 
 <div class="announce">
   <div class="wrap announce-in">
-    <span class="tag-soon">Soon</span>
-    <span>Packaging in progress: PipeASIO is coming to your distro's package manager. <a href="https://github.com/M0n7y5/pipeasio">Star it on GitHub</a> to follow along.</span>
+    <span class="tag-soon">New</span>
+    <span>PipeASIO is now in the <a href="https://aur.archlinux.org/packages/pipeasio">AUR</a>: <code>paru -S pipeasio</code> on Arch, CachyOS and friends. More distros to follow — <a href="https://github.com/M0n7y5/pipeasio">star it on GitHub</a>.</span>
   </div>
 </div>
 
@@ -273,7 +273,7 @@
         <a class="btn btn-primary" href="#quickstart">Get started</a>
         <a class="btn btn-ghost" href="https://github.com/M0n7y5/pipeasio">View on GitHub</a>
       </div>
-      <p class="hero-note fu d4"><b>Note:</b> install is hands-on for now. A simpler install process and better docs are actively in progress.</p>
+      <p class="hero-note fu d4"><b>New:</b> PipeASIO is now packaged in the <a href="https://aur.archlinux.org/packages/pipeasio">AUR</a> — <code>paru -S pipeasio</code> installs the driver, the settings panel and its menu entry in one go. Other distros build from source.</p>
     </div>
   </section>
 
@@ -382,7 +382,13 @@
   <section id="quickstart">
     <div class="wrap reveal">
       <h2>Quick start</h2>
-      <p class="lead">x86_64 only. Needs CMake 3.20+, the Wine SDK, <code>pkg-config</code>, <code>libpipewire-0.3-dev</code>, and (for the panel) <code>qt6-base-dev</code>.</p>
+      <p class="lead">x86_64 only. Building from source needs CMake 3.20+, the Wine SDK, <code>pkg-config</code>, <code>libpipewire-0.3-dev</code>, and (for the panel) <code>qt6-base-dev</code>.</p>
+
+      <div class="step">Arch Linux / CachyOS — skip the build</div>
+<pre><span class="c"># driver + settings panel, from the AUR</span>
+paru -S pipeasio   <span class="c"># or: yay -S pipeasio</span>
+pipeasio-register</pre>
+      <p class="note">Plain Wine users are done. For Proton the system-wide install is invisible inside the container, so follow steps 1–2 (user-local) and step 4 instead. Everyone else, build from source:</p>
 
       <div class="step">1 / Build</div>
 <pre><span class="c"># clone and build (Release)</span>

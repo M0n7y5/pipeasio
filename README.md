@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/M0n7y5/pipeasio/releases"><img alt="Release" src="https://img.shields.io/github/v/release/M0n7y5/pipeasio?include_prereleases&amp;label=release&amp;color=ff6a1f"></a>
+  <a href="https://aur.archlinux.org/packages/pipeasio"><img alt="AUR version" src="https://img.shields.io/aur/version/pipeasio?label=AUR&amp;color=ff6a1f"></a>
   <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-blue">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20x86__64-lightgrey">
   <img alt="PipeWire" src="https://img.shields.io/badge/PipeWire-1.6%2B-ff6a1f">
@@ -38,6 +39,18 @@ such as FL Studio, Ableton Live, and Reaper.
 > PipeASIO is at **1.0.0-rc1**. It is verified with FL Studio under Proton-CachyOS; other ASIO hosts such as Reaper and Ableton Live should work but are not yet confirmed. x86_64 only, and bug reports are very welcome.
 
 ## Quick start
+
+On Arch Linux and derivatives (CachyOS, EndeavourOS, Manjaro), install
+[`pipeasio` from the AUR](https://aur.archlinux.org/packages/pipeasio):
+
+```sh
+paru -S pipeasio   # or: yay -S pipeasio
+
+# Register in the current Wine prefix
+pipeasio-register
+```
+
+Everywhere else, build from source:
 
 ```sh
 # Build
@@ -75,6 +88,19 @@ cmake --build build-debug
 ```
 
 ## Installing
+
+### From the AUR (Arch Linux)
+
+```sh
+paru -S pipeasio
+```
+
+The package installs the driver system-wide under `/usr`, plus the
+`pipeasio-settings` panel with a desktop entry and icon. Note that a
+system-wide install is invisible to Proton's container — see the Proton /
+Steam / Faugus section below.
+
+### From source
 
 System-wide (matches the distro Wine layout most ASIO hosts use):
 
@@ -242,10 +268,11 @@ A few knobs affect xrun-free, low-latency operation:
 ## Settings panel
 
 The native settings panel (`pipeasio-settings`, C++/Qt6 Widgets) is built from the
-`gui` subdirectory and installed to `bin`. Run it from a terminal on your Linux
-host. The in-app ASIO control-panel button shows a message pointing here, because
-the Qt panel cannot run inside the Wine/Proton container the host loads the driver
-into.
+`gui` subdirectory and installed to `bin`, together with a desktop entry and icon,
+so it also appears in the application menu as **PipeASIO Settings**. It runs on
+your Linux host. The in-app ASIO control-panel button shows a message pointing
+here, because the Qt panel cannot run inside the Wine/Proton container the host
+loads the driver into.
 
 ## Troubleshooting
 
