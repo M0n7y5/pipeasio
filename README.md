@@ -36,7 +36,7 @@ such as FL Studio, Ableton Live, and Reaper.
 ![PipeASIO settings panel](docs/panel-settings.png)
 
 > [!NOTE]
-> PipeASIO is at **1.0.0-rc1**. It is verified with FL Studio under Proton-CachyOS; other ASIO hosts such as Reaper and Ableton Live should work but are not yet confirmed. x86_64 only, and bug reports are very welcome.
+> PipeASIO is at **1.0.0-rc1**. It is verified with FL Studio under Proton-CachyOS and with the [VB-Audio ASIO Test](https://forum.vb-audio.com/viewtopic.php?p=4259#p4259) utility (64-bit); other ASIO hosts such as Reaper and Ableton Live should work but are not yet confirmed. x86_64 only, and bug reports are very welcome.
 
 ## Quick start
 
