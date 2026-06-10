@@ -202,6 +202,10 @@ int main(int argc, char **argv)
     memset(&e, 0, sizeof e);
 
     struct pw_thread_loop *tl = pw_thread_loop_new("pw_probe", NULL);
+    if (!tl) {
+        fprintf(stderr, "[pw_probe] SKIP: pw_thread_loop_new failed (no SPA support plugins?)\n");
+        return 77;
+    }
     struct pw_context     *ctx = pw_context_new(pw_thread_loop_get_loop(tl), NULL, 0);
     struct pw_data_loop   *dl = pw_context_get_data_loop(ctx);
 

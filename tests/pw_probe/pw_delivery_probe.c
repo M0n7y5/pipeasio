@@ -181,6 +181,10 @@ int main(void)
     struct reg reg; memset(&reg, 0, sizeof reg);
 
     struct pw_thread_loop *tl = pw_thread_loop_new("delivery", NULL);
+    if (!tl) {
+        fprintf(stderr, "[delivery] SKIP: pw_thread_loop_new failed (no SPA support plugins?)\n");
+        return 77;
+    }
     struct pw_context *ctx = pw_context_new(pw_thread_loop_get_loop(tl), NULL, 0);
     pw_thread_loop_start(tl);
 

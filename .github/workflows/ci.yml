@@ -11,7 +11,7 @@ jobs:
     container: archlinux:latest
     steps:
       - name: Install toolchain
-        run: pacman -Syu --noconfirm gcc cmake ninja pkgconf git clang wine libpipewire qt6-base
+        run: pacman -Syu --noconfirm gcc cmake ninja pkgconf git clang wine libpipewire pipewire qt6-base
       - name: Checkout
         uses: actions/checkout@v4
       - name: Format check (core tree only; tests/ are intentionally hand-aligned)

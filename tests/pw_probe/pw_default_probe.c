@@ -164,8 +164,8 @@ main(int argc, char **argv)
     x.loop        = pw_main_loop_new(NULL);
     if (!x.loop)
     {
-        fprintf(stderr, "pw_main_loop_new failed\n");
-        return 1;
+        fprintf(stderr, "SKIP: pw_main_loop_new failed (no SPA support plugins?)\n");
+        return 77;
     }
     x.context = pw_context_new(pw_main_loop_get_loop(x.loop), NULL, 0);
     if (!x.context)
