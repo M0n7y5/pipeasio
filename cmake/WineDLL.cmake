@@ -23,21 +23,23 @@ find_program(WINEGCC   winegcc   REQUIRED)
 # Probe for Wine include directories.  We mirror the fallback list the legacy
 # Makefile.mk used, but filter to those that actually exist on this host so
 # clangd doesn't choke on dangling -I flags.
-set(_wine_inc_candidates
-    /usr/include/wine
-    /usr/include/wine/windows
-    /usr/include/wine-development
-    /usr/include/wine-development/wine/windows
-    /opt/wine-stable/include
-    /opt/wine-stable/include/wine/windows
-    /opt/wine-staging/include
-    /opt/wine-staging/include/wine/windows)
-set(WINE_INCLUDE_DIRS "")
-foreach(_d ${_wine_inc_candidates})
-    if(IS_DIRECTORY "${_d}")
-        list(APPEND WINE_INCLUDE_DIRS "${_d}")
-    endif()
-endforeach()
+if(NOT WINE_INCLUDE_DIRS)
+    set(_wine_inc_candidates
+        /usr/include/wine
+        /usr/include/wine/windows
+        /usr/include/wine-development
+        /usr/include/wine-development/wine/windows
+        /opt/wine-stable/include
+        /opt/wine-stable/include/wine/windows
+        /opt/wine-staging/include
+        /opt/wine-staging/include/wine/windows)
+    set(WINE_INCLUDE_DIRS "")
+    foreach(_d ${_wine_inc_candidates})
+        if(IS_DIRECTORY "${_d}")
+            list(APPEND WINE_INCLUDE_DIRS "${_d}")
+        endif()
+    endforeach()
+endif()
 if(NOT WINE_INCLUDE_DIRS)
     message(FATAL_ERROR "No Wine SDK include directory found. Install wine-devel / wine-dev / winehq-stable-dev.")
 endif()
