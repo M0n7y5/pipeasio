@@ -46,8 +46,8 @@ fi
 
 # Stage the PE fake into the prefix's system32 so COM registration's
 # LoadLibrary resolves pipeasio64.dll by name.
-cp -v "${prefix}/x86_64-windows/pipeasio64.dll" \
-      "${WINEPREFIX}/drive_c/windows/system32/" || exit $?
+cp -v --no-preserve mode "${prefix}/x86_64-windows/pipeasio64.dll" \
+                         "${WINEPREFIX}/drive_c/windows/system32/" || exit $?
 
 # WINEDLLPATH lets Wine (host wine for this registration; Proton's wine at
 # runtime — both need it for user-local installs) find the ELF .so half
