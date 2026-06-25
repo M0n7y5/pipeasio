@@ -19,7 +19,7 @@ probe="${here}/asio_probe.exe.so"
 
 seconds="${1:-5}"
 # Wine 11+ refuses to create config dirs under /tmp because of /tmp's
-# permissive group/world bits — "not owned by you, refusing to create
+# permissive group/world bits - "not owned by you, refusing to create
 # a configuration directory there".  Park the throwaway prefix under
 # $HOME instead.
 : "${PROBE_PREFIX:=$HOME/.cache/pipeasio-probe}"

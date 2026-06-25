@@ -1,5 +1,5 @@
 /*
- * Config.hpp — INI read/write for the PipeASIO settings panel.
+ * Config.hpp - INI read/write for the PipeASIO settings panel.
  *
  * Reuses `struct pipeasio_config` from the shared driver/panel contract.
  * parseIni() and serializeIni() are PURE (no file I/O) so they are unit
@@ -39,7 +39,7 @@ namespace Config
 pipeasio_config defaults();
 
 /* Parse a flat INI document. Pure: operates on the passed text only.
- * Lenient — optional [pipeasio] header, key = value lines, #/; comments,
+ * Lenient - optional [pipeasio] header, key = value lines, #/; comments,
  * whitespace trimmed. Unknown keys ignored, missing keys keep defaults,
  * out-of-range numerics fall back to defaults. */
 pipeasio_config parseIni(const QString &text);

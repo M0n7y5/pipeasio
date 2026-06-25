@@ -1,5 +1,5 @@
 /*
- * DeviceEnumerator.hpp — list PipeWire sinks/sources for the device combos.
+ * DeviceEnumerator.hpp - list PipeWire sinks/sources for the device combos.
  *
  * parsePwDump() is PURE (operates on a JSON blob, no process spawning) so it
  * is unit testable with a captured fixture.

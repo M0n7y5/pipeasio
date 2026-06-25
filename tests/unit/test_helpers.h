@@ -1,8 +1,8 @@
 /*
- * test_helpers.h — minimal assertion macros for pipeasio unit tests.
+ * test_helpers.h - minimal assertion macros for pipeasio unit tests.
  *
  * No external dependencies, no allocations.  Each EXPECT_* increments a
- * static failure counter on mismatch and prints file:line — tests keep
+ * static failure counter on mismatch and prints file:line - tests keep
  * running so we see ALL failures in one go, not just the first.
  *
  * Usage:

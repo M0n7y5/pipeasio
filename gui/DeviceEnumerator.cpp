@@ -1,5 +1,5 @@
 /*
- * DeviceEnumerator.cpp — implementation.
+ * DeviceEnumerator.cpp - implementation.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *

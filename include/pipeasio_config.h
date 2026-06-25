@@ -1,5 +1,5 @@
 /*
- * pipeasio_config.h — flat-INI settings contract shared by the native driver
+ * pipeasio_config.h - flat-INI settings contract shared by the native driver
  * (src/config.c, src/asio.c) and the Qt settings panel (gui/).
  *
  * The driver reads $XDG_CONFIG_HOME/pipeasio/config.ini directly (it is a

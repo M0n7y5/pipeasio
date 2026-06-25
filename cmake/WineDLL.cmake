@@ -1,4 +1,4 @@
-# WineDLL.cmake — build a Wine DLL (PE fake + ELF .so) from one source set.
+# WineDLL.cmake - build a Wine DLL (PE fake + ELF .so) from one source set.
 #
 # Usage:
 #   add_wine_dll(

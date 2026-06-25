@@ -1,5 +1,5 @@
 /*
- * test_config.c — exercises the driver-side flat-INI reader (src/config.c)
+ * test_config.c - exercises the driver-side flat-INI reader (src/config.c)
  * against the exact format the Qt panel writes.  Runs from CTest.
  *
  * Strategy: point XDG_CONFIG_HOME at a temp dir, drop a config.ini into

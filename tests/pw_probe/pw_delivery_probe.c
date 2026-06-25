@@ -1,12 +1,12 @@
 /*
- * pw_delivery_probe.c — PipeWire buffer-DELIVERY conformance test for PipeASIO.
+ * pw_delivery_probe.c - PipeWire buffer-DELIVERY conformance test for PipeASIO.
  *
  * The threading probe (pw_filter_probe.c) checks that process() runs on the
  * right thread, but it never verifies that the bytes the driver writes into a
  * buffer are the bytes the daemon reads back.  That gap let a real bug ship:
  * the driver aliased a private memfd into each buffer (ALLOC_BUFFERS + fd
  * override), the host wrote into it, but the daemon never read it and played
- * its own uninitialised buffer instead — broadband garbage layered over the
+ * its own uninitialised buffer instead - broadband garbage layered over the
  * audio (the "buzz").
  *
  * This test pins the delivery contract end-to-end, offline, in ~1 second:
@@ -274,7 +274,7 @@ int main(void)
         return 77;
     }
     if (ramp_ok == 0) {
-        /* The graph ran but the consumer never saw the producer's ramp — the
+        /* The graph ran but the consumer never saw the producer's ramp - the
          * exact memfd-alias failure mode (host wrote a buffer the daemon does
          * not read). */
         fprintf(stderr, "[delivery] RESULT: FAIL (no ramp delivered)\n");

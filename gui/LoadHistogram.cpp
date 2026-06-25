@@ -1,5 +1,5 @@
 /*
- * LoadHistogram.cpp — implementation.
+ * LoadHistogram.cpp - implementation.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
@@ -65,7 +65,7 @@ void
 LoadHistogram::setWaiting()
 {
     if (!m_active)
-        return; /* already idle — avoid needless repaints */
+        return; /* already idle - avoid needless repaints */
     m_active = false;
     update();
 }

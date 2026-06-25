@@ -1,5 +1,5 @@
 /*
- * SettingsDialog.cpp — implementation.
+ * SettingsDialog.cpp - implementation.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
@@ -56,7 +56,7 @@ const SampleRateItem kSampleRates[] = {
 
 SettingsDialog::SettingsDialog(QWidget *parent) : QDialog(parent)
 {
-    setWindowTitle(QStringLiteral("PipeASIO Settings — " PIPEASIO_VERSION));
+    setWindowTitle(QStringLiteral("PipeASIO Settings - " PIPEASIO_VERSION));
 
     auto *tabs = new QTabWidget(this);
     tabs->addTab(buildSettingsTab(), QStringLiteral("Settings"));
@@ -136,7 +136,7 @@ SettingsDialog::buildSettingsTab()
 
     m_latency = new QLabel(page);
     addRow(QStringLiteral("Latency"), m_latency,
-           QStringLiteral("Length of one buffer (buffer size / sample rate) — the driver's "
+           QStringLiteral("Length of one buffer (buffer size / sample rate) - the driver's "
                           "approximate one-way latency. Read-only."));
 
     m_sampleRate = new QComboBox(page);

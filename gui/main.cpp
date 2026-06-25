@@ -1,5 +1,5 @@
 /*
- * main.cpp — pipeasio-settings entry point.
+ * main.cpp - pipeasio-settings entry point.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *

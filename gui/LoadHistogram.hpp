@@ -1,5 +1,5 @@
 /*
- * LoadHistogram.hpp — a rolling DSP-load history graph for the Monitor tab.
+ * LoadHistogram.hpp - a rolling DSP-load history graph for the Monitor tab.
  *
  * Each pushed sample (load in [0, 1]) adds a column at the right edge; older
  * samples scroll left.  Bars are colour-coded green/amber/red by level, the

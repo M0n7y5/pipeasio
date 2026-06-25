@@ -1,5 +1,5 @@
 /*
- * pw_default_probe — PipeWire-contract test for src/audio.c's "Follow default"
+ * pw_default_probe - PipeWire-contract test for src/audio.c's "Follow default"
  * device resolution.
  *
  * The driver's "Follow default" choice depends on a chain of PipeWire facts:
@@ -7,7 +7,7 @@
  *   2. it publishes default.audio.sink / default.audio.source as the JSON
  *      object {"name":"<node.name>"} (parsed with spa_json_str_object_find),
  *   3. that node appears in the registry and carries ports in the direction
- *      the driver needs — a sink we WRITE to has "in" (playback) ports, a
+ *      the driver needs - a sink we WRITE to has "in" (playback) ports, a
  *      source we READ from has "out" (capture) ports.
  *
  * audio_preferred_default_node() encodes exactly this; here we replicate it

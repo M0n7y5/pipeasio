@@ -1,5 +1,5 @@
 # Linux-native unit tests for pure-C logic shared with the Wine-side
-# driver.  These build with the host compiler (no winegcc) — they only
+# driver.  These build with the host compiler (no winegcc) - they only
 # include pipeasio_offsets.h and other pure headers.  Run from CTest.
 
 set(PIPEASIO_UNIT_INCLUDES "${CMAKE_SOURCE_DIR}/include")

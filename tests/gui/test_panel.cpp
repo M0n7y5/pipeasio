@@ -1,5 +1,5 @@
 /*
- * test_panel.cpp — unit tests for the Qt panel's pure functions:
+ * test_panel.cpp - unit tests for the Qt panel's pure functions:
  *   - Config::serializeIni / parseIni round-trip
  *   - cross-language: panel-written INI parsed by the driver's C reader
  *   - DeviceEnumerator::parsePwDump (fixture)
@@ -198,7 +198,7 @@ test_find_own_node()
     CHECK(DeviceEnumerator::findOwnNode(json) == QStringLiteral("FL64"));
 
     /* Numeric marker form: pw-dump serialises the property "1" as a JSON
-     * number, which is what actually appears at runtime — the panel must still
+     * number, which is what actually appears at runtime - the panel must still
      * recognise it (regression: toString() is empty for JSON numbers). */
     const QByteArray numForm
             = "[\n"

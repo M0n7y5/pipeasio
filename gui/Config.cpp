@@ -1,5 +1,5 @@
 /*
- * Config.cpp — implementation of the panel INI read/write.
+ * Config.cpp - implementation of the panel INI read/write.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
@@ -97,7 +97,7 @@ parseIni(const QString &text)
             continue;
         if (line.startsWith(QLatin1Char('#')) || line.startsWith(QLatin1Char(';')))
             continue;
-        if (line.startsWith(QLatin1Char('['))) /* section header — single section */
+        if (line.startsWith(QLatin1Char('['))) /* section header - single section */
             continue;
 
         const int eq = line.indexOf(QLatin1Char('='));

@@ -1,5 +1,5 @@
 /*
- * pw_filter_probe.c — PipeWire-contract conformance test for PipeASIO.
+ * pw_filter_probe.c - PipeWire-contract conformance test for PipeASIO.
  *
  * This replicates src/audio.c's PipeWire setup (custom spa_thread_utils,
  * pw_filter with MAP_BUFFERS DSP ports, FORCE_QUANTUM/RATE) WITHOUT Wine
@@ -7,13 +7,13 @@
  * offline in ~1 second.  It pins the two invariants that were the root of
  * the FL Studio crash + "noise" saga:
  *
- *   1. THREADING.  The pw_filter process() callback — which in the real
- *      driver calls the ASIO host's COM bufferSwitch — MUST run on a thread
+ *   1. THREADING.  The pw_filter process() callback - which in the real
+ *      driver calls the ASIO host's COM bufferSwitch - MUST run on a thread
  *      our spa_thread_utils created (i.e. a Win32 CreateThread'd Wine thread
  *      with a real TEB).  This only happens if the context's data loop is
  *      stopped after our thread_utils is installed and then restarted
  *      through it, AND the filter is created on that data loop.  Skip either
- *      step and process() runs on a foreign pthread → COM calls corrupt
+ *      step and process() runs on a foreign pthread -> COM calls corrupt
  *      memory under Wine (the bug this project chased for weeks).
  *
  *   2. QUANTUM.  PW_KEY_NODE_FORCE_QUANTUM must pin spa_io_position.clock
@@ -297,7 +297,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "[pw_probe] live buffers/port           : %d, %d (0 = unlinked, informational)\n",
             e.ports[0].live_buffers, e.ports[1].live_buffers);
 
-    /* Teardown (under the loop lock — the filter lives on a loop thread). */
+    /* Teardown (under the loop lock - the filter lives on a loop thread). */
     pw_thread_loop_lock(tl);
     pw_filter_destroy(filter);
     pw_thread_loop_unlock(tl);

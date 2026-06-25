@@ -1,5 +1,5 @@
 /*
- * asio_loopback.c — digital loopback analyzer for PipeASIO.
+ * asio_loopback.c - digital loopback analyzer for PipeASIO.
  *
  * A Wine ASIO host (like asio_probe) that plays a per-channel frame
  * counter out of the driver's output ports and verifies it on the input
@@ -327,7 +327,7 @@ static int run_phase(IPipeASIO *asio, LONG bs, int seconds)
     }
     if (!(g_ch[0].locked && g_ch[1].locked)) {
         fprintf(stderr, "[loop] FAIL: no signal lock after 10 s "
-                "(ch0=%d ch1=%d, cycles=%ld) — loopback links missing?\n",
+                "(ch0=%d ch1=%d, cycles=%ld) - loopback links missing?\n",
                 g_ch[0].locked, g_ch[1].locked, (long)g_cycles);
         asio->lpVtbl->Stop(asio);
         asio->lpVtbl->DisposeBuffers(asio);
@@ -467,7 +467,7 @@ int main(void)
     fprintf(stderr, "[loop] driver: buffers min=%ld max=%ld pref=%ld\n",
             (long)mn, (long)mx, (long)pref);
 
-    /* All channels must be float32 (type 19) — the codec depends on it. */
+    /* All channels must be float32 (type 19) - the codec depends on it. */
     for (int ch = 0; ch < NCH; ch++) {
         for (int isin = 0; isin <= 1; isin++) {
             ChannelInformation ci;

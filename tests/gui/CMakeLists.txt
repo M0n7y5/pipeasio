@@ -1,6 +1,6 @@
 # Qt panel unit tests: pure parse/serialize functions plus a cross-language
 # round-trip (panel writes the INI, the driver's C reader parses it).  Headless
-# — no GUI is constructed — so it runs under CTest with no display.
+# - no GUI is constructed - so it runs under CTest with no display.
 find_package(Qt6 COMPONENTS Core REQUIRED)
 set(CMAKE_AUTOMOC ON)
 

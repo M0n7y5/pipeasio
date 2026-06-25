@@ -1,9 +1,9 @@
 /*
- * test_offsets.c — exhaustively exercise pipeasio_offsets.h math.
+ * test_offsets.c - exhaustively exercise pipeasio_offsets.h math.
  *
  * The intent is to lock in the invariants we manually verified during
  * the Phase 3 stabilization static review:
- *   - memfd is correctly sized for n_ports × 2 halves × bsize × sizeof
+ *   - memfd is correctly sized for n_ports x 2 halves x bsize x sizeof
  *   - per-port mapoffsets partition that range with no gaps or overlaps
  *   - audio_port_get_buffer's sample-offset never points past the
  *     allocated memfd
@@ -28,7 +28,7 @@ static void test_memfd_size(void)
                   (size_t)262144);                     /* "256 kB" probe.err */
         EXPECT_EQ(pipeasio_memfd_size_bytes(1,  256,  SAMPLE_BYTES),
                   (size_t)2048);
-        /* No overflow at realistic ceiling: 64 ports × 8192 × 4 = 4 MiB. */
+        /* No overflow at realistic ceiling: 64 ports x 8192 x 4 = 4 MiB. */
         EXPECT_EQ(pipeasio_memfd_size_bytes(64, 8192, SAMPLE_BYTES),
                   (size_t)4 * 1024 * 1024);
     }
@@ -91,7 +91,7 @@ static void test_port_buffer_offset_samples(void)
     }
 
     /* Each (channel, half) maps to a unique offset.  No two distinct
-     * (i, h) pairs collide — important because aliased offsets would
+     * (i, h) pairs collide - important because aliased offsets would
      * be cross-channel buffer corruption. */
     TEST_GROUP("port_buffer_offset uniqueness") {
         const uint32_t n_ports = 32;
@@ -104,7 +104,7 @@ static void test_port_buffer_offset_samples(void)
                 seen[slot] = off;
             }
         }
-        /* Verify strict ordering 0, bsize, 2*bsize, … */
+        /* Verify strict ordering 0, bsize, 2*bsize, ... */
         for (size_t k = 0; k < (size_t)n_ports * 2; k++) {
             EXPECT_EQ(seen[k], k * bsize);
         }
@@ -114,7 +114,7 @@ static void test_port_buffer_offset_samples(void)
 static void test_host_callback_layout(void)
 {
     /* Host's callback_audio_buffer has the same total size as the memfd
-     * when n_in + n_out == n_ports — confirming the two sides agree on
+     * when n_in + n_out == n_ports - confirming the two sides agree on
      * the allocation footprint. */
     TEST_GROUP("host callback total size") {
         const uint32_t inputs  = 16;
@@ -150,9 +150,9 @@ static void test_host_callback_layout(void)
         EXPECT_EQ(last_output_end, total_samples);
     }
 
-    /* Within one channel's slice, the two halves are sequential — the
+    /* Within one channel's slice, the two halves are sequential - the
      * host process callback does &audio_buffer[host_buffer_index * bsize]
-     * with host_buffer_index ∈ {0, 1}, so the two halves must be packed
+     * with host_buffer_index in {0, 1}, so the two halves must be packed
      * with no gap.  This is implicit in pipeasio_host_half_offset_samples
      * but worth pinning. */
     TEST_GROUP("host half offset") {
@@ -171,7 +171,7 @@ static void test_edge_cases(void)
                   (size_t)3 * 32 * 4);
     }
 
-    /* Single mono channel — common control-room monitor setup. */
+    /* Single mono channel - common control-room monitor setup. */
     TEST_GROUP("single channel") {
         EXPECT_EQ(pipeasio_memfd_size_bytes(1, 1024, SAMPLE_BYTES),
                   (size_t)2 * 1024 * 4);

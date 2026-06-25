@@ -1,4 +1,4 @@
-# pw_probe — Linux-native PipeWire-contract conformance test.
+# pw_probe - Linux-native PipeWire-contract conformance test.
 #
 # Links libpipewire-0.3 directly (no Wine, no ASIO host) and verifies the
 # threading + quantum invariants src/audio.c relies on.  Needs a running

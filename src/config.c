@@ -1,5 +1,5 @@
 /*
- * config.c — flat-INI reader for the PipeASIO driver.
+ * config.c - flat-INI reader for the PipeASIO driver.
  *
  * The driver is a native ELF, so it reads its settings straight from
  * $XDG_CONFIG_HOME/pipeasio/config.ini (the file the Qt panel writes) rather

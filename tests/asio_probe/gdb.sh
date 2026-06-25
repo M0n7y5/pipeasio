@@ -60,7 +60,7 @@ fi
 
 # Find the latest SIGABRT core under wine-preloader.  coredumpctl list
 # doesn't print the COMM column, so we can't directly grep for
-# "asio_probe" — but every asio_probe crash aborts under wine-preloader,
+# "asio_probe" - but every asio_probe crash aborts under wine-preloader,
 # and SIGABRT cores from other wine-preloader programs in the past hour
 # would be very unusual (and we cross-check the command line below).
 crash_pid="$(coredumpctl list 2>/dev/null \
@@ -76,7 +76,7 @@ fi
 if ! coredumpctl info "$crash_pid" 2>/dev/null \
         | grep -q "Command Line:.*asio_probe"; then
     echo "[gdb] WARNING: latest SIGABRT wine-preloader pid $crash_pid"
-    echo "[gdb]          isn't asio_probe — running:"
+    echo "[gdb]          isn't asio_probe - running:"
     coredumpctl info "$crash_pid" 2>/dev/null | grep "Command Line:"
 fi
 

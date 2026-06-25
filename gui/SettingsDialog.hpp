@@ -1,5 +1,5 @@
 /*
- * SettingsDialog.hpp — the PipeASIO settings panel window.
+ * SettingsDialog.hpp - the PipeASIO settings panel window.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *

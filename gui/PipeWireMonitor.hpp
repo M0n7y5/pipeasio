@@ -1,5 +1,5 @@
 /*
- * PipeWireMonitor.hpp — live telemetry for the Monitor tab via `pw-top`.
+ * PipeWireMonitor.hpp - live telemetry for the Monitor tab via `pw-top`.
  *
  * parsePwTop() is PURE (operates on captured output) so it is unit testable.
  *
