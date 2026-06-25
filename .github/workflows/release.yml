@@ -84,6 +84,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           printf '%s\n' \
             "Prebuilt binaries for **Arch Linux / CachyOS** (x86_64). The exact build" \
             "toolchain (Wine, glibc, PipeWire, MinGW) is recorded in \`BUILD-INFO.txt\`" \
@@ -100,6 +101,6 @@ jobs:
             "load (\`regsvr32\` c0000135). In that case build from source (README) or use" \
             "the AUR package. Source tarballs are attached automatically below." \
             > notes.md
-          gh release view "$TAG" >/dev/null 2>&1 \
-            || gh release create "$TAG" --title "PipeASIO ${TAG}" --notes-file notes.md
-          gh release upload "$TAG" "$ART" "$ART.sha256" --clobber
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "PipeASIO ${TAG}" --notes-file notes.md
+          gh release upload "$TAG" "$ART" "$ART.sha256" --repo "$GITHUB_REPOSITORY" --clobber
