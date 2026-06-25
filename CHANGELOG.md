@@ -4,7 +4,7 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.0] - 2026-06-25
 
 ### Added
 
@@ -140,6 +140,7 @@ the driver loads inside the Steam Runtime container that Proton uses.
 - Hardened channel-count limits from both the INI and the environment overrides,
   and tightened COM teardown and several NULL and error paths.
 
+[1.1.0]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.1.0
 [1.0.0]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.0.0
 [1.0.0-rc1]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.0.0-rc1
 
