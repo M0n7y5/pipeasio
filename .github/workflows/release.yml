@@ -69,7 +69,7 @@ jobs:
             "" \
             "COMPATIBILITY: the ELF .so halves are linked against the Wine and glibc" \
             "shown above. A different Wine version or an older glibc may fail to load" \
-            "(regsvr32 c0000135); build from source in that case - see the README." \
+            "(regsvr32 c0000135). Build from source in that case. See the README." \
             > stage/usr/BUILD-INFO.txt
           cat stage/usr/BUILD-INFO.txt
 
@@ -85,22 +85,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          ver="${TAG#v}"
+          awk -v hdr="## [$ver]" 'index($0,hdr)==1{g=1;next} g&&/^## \[/{exit} g{print}' CHANGELOG.md | sed '/./,$!d' > notes.md
           printf '%s\n' \
-            "Prebuilt binaries for **Arch Linux / CachyOS** (x86_64). The exact build" \
-            "toolchain (Wine, glibc, PipeWire, MinGW) is recorded in \`BUILD-INFO.txt\`" \
-            "inside the tarball." \
             "" \
-            "**User-local install:** \`tar -xzf ${ART} -C \"\$HOME/.local\"\`, then run" \
-            "\`pipeasio-register\` (see the README)." \
+            "---" \
             "" \
-            "**Proton / Faugus:** extract to \`\$HOME/.local\` and set" \
-            "\`WINEDLLPATH=\$HOME/.local/lib/wine\` in the launcher env." \
+            "### Install" \
             "" \
-            "**Compatibility:** a Wine builtin DLL is coupled to the Wine version and" \
-            "glibc it was built against; a different Wine or an older glibc may fail to" \
-            "load (\`regsvr32\` c0000135). In that case build from source (README) or use" \
-            "the AUR package. Source tarballs are attached automatically below." \
-            > notes.md
+            "Prebuilt for **Arch Linux / CachyOS** (x86_64). The exact build toolchain (Wine, glibc, PipeWire, MinGW) is recorded in \`BUILD-INFO.txt\` inside the tarball." \
+            "" \
+            "- User-local: \`tar -xzf ${ART} -C \"\$HOME/.local\"\`, then run \`pipeasio-register\`." \
+            "- Proton / Faugus: extract to \`\$HOME/.local\` and set \`WINEDLLPATH=\$HOME/.local/lib/wine\`." \
+            "" \
+            "### Compatibility" \
+            "" \
+            "A Wine builtin DLL is coupled to the Wine version and glibc it was built against. A different Wine or an older glibc may fail to load (\`regsvr32\` c0000135). In that case build from source (README) or use the AUR package. Source tarballs are attached automatically below." \
+            >> notes.md
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
             || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "PipeASIO ${TAG}" --notes-file notes.md
           gh release upload "$TAG" "$ART" "$ART.sha256" --repo "$GITHUB_REPOSITORY" --clobber
