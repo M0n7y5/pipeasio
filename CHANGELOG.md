@@ -22,6 +22,11 @@ follow [Semantic Versioning](https://semver.org/).
   per-cycle reply deadline uses `CLOCK_MONOTONIC`, so the 32-bit path sustains
   64-128 frame buffers without xruns.
 
+- Prebuilt Arch/CachyOS x86_64 binaries (the 64-bit driver plus the opt-in
+  32-bit WoW64 front end) attached to each tagged GitHub release, labeled with
+  the exact Wine, glibc, and PipeWire versions they were built against. CI now
+  also builds the 32-bit WoW64 path.
+
 ## [1.0.0] - 2026-06-10
 
 ### Added

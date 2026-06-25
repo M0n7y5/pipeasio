@@ -99,6 +99,24 @@ The package installs the driver system-wide under `/usr`, plus the
 system-wide install is invisible to Proton's container. See the Proton /
 Steam / Faugus section below.
 
+### From a GitHub release
+
+[Releases](https://github.com/M0n7y5/pipeasio/releases) carry a prebuilt
+`pipeasio-<version>-archlinux-x86_64.tar.gz` (the 64-bit driver plus the opt-in
+32-bit WoW64 front end) for the Arch / CachyOS family. Extract it over a prefix:
+
+```sh
+# user-local (required for Proton / Faugus / Steam, see below)
+tar -xzf pipeasio-*-archlinux-x86_64.tar.gz -C "$HOME/.local"
+# or system-wide
+sudo tar -xzf pipeasio-*-archlinux-x86_64.tar.gz -C /usr
+```
+
+then [register](#registering). The download is *scoped*: its `BUILD-INFO.txt`
+lists the exact Wine, glibc, and PipeWire it was built against. A different Wine
+version or an older glibc can fail to load (`regsvr32` `c0000135`). Build it
+[from source](#from-source) in that case.
+
 ### From source
 
 System-wide (matches the distro Wine layout most ASIO hosts use):

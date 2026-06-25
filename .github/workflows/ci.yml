@@ -25,3 +25,22 @@ jobs:
       - name: Show test log on failure
         if: failure()
         run: cat build/Testing/Temporary/LastTest.log || true
+
+  build-32bit:
+    name: 32-bit WoW64 build
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install toolchain
+        run: pacman -Syu --noconfirm gcc cmake ninja pkgconf git wine libpipewire pipewire qt6-base mingw-w64-gcc
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Configure (BUILD_WOW64_32=ON)
+        run: cmake -B build32 -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_WOW64_32=ON -DWINE_LIB_ROOT=/usr/lib/wine
+      - name: Build (64-bit + 32-bit WoW64)
+        run: cmake --build build32
+      - name: Test
+        run: ctest --test-dir build32 --output-on-failure
+      - name: Show test log on failure
+        if: failure()
+        run: cat build32/Testing/Temporary/LastTest.log || true

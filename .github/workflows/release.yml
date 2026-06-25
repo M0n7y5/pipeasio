@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  archlinux-binaries:
+    name: Arch/CachyOS x86_64 tarball
+    runs-on: ubuntu-latest
+    # archlinux:latest tracks the rolling Wine/glibc/PipeWire that CachyOS users
+    # run, so the binary matches their environment. Pin archlinux:base-<date> for
+    # a fully reproducible build; BUILD-INFO.txt records the exact versions either
+    # way. A Wine builtin DLL is version/glibc-coupled, so this is a *scoped*
+    # artifact, not a universal one - see the release notes / README.
+    container: archlinux:latest
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Install toolchain
+        run: pacman -Syu --noconfirm gcc cmake ninja pkgconf git wine libpipewire pipewire mingw-w64-gcc qt6-base github-cli
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure (64-bit + opt-in 32-bit WoW64)
+        run: >
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_WOW64_32=ON -DWINE_LIB_ROOT=/usr/lib/wine
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test (gates the release)
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Stage install tree
+        run: DESTDIR="$PWD/stage" cmake --install build --prefix /usr
+
+      - name: Write BUILD-INFO.txt
+        run: |
+          glibc=$(ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+$')
+          printf '%s\n' \
+            "PipeASIO ${TAG} - prebuilt binaries (Arch Linux / CachyOS family, x86_64)" \
+            "" \
+            "Built:            $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "Commit:           ${GITHUB_SHA}" \
+            "Wine (build SDK): $(wine --version)" \
+            "glibc:            ${glibc}" \
+            "libpipewire-0.3:  $(pkg-config --modversion libpipewire-0.3)" \
+            "MinGW (i386 PE):  $(i686-w64-mingw32-gcc -dumpversion)" \
+            "Kernel:           $(uname -sr)" \
+            "" \
+            "Contents:" \
+            "  lib/wine/x86_64-windows/pipeasio64.dll   (+ pipeasio.dll symlink)" \
+            "  lib/wine/x86_64-unix/pipeasio64.dll.so   (+ pipeasio.dll.so symlink)" \
+            "  lib/wine/i386-windows/pipeasio32.dll     (opt-in 32-bit WoW64 PE front end)" \
+            "  lib/wine/x86_64-unix/pipeasio32.so       (32-bit WoW64 unixlib)" \
+            "  bin/pipeasio-register, bin/pipeasio-settings" \
+            "" \
+            "Install (system-wide):  sudo tar -xzf <this>.tar.gz -C /usr && pipeasio-register" \
+            "Install (user-local):   tar -xzf <this>.tar.gz -C \"\$HOME/.local\"" \
+            "Proton / Faugus:        extract to \"\$HOME/.local\", then set" \
+            "                        WINEDLLPATH=\"\$HOME/.local/lib/wine\" in the launcher" \
+            "" \
+            "COMPATIBILITY: the ELF .so halves are linked against the Wine and glibc" \
+            "shown above. A different Wine version or an older glibc may fail to load" \
+            "(regsvr32 c0000135); build from source in that case - see the README." \
+            > stage/usr/BUILD-INFO.txt
+          cat stage/usr/BUILD-INFO.txt
+
+      - name: Package tarball
+        run: |
+          art="pipeasio-${TAG}-archlinux-x86_64.tar.gz"
+          tar -czf "$art" -C stage/usr .
+          sha256sum "$art" | tee "$art.sha256"
+          echo "ART=$art" >> "$GITHUB_ENV"
+
+      - name: Publish to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s\n' \
+            "Prebuilt binaries for **Arch Linux / CachyOS** (x86_64). The exact build" \
+            "toolchain (Wine, glibc, PipeWire, MinGW) is recorded in \`BUILD-INFO.txt\`" \
+            "inside the tarball." \
+            "" \
+            "**User-local install:** \`tar -xzf ${ART} -C \"\$HOME/.local\"\`, then run" \
+            "\`pipeasio-register\` (see the README)." \
+            "" \
+            "**Proton / Faugus:** extract to \`\$HOME/.local\` and set" \
+            "\`WINEDLLPATH=\$HOME/.local/lib/wine\` in the launcher env." \
+            "" \
+            "**Compatibility:** a Wine builtin DLL is coupled to the Wine version and" \
+            "glibc it was built against; a different Wine or an older glibc may fail to" \
+            "load (\`regsvr32\` c0000135). In that case build from source (README) or use" \
+            "the AUR package. Source tarballs are attached automatically below." \
+            > notes.md
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "PipeASIO ${TAG}" --notes-file notes.md
+          gh release upload "$TAG" "$ART" "$ART.sha256" --clobber
