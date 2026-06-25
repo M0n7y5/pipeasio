@@ -13,7 +13,7 @@ jobs:
       - name: Install toolchain
         run: pacman -Syu --noconfirm gcc cmake ninja pkgconf git clang wine libpipewire pipewire qt6-base
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Format check (core tree only; tests/ are intentionally hand-aligned)
         run: clang-format --dry-run --Werror src/*.c include/*.h gui/*.cpp gui/*.hpp
       - name: Configure
@@ -36,7 +36,7 @@ jobs:
           printf '[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
           pacman -Syu --noconfirm gcc cmake ninja pkgconf git wine libpipewire pipewire qt6-base mingw-w64-gcc lib32-glibc
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Configure (BUILD_WOW64_32=ON)
         run: cmake -B build32 -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_WOW64_32=ON -DWINE_LIB_ROOT=/usr/lib/wine
       - name: Build (64-bit + 32-bit WoW64)
