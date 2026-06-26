@@ -4,6 +4,34 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Live config reload now diffs the INI before resetting. Saving the settings
+  panel re-negotiates the audio graph only when a reset-worthy field actually
+  changed, so a no-op save (or one that merely rewrites the file) no longer
+  causes a dropout. Buffer size, sample rate, device selection, follow-device
+  clock, and autoconnect now take effect on the reset itself - the new PipeWire
+  quantum applies even when the host only re-creates buffers instead of fully
+  re-initializing the driver, which previously left buffer-size changes silently
+  unapplied. Channel-count and node-name changes are detected and logged as
+  needing a driver reselect, since those ports are allocated at init.
+
+### Fixed
+
+- Deadlock when an ASIO host services `kAsioResetRequest` synchronously on the
+  config-watcher thread: the watcher teardown no longer waits on itself - it
+  signals stop and lets the COM-thread `DisposeBuffers`/`Release` path reap the
+  thread and event handles.
+- Data races on the driver run-state and the host-callback pointer, which the
+  config-watcher and the real-time process callback read while the COM thread
+  wrote them; both are now atomic.
+- Real-time input copy could read past a PipeWire capture buffer smaller than
+  the host period (graph quantum below the configured buffer size). The input
+  gather is now clamped to the mapped buffer and the tail zero-filled, mirroring
+  the existing output-side clamp; both the 64-bit and WoW64 paths are fixed.
+
 ## [1.1.0] - 2026-06-25
 
 ### Added
@@ -140,6 +168,7 @@ the driver loads inside the Steam Runtime container that Proton uses.
 - Hardened channel-count limits from both the INI and the environment overrides,
   and tightened COM teardown and several NULL and error paths.
 
+[Unreleased]: https://github.com/M0n7y5/pipeasio/compare/v1.1.0...HEAD
 [1.1.0]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.1.0
 [1.0.0]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.0.0
 [1.0.0-rc1]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.0.0-rc1

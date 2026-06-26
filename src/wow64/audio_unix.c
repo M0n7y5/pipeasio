@@ -310,10 +310,12 @@ wow64_rt_process(audio_nframes_t nframes, void *arg)
             audio_sample_t *dst = cc->buffer_base
                                   + pipeasio_host_input_offset_samples(i, cc->buffer_size)
                                   + pipeasio_host_half_offset_samples(half, cc->buffer_size);
-            if (src)
-                memcpy(dst, src, sizeof(audio_sample_t) * nframes);
-            else
-                memset(dst, 0, sizeof(audio_sample_t) * nframes);
+            audio_nframes_t avail = audio_port_buffer_avail_frames(cc->in_port[i]);
+            audio_nframes_t n     = (src && avail < nframes) ? avail : (src ? nframes : 0);
+            if (n)
+                memcpy(dst, src, sizeof(audio_sample_t) * n);
+            if (n < nframes)
+                memset(dst + n, 0, sizeof(audio_sample_t) * (nframes - n));
         }
 
     /* Host callback. */

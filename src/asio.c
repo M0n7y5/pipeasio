@@ -231,12 +231,17 @@ typedef struct IPipeASIOImpl
     LONG       host_active_inputs;
     LONG       host_active_outputs;
     BOOL       host_buffer_index;
-    Callbacks *host_callbacks;
+    Callbacks *_Atomic host_callbacks;
     /* Live-config watcher: polls config.ini, asks the host to reset on change */
     HANDLE          config_watch_thread;
     HANDLE          config_watch_stop;
+    DWORD           config_watch_tid;
+    CRITICAL_SECTION       config_lock;      /* guards staged_cfg */
+    struct pipeasio_config staged_cfg;       /* watcher -> apply handoff */
+    _Atomic bool           config_pending;   /* staged_cfg has a fresh reload */
+    _Atomic LONG           follower_quantum; /* last observed device quantum */
     LONG            host_current_buffersize;
-    INT             host_driver_state;
+    _Atomic INT     host_driver_state;
     w_int64_t       host_num_samples;
     double          host_sample_rate;
     TimeInformation host_time;
@@ -418,9 +423,6 @@ AddRef(LPPIPEASIO iface)
     return ref;
 }
 
-/* Follow-device quantum remembered across driver re-inits. */
-static _Atomic LONG g_follower_quantum;
-
 /* Poll config.ini and request host reset when it changes. */
 static DWORD WINAPI
 config_watch_proc(LPVOID arg)
@@ -436,7 +438,8 @@ config_watch_proc(LPVOID arg)
 #else
     uint64_t last_fp = 0;
 #endif
-    LONG last_reset_quantum = 0;
+    LONG                   last_reset_quantum = 0;
+    struct pipeasio_config last_cfg;
 
     if (!pipeasio_config_path(path, sizeof path))
     {
@@ -453,8 +456,10 @@ config_watch_proc(LPVOID arg)
         last_size = st.st_size;
         last_ino  = st.st_ino;
     }
+    pipeasio_config_load(&last_cfg);
 #else
     last_fp = pipeasio_wow64_config_fingerprint();
+    pipeasio_wow64_load_config(&last_cfg);
 #endif
 
     for (;;)
@@ -463,7 +468,8 @@ config_watch_proc(LPVOID arg)
         if (waited == WAIT_OBJECT_0 || waited == WAIT_FAILED)
             break;
 
-        bool reset = false;
+        bool reset        = false;
+        bool file_changed = false;
 
         /* config.ini edited in the panel */
 #ifndef PIPEASIO_WOW64_PE
@@ -476,7 +482,7 @@ config_watch_proc(LPVOID arg)
             last_size = st.st_size;
             last_ino  = st.st_ino;
             TRACE("config watcher: %s changed\n", path);
-            reset = true;
+            file_changed = true;
         }
 #else
         {
@@ -485,10 +491,46 @@ config_watch_proc(LPVOID arg)
             {
                 last_fp = fp;
                 TRACE("config watcher: %s changed\n", path);
-                reset = true;
+                file_changed = true;
             }
         }
 #endif
+
+        /* Reload + diff: stage only reset-worthy field changes so a no-op save
+         * (or a channel/node edit that needs a full re-init) does not force a
+         * needless graph teardown. */
+        if (file_changed)
+        {
+            struct pipeasio_config newcfg;
+#ifdef PIPEASIO_WOW64_PE
+            pipeasio_wow64_load_config(&newcfg);
+#else
+            pipeasio_config_load(&newcfg);
+#endif
+            bool live_changed =
+                newcfg.buffer_size != last_cfg.buffer_size
+                || newcfg.fixed_buffer_size != last_cfg.fixed_buffer_size
+                || newcfg.sample_rate != last_cfg.sample_rate
+                || newcfg.follow_device_clock != last_cfg.follow_device_clock
+                || newcfg.auto_connect != last_cfg.auto_connect
+                || strcmp(newcfg.output_device, last_cfg.output_device) != 0
+                || strcmp(newcfg.input_device, last_cfg.input_device) != 0;
+            bool reinit_changed = newcfg.inputs != last_cfg.inputs
+                                  || newcfg.outputs != last_cfg.outputs
+                                  || strcmp(newcfg.node_name, last_cfg.node_name) != 0;
+            if (reinit_changed)
+                WARN("config: channel-count/node-name change needs driver reselect to apply\n");
+            if (live_changed)
+            {
+                EnterCriticalSection(&This->config_lock);
+                This->staged_cfg = newcfg;
+                LeaveCriticalSection(&This->config_lock);
+                atomic_store_explicit(&This->config_pending, true, memory_order_release);
+                TRACE("config: staged live reload from %s\n", path);
+                reset = true;
+            }
+            last_cfg = newcfg;
+        }
 
         /* PipeWire default device switched while we are following it */
         if (This->host_driver_state == Running
@@ -499,13 +541,15 @@ config_watch_proc(LPVOID arg)
             reset = true;
         }
 
-        /* Follow-device mode: reset once per newly observed graph quantum. */
+        /* Follow-device mode: reset once per newly observed graph quantum.
+         * apply_pending_config derives host_current_buffersize from
+         * follower_quantum, so the new quantum applies on the rebuild. */
         if (This->pipeasio_follow_device_clock && This->host_driver_state == Running)
         {
             LONG q = (LONG)audio_observed_quantum(This->audio_client);
-            if (q && q != This->host_current_buffersize && q != last_reset_quantum)
+            if (q && q != last_reset_quantum)
             {
-                atomic_store(&g_follower_quantum, q);
+                atomic_store(&This->follower_quantum, q);
                 last_reset_quantum = q;
                 TRACE("config watcher: device quantum %ld, re-negotiating buffer\n", (long)q);
                 reset = true;
@@ -527,6 +571,16 @@ config_watch_proc(LPVOID arg)
 static void
 stop_config_watch(IPipeASIOImpl *This)
 {
+    if (This->config_watch_thread && GetCurrentThreadId() == This->config_watch_tid)
+    {
+        /* Reentrant teardown: a host serviced kAsioResetRequest synchronously on
+         * the watcher thread.  Joining ourselves would deadlock.  Signal stop and
+         * return; the watcher exits at its next loop check, and the COM-thread
+         * DisposeBuffers()/Release() path reaps the handles. */
+        if (This->config_watch_stop)
+            SetEvent(This->config_watch_stop);
+        return;
+    }
     if (This->config_watch_thread)
     {
         if (This->config_watch_stop)
@@ -587,6 +641,7 @@ Release(LPPIPEASIO iface)
             HeapFree(GetProcessHeap(), 0, This->input_channel);
     }
     TRACE("PipeASIO terminated\n\n");
+    DeleteCriticalSection(&This->config_lock);
     HeapFree(GetProcessHeap(), 0, This);
     return ref;
 }
@@ -625,7 +680,7 @@ Init(LPPIPEASIO iface, void *sysRef)
     if (This->pipeasio_follow_device_clock)
     {
         /* First guess until the watcher observes the device quantum. */
-        LONG hint = atomic_load(&g_follower_quantum);
+        LONG hint = atomic_load(&This->follower_quantum);
         if (hint)
             This->host_current_buffersize = hint;
     }
@@ -863,22 +918,33 @@ GetBufferSize(LPPIPEASIO iface, LONG *minSize, LONG *maxSize, LONG *preferredSiz
     if (!minSize || !maxSize || !preferredSize || !granularity)
         return -998;
 
-    if (This->pipeasio_fixed_buffersize || This->pipeasio_follow_device_clock)
+    bool pending = atomic_load_explicit(&This->config_pending, memory_order_acquire);
+    BOOL fixed   = This->pipeasio_fixed_buffersize;
+    BOOL follow  = This->pipeasio_follow_device_clock;
+    LONG pref    = This->pipeasio_preferred_buffersize;
+    if (pending)
     {
-        *minSize = *maxSize = *preferredSize = This->host_current_buffersize;
+        EnterCriticalSection(&This->config_lock);
+        fixed  = This->staged_cfg.fixed_buffer_size ? TRUE : FALSE;
+        follow = This->staged_cfg.follow_device_clock ? TRUE : FALSE;
+        pref   = This->staged_cfg.buffer_size;
+        LeaveCriticalSection(&This->config_lock);
+    }
+    if (fixed || follow)
+    {
+        LONG q = atomic_load_explicit(&This->follower_quantum, memory_order_relaxed);
+        *minSize = *maxSize = *preferredSize = (follow && q) ? q : pref;
         *granularity                         = 0;
-        TRACE("Buffersize fixed at %d\n", (int)This->host_current_buffersize);
+        TRACE("Buffersize fixed at %d (pending=%d)\n", (int)*preferredSize, (int)pending);
         return 0;
     }
 
     *minSize       = PIPEASIO_MINIMUM_BUFFERSIZE;
     *maxSize       = PIPEASIO_MAXIMUM_BUFFERSIZE;
-    *preferredSize = This->pipeasio_preferred_buffersize;
+    *preferredSize = pref;
     *granularity   = -1;
-    TRACE("The host can control buffersize\nMinimum: %d, maximum: %d, preferred: %d, granularity: "
-          "%d, current: %d\n",
-          (int)*minSize, (int)*maxSize, (int)*preferredSize, (int)*granularity,
-          (int)This->host_current_buffersize);
+    TRACE("The host can control buffersize (min=%d max=%d preferred=%d)\n", (int)*minSize,
+          (int)*maxSize, (int)*preferredSize);
     return 0;
 }
 
@@ -1020,6 +1086,49 @@ GetChannelInfo(LPPIPEASIO iface, void *info)
     return 0;
 }
 
+/* Commit a config staged by the watcher; recompute the forced quantum.
+ * MUST run only with the RT data loop stopped (CreateBuffers, between
+ * DisposeBuffers and audio_activate): it writes audio_client->follow_device,
+ * which audio_on_process reads.  Channel counts and node_name are not applied
+ * (re-init only). */
+static void
+apply_pending_config(IPipeASIOImpl *This)
+{
+    if (atomic_load_explicit(&This->config_pending, memory_order_acquire))
+    {
+        EnterCriticalSection(&This->config_lock);
+        struct pipeasio_config cfg = This->staged_cfg;
+        atomic_store_explicit(&This->config_pending, false, memory_order_release);
+        LeaveCriticalSection(&This->config_lock);
+
+        This->pipeasio_connect_to_hardware  = cfg.auto_connect ? TRUE : FALSE;
+        This->pipeasio_fixed_buffersize     = cfg.fixed_buffer_size ? TRUE : FALSE;
+        This->pipeasio_follow_device_clock  = cfg.follow_device_clock ? TRUE : FALSE;
+        This->pipeasio_preferred_buffersize = cfg.buffer_size; /* loader pow2-validated */
+        This->pipeasio_sample_rate          = cfg.sample_rate;
+        lstrcpynA(This->pipeasio_output_device, cfg.output_device,
+                  sizeof This->pipeasio_output_device);
+        lstrcpynA(This->pipeasio_input_device, cfg.input_device,
+                  sizeof This->pipeasio_input_device);
+
+        audio_set_forced_rate(This->audio_client, (audio_nframes_t)This->pipeasio_sample_rate);
+        audio_set_follow_device(This->audio_client, This->pipeasio_follow_device_clock);
+        TRACE("config: applied live reload (buffer_size=%d rate=%d follow=%d auto=%d)\n",
+              (int)This->pipeasio_preferred_buffersize, This->pipeasio_sample_rate,
+              (int)This->pipeasio_follow_device_clock, (int)This->pipeasio_connect_to_hardware);
+    }
+    /* Forced quantum: follow-device uses the observed graph quantum, else the
+     * configured preferred size.  Mirrors Init().  Runs every call so a
+     * follow-device-only reset (config_pending false) still settles.  Host-
+     * controlled mode leaves host_current_buffersize to the host. */
+    if (This->pipeasio_fixed_buffersize || This->pipeasio_follow_device_clock)
+    {
+        LONG q = atomic_load_explicit(&This->follower_quantum, memory_order_relaxed);
+        This->host_current_buffersize =
+            (This->pipeasio_follow_device_clock && q) ? q : This->pipeasio_preferred_buffersize;
+    }
+}
+
 /* bufferSize must be one returned by GetBufferSize(). Returns -994 if memory
  * can't be allocated, -997 on unsupported bufferSize or invalid bufferInfo,
  * -1000 on missing IO. */
@@ -1041,6 +1150,10 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
 
     if (!bufferInfo || !callbacks)
         return -997;
+
+    /* RT data loop is stopped here (post-DisposeBuffers); safe to commit a
+     * config the watcher staged while Running. */
+    apply_pending_config(This);
 
     /* Check for invalid channel numbers.  Both the count-per-direction
      * AND each entry's channelNumber must be in range - without the
@@ -1273,11 +1386,14 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
     /* at this point all the connections are made and the process callback is outputting silence */
     This->host_driver_state = Prepared;
 
-    /* Watch config.ini for panel edits and reset on change (live reload). */
+    /* Watch config.ini for panel edits and reset on change (live reload).
+     * Reap any prior watcher (e.g. left by a reentrant self-stop) before
+     * starting a fresh one; no-op on the normal path. */
+    stop_config_watch(This);
     This->config_watch_stop = CreateEvent(NULL, TRUE, FALSE, NULL);
     if (This->config_watch_stop)
     {
-        This->config_watch_thread = CreateThread(NULL, 0, config_watch_proc, This, 0, NULL);
+        This->config_watch_thread = CreateThread(NULL, 0, config_watch_proc, This, 0, &This->config_watch_tid);
         if (!This->config_watch_thread)
         {
             CloseHandle(This->config_watch_stop);
@@ -1489,6 +1605,7 @@ pipeasio_host_buffer_switch(void *This, int32_t buffer_index, audio_nframes_t ad
                             uint64_t time_nsec)
 {
     IPipeASIOImpl *impl = (IPipeASIOImpl *)This;
+    Callbacks     *cb   = atomic_load_explicit(&impl->host_callbacks, memory_order_relaxed);
 
     if (impl->host_num_samples.lo > ULONG_MAX - add_samples)
         impl->host_num_samples.hi++;
@@ -1507,11 +1624,11 @@ pipeasio_host_buffer_switch(void *This, int32_t buffer_index, audio_nframes_t ad
         impl->host_time.sampleRate    = impl->host_sample_rate;
         impl->host_time.flags         = 0x7;
 
-        impl->host_callbacks->swapBuffersWithTimeInfo(&impl->host_time, buffer_index, 1);
+        cb->swapBuffersWithTimeInfo(&impl->host_time, buffer_index, 1);
     }
     else
     {
-        impl->host_callbacks->swapBuffers(buffer_index, 1);
+        cb->swapBuffers(buffer_index, 1);
     }
 }
 
@@ -1529,7 +1646,7 @@ process_callback(audio_nframes_t nframes, void *arg)
     int i;
 
     /* output silence if the host callback isn't running yet */
-    if (This->host_driver_state != Running)
+    if (atomic_load_explicit(&This->host_driver_state, memory_order_relaxed) != Running)
     {
         for (i = 0; i < This->host_active_outputs; i++)
         {
@@ -1547,10 +1664,12 @@ process_callback(audio_nframes_t nframes, void *arg)
             audio_sample_t *src = audio_port_get_buffer(This->input_channel[i].port, nframes);
             audio_sample_t *dst
                     = &This->input_channel[i].audio_buffer[nframes * This->host_buffer_index];
-            if (src)
-                memcpy(dst, src, sizeof(audio_sample_t) * nframes);
-            else
-                memset(dst, 0, sizeof(audio_sample_t) * nframes);
+            audio_nframes_t avail = audio_port_buffer_avail_frames(This->input_channel[i].port);
+            audio_nframes_t n     = (src && avail < nframes) ? avail : (src ? nframes : 0);
+            if (n)
+                memcpy(dst, src, sizeof(audio_sample_t) * n);
+            if (n < nframes)
+                memset(dst + n, 0, sizeof(audio_sample_t) * (nframes - n));
         }
 
     pipeasio_host_buffer_switch(This, This->host_buffer_index, nframes,
@@ -1782,6 +1901,7 @@ PipeASIOCreateInstance(REFIID riid, LPVOID *ppobj)
     }
 
     pobj->lpVtbl = &PipeASIO_Vtbl;
+    InitializeCriticalSection(&pobj->config_lock);
     pobj->ref    = 1;
     TRACE("pobj = %p\n", pobj);
     *ppobj = pobj;

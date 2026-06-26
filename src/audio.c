@@ -930,6 +930,14 @@ audio_port_get_buffer(audio_port_t *p, audio_nframes_t nframes)
     return p->cycle_buffer->buffer->datas[0].data;
 }
 
+audio_nframes_t
+audio_port_buffer_avail_frames(const audio_port_t *p)
+{
+    if (!p || !p->cycle_buffer)
+        return 0;
+    return (audio_nframes_t)(p->cycle_buffer->buffer->datas[0].maxsize / sizeof(audio_sample_t));
+}
+
 const char *
 audio_port_name(const audio_port_t *p)
 {

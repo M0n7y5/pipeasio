@@ -104,6 +104,10 @@ audio_port_t *audio_port_register(audio_client_t *client, const char *port_name,
                                   const char *port_type, uint64_t flags, uint64_t buffer_size);
 bool          audio_port_unregister(audio_client_t *client, audio_port_t *port);
 void         *audio_port_get_buffer(audio_port_t *port, audio_nframes_t nframes);
+/* Capacity in frames of the port's dequeued cycle buffer (datas[0].maxsize),
+ * 0 when no buffer is mapped this cycle.  Lets the RT copy clamp against a
+ * daemon buffer smaller than the host period (quantum < buffer_size). */
+audio_nframes_t audio_port_buffer_avail_frames(const audio_port_t *port);
 const char   *audio_port_name(const audio_port_t *port);
 const char   *audio_port_type(const audio_port_t *port);
 audio_port_t *audio_port_by_name(audio_client_t *client, const char *port_name);
