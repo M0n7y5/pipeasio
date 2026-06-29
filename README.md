@@ -441,6 +441,12 @@ as part of the package.
 
 Issues and pull requests are welcome on [GitHub](https://github.com/M0n7y5/pipeasio). Run `clang-format` (the config is in-tree) before submitting, and keep changes x86_64 and C11.
 
+## Support
+
+If PipeASIO is useful to you, you can support its development on Ko-fi:
+
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/m0n7y5)
+
 ## Acknowledgements
 
 PipeASIO builds on [WineASIO](https://github.com/wineasio/wineasio) and the work of its authors: Robert Reif, Ralf Beck, Johnny Petrantoni, Stephane Letz, William Steidtmann, Peter L Jones, Torben Hohn, Nedko Arnaudov, Christian Schoenebeck, Joakim Hernberg, and Filipe Coelho.
