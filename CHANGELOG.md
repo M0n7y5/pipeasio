@@ -12,6 +12,9 @@ follow [Semantic Versioning](https://semver.org/).
   driver's ports are currently connected to - the live sink and source resolved
   from the PipeWire graph - so it is obvious which hardware the driver is
   feeding, especially when autoconnect or "follow default" picks the device.
+  Each row also reports the device's negotiated format (rate, channels, sample
+  format), its state, and the Bluetooth codec when applicable (e.g. aptX), and
+  sits below the live State row.
 
 ### Changed
 

@@ -215,17 +215,20 @@ test_find_own_node()
 static void
 test_resolve_connections()
 {
-    /* Our filter node (61, marked) plays to a sink (89) and captures from a
-     * source (53). Links reference node ids directly, so the fixture needs no
-     * Port objects. */
+    /* Our filter node (61, marked) plays to a sink (89, Bluetooth/aptX) and
+     * captures from a source (53). Links reference node ids directly; each peer
+     * carries state + negotiated Format so we can assert the enriched line. */
     const QByteArray json
             = "[\n"
-              "  {\"id\":89,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
-              "{\"media.class\":\"Audio/Sink\",\"node.name\":\"bluez_output.x\","
-              "\"node.description\":\"FiiO UTWS5\"}}},\n"
-              "  {\"id\":53,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
-              "{\"media.class\":\"Audio/Source\",\"node.name\":\"alsa_input.mic\","
-              "\"node.description\":\"USB Mic\"}}},\n"
+              "  {\"id\":89,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"state\":\"running\","
+              "\"props\":{\"media.class\":\"Audio/Sink\",\"node.name\":\"bluez_output.x\","
+              "\"node.description\":\"FiiO UTWS5\",\"api.bluez5.codec\":\"aptx\","
+              "\"device.api\":\"bluez5\"},"
+              "\"params\":{\"Format\":[{\"rate\":44100,\"channels\":2,\"format\":\"S24LE\"}]}}},\n"
+              "  {\"id\":53,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"state\":\"running\","
+              "\"props\":{\"media.class\":\"Audio/Source\",\"node.name\":\"alsa_input.mic\","
+              "\"node.description\":\"USB Mic\"},"
+              "\"params\":{\"Format\":[{\"rate\":48000,\"channels\":1,\"format\":\"S24LE\"}]}}},\n"
               "  {\"id\":61,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
               "{\"node.name\":\"FL64\",\"pipeasio.node\":1}}},\n"
               "  {\"id\":201,\"type\":\"PipeWire:Interface:Link\",\"info\":{\"props\":"
@@ -234,8 +237,14 @@ test_resolve_connections()
               "{\"link.output.node\":53,\"link.input.node\":61}}}\n"
               "]\n";
     const DeviceEnumerator::Connections c = DeviceEnumerator::resolveConnections(json);
-    CHECK(c.output == QStringLiteral("FiiO UTWS5"));
-    CHECK(c.input == QStringLiteral("USB Mic"));
+    CHECK(c.output.contains(QStringLiteral("FiiO UTWS5")));
+    CHECK(c.output.contains(QStringLiteral("aptX")));
+    CHECK(c.output.contains(QStringLiteral("44100 Hz")));
+    CHECK(c.output.contains(QStringLiteral("2 ch")));
+    CHECK(c.output.contains(QStringLiteral("running")));
+    CHECK(c.input.contains(QStringLiteral("USB Mic")));
+    CHECK(c.input.contains(QStringLiteral("48000 Hz")));
+    CHECK(c.input.contains(QStringLiteral("1 ch")));
 
     /* No pipeasio-marked node present -> both sides empty. */
     const QByteArray none = "[ {\"id\":89,\"type\":\"PipeWire:Interface:Node\",\"info\":"

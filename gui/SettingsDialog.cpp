@@ -200,16 +200,6 @@ SettingsDialog::buildMonitorTab()
         form->addRow(lbl, field);
     };
 
-    m_monOutput = new QLabel(QStringLiteral("—"), page);
-    addRow(QStringLiteral("Output device"), m_monOutput,
-           QStringLiteral("The sink (speakers/headphones) the driver's output ports are "
-                          "currently connected to."));
-
-    m_monInput = new QLabel(QStringLiteral("—"), page);
-    addRow(QStringLiteral("Input device"), m_monInput,
-           QStringLiteral("The source (microphone/loopback) currently feeding the driver's "
-                          "input ports."));
-
     m_monQuantum = new QLabel(QStringLiteral("waiting for audio..."), page);
     addRow(QStringLiteral("Buffer / quantum"), m_monQuantum,
            QStringLiteral("PipeWire processing block size (frames per cycle) the driver's "
@@ -233,6 +223,16 @@ SettingsDialog::buildMonitorTab()
     m_monState = new QLabel(QStringLiteral("waiting for audio..."), page);
     addRow(QStringLiteral("State"), m_monState,
            QStringLiteral("PipeWire node state: R running, I idle, S suspended, E error."));
+
+    m_monOutput = new QLabel(QStringLiteral("—"), page);
+    addRow(QStringLiteral("Output device"), m_monOutput,
+           QStringLiteral("The sink the driver's output ports currently feed, with its live "
+                          "format and state (and Bluetooth codec when applicable)."));
+
+    m_monInput = new QLabel(QStringLiteral("—"), page);
+    addRow(QStringLiteral("Input device"), m_monInput,
+           QStringLiteral("The source currently feeding the driver's input ports, with its "
+                          "live format and state (and Bluetooth codec when applicable)."));
 
     return page;
 }
