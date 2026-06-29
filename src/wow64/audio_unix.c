@@ -592,6 +592,10 @@ wow64_port_register(void *args)
         else if (p->flags & AUDIO_PORT_IS_OUTPUT)
             cc->out_port[p->channel] = port;
     }
+    /* Hand the PE side a token for this port so audio_port_name/type/
+     * latency_range (used by autoconnect) can resolve it; the RT path uses the
+     * cc->in_port/out_port arrays above, but the proxy needs a non-zero handle. */
+    p->port = tok_add(port);
     return STATUS_SUCCESS;
 }
 

@@ -52,6 +52,14 @@ follow [Semantic Versioning](https://semver.org/).
   stub, since that gather actually runs unix-side. `-DBUILD_WOW64_32=ON` builds
   again, with 32-bit load + streaming re-verified through `asio_probe32` and
   VB-Audio's VBASIOTest32.
+- 32-bit (WoW64) autoconnect linked nothing to hardware: `wow64_port_register`
+  never handed the PE side a token for the freshly registered port, so the
+  proxy returned a NULL handle and `audio_port_name()` came back empty - the
+  link factory then could not resolve our own ports (`node=4294967295`,
+  `pw_port_id=0`) even though the device ports resolved. The handler now assigns
+  the out-token (like `wow64_port_by_name` already did); our input/output ports
+  resolve and link to the selected source/sink. Streaming was unaffected (it
+  runs unix-side), so the regression only showed as silent autoconnect.
 
 ## [1.1.0] - 2026-06-25
 
