@@ -34,7 +34,7 @@ drivers.
 ![PipeASIO settings panel](docs/panel-settings.png)
 
 > [!NOTE]
-> PipeASIO is at **1.2.0**. It is verified with FL Studio under Proton-CachyOS and with the [VB-Audio ASIO Test](https://forum.vb-audio.com/viewtopic.php?p=4259#p4259) utility (64-bit). Other ASIO hosts such as Reaper and Ableton Live should work but are not yet confirmed. x86_64, with experimental opt-in 32-bit (WoW64) support. Bug reports are very welcome on the [issue tracker](https://github.com/M0n7y5/pipeasio/issues).
+> PipeASIO is at **1.2.0**. It is verified with FL Studio under Proton-CachyOS and with the [VB-Audio ASIO Test](https://forum.vb-audio.com/viewtopic.php?p=4259#p4259) utility (64-bit and 32-bit). Other ASIO hosts such as Reaper and Ableton Live should work but are not yet confirmed. x86_64, with experimental opt-in 32-bit (WoW64) support. Bug reports are very welcome on the [issue tracker](https://github.com/M0n7y5/pipeasio/issues).
 
 ## Support
 
@@ -186,8 +186,10 @@ is i386.
 
 > **Experimental, off by default.** The 64-bit driver is byte-for-byte
 > unaffected. The 32-bit path is validated end-to-end by the `asio_probe32`
-> host (full `Init -> CreateBuffers -> Start` COM + real-time round trip).
-> Bit-exact loopback validation on 32-bit is still pending.
+> host and by VB-Audio's VBASIOTest32 (a real i386 ASIO host): COM
+> `Init -> CreateBuffers -> Start`, real-time streaming, autoconnect to the
+> selected hardware, and live config reload all work. Bit-exact loopback
+> validation on 32-bit is still pending.
 
 It needs a MinGW cross-compiler on top of the normal build requirements:
 
