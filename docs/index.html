@@ -182,8 +182,8 @@
   .card p { margin: 0; font-size: 14.5px; color: var(--muted); }
 
   /* Screenshots */
-  .shots { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
-  .shots figure { margin: 0; }
+  .shots { display: flex; flex-wrap: wrap; justify-content: center; gap: 18px; }
+  .shots figure { margin: 0; flex: 1 1 320px; max-width: 457px; }
   .shot { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--bg-soft); transition: transform .15s ease, border-color .2s ease; }
   .shot:hover { transform: translateY(-3px); border-color: var(--accent); }
   .shot img { display: block; width: 100%; height: auto; }
@@ -381,7 +381,7 @@
           <div class="shot"><img src="panel-about.png" alt="PipeASIO About tab over FL Studio" loading="lazy"></div>
           <figcaption>About: version, project links, and Ko-fi support.</figcaption>
         </figure>
-        <figure style="grid-column: 1 / -1">
+        <figure style="flex-basis: 100%; max-width: 100%">
           <div class="shot"><img src="vbasiotest32.png" alt="PipeASIO running under VB-Audio VBASIOTest32, a 32-bit ASIO host, via WoW64" loading="lazy"></div>
           <figcaption>Experimental 32-bit support: PipeASIO driving a 32-bit ASIO host (VB-Audio VBASIOTest32) over Wine's WoW64 - same 64-bit PipeWire backend.</figcaption>
         </figure>
