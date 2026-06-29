@@ -275,7 +275,8 @@ SettingsDialog::buildAboutTab()
     links->setText(QStringLiteral(
             "<a href=\"https://m0n7y5.github.io/pipeasio/\">Website &amp; documentation</a><br>"
             "<a href=\"https://github.com/M0n7y5/pipeasio\">Source code on GitHub</a><br>"
-            "<a href=\"https://github.com/M0n7y5/pipeasio/issues\">Report an issue</a>"));
+            "<a href=\"https://github.com/M0n7y5/pipeasio/issues\">Report an issue</a><br>"
+            "<a href=\"https://ko-fi.com/m0n7y5\">Support development on Ko-fi</a>"));
     layout->addWidget(links);
 
     layout->addSpacing(10);

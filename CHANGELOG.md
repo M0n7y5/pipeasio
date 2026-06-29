@@ -18,8 +18,8 @@ follow [Semantic Versioning](https://semver.org/).
   format), its state, and the Bluetooth codec when applicable (e.g. aptX), and
   sits below the live State row.
 - New **About** tab in the settings panel with the version, a short description,
-  and links to the website and documentation, the GitHub repository, and the
-  issue tracker.
+  and links to the website and documentation, the GitHub repository, the issue
+  tracker, and a Ko-fi support link.
 
 ### Changed
 
