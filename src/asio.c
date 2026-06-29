@@ -541,13 +541,17 @@ config_watch_proc(LPVOID arg)
             reset = true;
         }
 
-        /* Follow-device mode: reset once per newly observed graph quantum.
-         * apply_pending_config derives host_current_buffersize from
-         * follower_quantum, so the new quantum applies on the rebuild. */
+        /* Follow-device mode: re-negotiate only when the observed graph quantum
+         * differs from the size we are already running.  Without the
+         * host_current_buffersize guard the first observation (and every later
+         * one) fires a reset even when already converged, thrashing the graph on
+         * reset-honoring hosts.  apply_pending_config derives
+         * host_current_buffersize from follower_quantum, so the new quantum
+         * still applies on the rebuild. */
         if (This->pipeasio_follow_device_clock && This->host_driver_state == Running)
         {
             LONG q = (LONG)audio_observed_quantum(This->audio_client);
-            if (q && q != last_reset_quantum)
+            if (q && q != This->host_current_buffersize && q != last_reset_quantum)
             {
                 atomic_store(&This->follower_quantum, q);
                 last_reset_quantum = q;
