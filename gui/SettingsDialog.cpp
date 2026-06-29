@@ -28,6 +28,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QFont>
 #include <QFormLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -61,6 +62,7 @@ SettingsDialog::SettingsDialog(QWidget *parent) : QDialog(parent)
     auto *tabs = new QTabWidget(this);
     tabs->addTab(buildSettingsTab(), QStringLiteral("Settings"));
     tabs->addTab(buildMonitorTab(), QStringLiteral("Monitor"));
+    tabs->addTab(buildAboutTab(), QStringLiteral("About"));
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel
                                                  | QDialogButtonBox::RestoreDefaults,
@@ -236,6 +238,63 @@ SettingsDialog::buildMonitorTab()
            QStringLiteral("The source currently feeding the driver's input ports, with its "
                           "live format and state (and Bluetooth codec when applicable)."));
 
+    return page;
+}
+
+QWidget *
+SettingsDialog::buildAboutTab()
+{
+    auto *page   = new QWidget(this);
+    auto *layout = new QVBoxLayout(page);
+    layout->setAlignment(Qt::AlignTop);
+
+    auto *title     = new QLabel(QStringLiteral("PipeASIO"), page);
+    QFont titleFont = title->font();
+    titleFont.setPointSizeF(titleFont.pointSizeF() * 1.7);
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    layout->addWidget(title);
+
+    auto *version = new QLabel(QStringLiteral("Version " PIPEASIO_VERSION), page);
+    version->setStyleSheet(QStringLiteral("color: gray;"));
+    layout->addWidget(version);
+
+    auto *desc = new QLabel(
+            QStringLiteral("A PipeWire-native ASIO driver for Wine and Proton. It gives "
+                           "Windows music software fast, low-latency audio on Linux, routed "
+                           "straight into PipeWire."),
+            page);
+    desc->setWordWrap(true);
+    layout->addWidget(desc);
+
+    layout->addSpacing(10);
+
+    auto *links = new QLabel(page);
+    links->setTextFormat(Qt::RichText);
+    links->setOpenExternalLinks(true);
+    links->setText(QStringLiteral(
+            "<a href=\"https://m0n7y5.github.io/pipeasio/\">Website &amp; documentation</a><br>"
+            "<a href=\"https://github.com/M0n7y5/pipeasio\">Source code on GitHub</a><br>"
+            "<a href=\"https://github.com/M0n7y5/pipeasio/issues\">Report an issue</a>"));
+    layout->addWidget(links);
+
+    layout->addSpacing(10);
+
+    auto *legal = new QLabel(
+            QStringLiteral("Copyright \u00a9 2026 PipeASIO contributors.<br>"
+                           "Licensed under the GNU General Public License v3.0 or later.<br>"
+                           "A fork of <a href=\"https://github.com/wineasio/wineasio\">"
+                           "WineASIO</a>."),
+            page);
+    legal->setTextFormat(Qt::RichText);
+    legal->setOpenExternalLinks(true);
+    legal->setWordWrap(true);
+    QFont legalFont = legal->font();
+    legalFont.setPointSizeF(legalFont.pointSizeF() * 0.9);
+    legal->setFont(legalFont);
+    layout->addWidget(legal);
+
+    layout->addStretch(1);
     return page;
 }
 

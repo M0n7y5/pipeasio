@@ -15,6 +15,9 @@ follow [Semantic Versioning](https://semver.org/).
   Each row also reports the device's negotiated format (rate, channels, sample
   format), its state, and the Bluetooth codec when applicable (e.g. aptX), and
   sits below the live State row.
+- New **About** tab in the settings panel with the version, a short description,
+  and links to the website and documentation, the GitHub repository, and the
+  issue tracker.
 
 ### Changed
 

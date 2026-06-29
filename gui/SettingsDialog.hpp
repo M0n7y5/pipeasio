@@ -45,6 +45,7 @@ class SettingsDialog : public QDialog
   private:
     QWidget *buildSettingsTab();
     QWidget *buildMonitorTab();
+    QWidget *buildAboutTab();
     void     applyConfig(const struct pipeasio_config &c);
     void     updateLatencyLabel();
     int      currentBufferSize() const;
