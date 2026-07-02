@@ -232,10 +232,9 @@ typedef struct IPipeASIOImpl
     LONG host_active_outputs;
     BOOL host_buffer_index;
     Callbacks *_Atomic host_callbacks;
-    /* Live-config watcher: polls config.ini, asks the host to reset on change */
-    HANDLE                 config_watch_thread;
-    HANDLE                 config_watch_stop;
-    DWORD                  config_watch_tid;
+    /* Live-config watcher: polls config.ini, asks the host to reset on change.
+     * Heap ctx shared with the watcher thread; see struct config_watch. */
+    struct config_watch   *config_watch;
     CRITICAL_SECTION       config_lock;      /* guards staged_cfg */
     struct pipeasio_config staged_cfg;       /* watcher -> apply handoff */
     _Atomic bool           config_pending;   /* staged_cfg has a fresh reload */
@@ -423,11 +422,40 @@ AddRef(LPPIPEASIO iface)
     return ref;
 }
 
+/* Live-config watcher context, heap-allocated and owned jointly by the
+ * driver object and the watcher thread (refs == 2 at spawn).  Decouples the
+ * watcher's lifetime from IPipeASIOImpl so a host that services the
+ * kAsioResetRequest notification synchronously on the watcher thread
+ * (Dispose/CreateBuffers/Release reentrancy) cannot leave the thread
+ * looping over freed memory or waiting on a successor's stop event. */
+struct config_watch
+{
+    IPipeASIOImpl *owner;      /* valid while not orphaned (see stop_config_watch) */
+    HANDLE         stop_event;
+    HANDLE         thread;     /* set by the spawner before it drops its ref */
+    DWORD          tid;
+    LONG           refs;       /* 2 at spawn: owner + thread; last unref frees */
+    LONG           orphaned;   /* nonzero: thread must not touch owner again */
+};
+
+static void
+config_watch_unref(struct config_watch *w)
+{
+    if (InterlockedDecrement(&w->refs))
+        return;
+    if (w->thread)
+        CloseHandle(w->thread);
+    if (w->stop_event)
+        CloseHandle(w->stop_event);
+    HeapFree(GetProcessHeap(), 0, w);
+}
+
 /* Poll config.ini and request host reset when it changes. */
 static DWORD WINAPI
 config_watch_proc(LPVOID arg)
 {
-    IPipeASIOImpl *This = (IPipeASIOImpl *)arg;
+    struct config_watch *w    = (struct config_watch *)arg;
+    IPipeASIOImpl       *This = w->owner;
     char           path[1024];
 #ifndef PIPEASIO_WOW64_PE
     struct stat st;
@@ -472,7 +500,7 @@ config_watch_proc(LPVOID arg)
 
     for (;;)
     {
-        DWORD waited = WaitForSingleObject(This->config_watch_stop, 1000);
+        DWORD waited = WaitForSingleObject(w->stop_event, 1000);
         if (waited == WAIT_OBJECT_0 || waited == WAIT_FAILED)
             break;
 
@@ -567,44 +595,49 @@ config_watch_proc(LPVOID arg)
             }
         }
 
-        if (reset && This->host_driver_state == Running && This->host_callbacks)
+        if (reset && This->host_driver_state == Running)
         {
-            TRACE("config watcher: requesting host reset\n");
-            if (This->host_callbacks->sendNotification(1, 3, 0, 0))
-                This->host_callbacks->sendNotification(3, 0, 0, 0);
+            Callbacks *cb = atomic_load_explicit(&This->host_callbacks, memory_order_relaxed);
+            if (cb)
+            {
+                TRACE("config watcher: requesting host reset\n");
+                AddRef((LPPIPEASIO)This);
+                if (cb->sendNotification(1, 3, 0, 0))
+                    cb->sendNotification(3, 0, 0, 0);
+                ULONG left = Release((LPPIPEASIO)This);
+                /* The host may have serviced the reset synchronously on this
+                 * thread (Dispose/CreateBuffers/Release).  If we were orphaned
+                 * or we just destroyed the object, stop touching This. */
+                if (left == 0 || InterlockedCompareExchange(&w->orphaned, 0, 0))
+                    break;
+            }
         }
     }
+    config_watch_unref(w);
     return 0;
 }
 
-/* Signal, join, and dispose the config watcher.  Idempotent: safe to call when
- * the watcher was never started or already stopped. */
+/* Signal, dispose, and (cross-thread) join the config watcher.  Idempotent:
+ * safe to call when the watcher was never started or already stopped. */
 static void
 stop_config_watch(IPipeASIOImpl *This)
 {
-    if (This->config_watch_thread && GetCurrentThreadId() == This->config_watch_tid)
+    struct config_watch *w = This->config_watch;
+    if (!w)
+        return;
+    This->config_watch = NULL;
+    SetEvent(w->stop_event);
+    if (GetCurrentThreadId() == w->tid)
     {
-        /* Reentrant teardown: a host serviced kAsioResetRequest synchronously on
-         * the watcher thread.  Joining ourselves would deadlock.  Signal stop and
-         * return; the watcher exits at its next loop check, and the COM-thread
-         * DisposeBuffers()/Release() path reaps the handles. */
-        if (This->config_watch_stop)
-            SetEvent(This->config_watch_stop);
+        /* Reentrant self-stop: the host serviced our reset notification
+         * synchronously.  Mark orphaned; the watcher breaks out when the
+         * notification returns and drops the thread's ref itself. */
+        InterlockedExchange(&w->orphaned, 1);
+        config_watch_unref(w); /* the owner's ref */
         return;
     }
-    if (This->config_watch_thread)
-    {
-        if (This->config_watch_stop)
-            SetEvent(This->config_watch_stop);
-        WaitForSingleObject(This->config_watch_thread, INFINITE);
-        CloseHandle(This->config_watch_thread);
-        This->config_watch_thread = NULL;
-    }
-    if (This->config_watch_stop)
-    {
-        CloseHandle(This->config_watch_stop);
-        This->config_watch_stop = NULL;
-    }
+    WaitForSingleObject(w->thread, INFINITE);
+    config_watch_unref(w);
 }
 
 /* Implies Stop() and DisposeBuffers(). */
@@ -1403,23 +1436,32 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
     This->host_driver_state = Prepared;
 
     /* Watch config.ini for panel edits and reset on change (live reload).
-     * Reap any prior watcher (e.g. left by a reentrant self-stop) before
-     * starting a fresh one; no-op on the normal path. */
+     * Reap any prior watcher before starting a fresh one; no-op on the
+     * normal path. */
     stop_config_watch(This);
-    This->config_watch_stop = CreateEvent(NULL, TRUE, FALSE, NULL);
-    if (This->config_watch_stop)
     {
-        This->config_watch_thread
-                = CreateThread(NULL, 0, config_watch_proc, This, 0, &This->config_watch_tid);
-        if (!This->config_watch_thread)
+        struct config_watch *w
+                = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(struct config_watch));
+        if (w)
         {
-            CloseHandle(This->config_watch_stop);
-            This->config_watch_stop = NULL;
-            WARN("config watcher: CreateThread failed, live reload disabled\n");
+            w->owner      = This;
+            w->refs       = 2;
+            w->stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
+            if (w->stop_event)
+                w->thread = CreateThread(NULL, 0, config_watch_proc, w, 0, &w->tid);
+            if (w->thread)
+                This->config_watch = w;
+            else
+            {
+                if (w->stop_event)
+                    CloseHandle(w->stop_event);
+                HeapFree(GetProcessHeap(), 0, w);
+                WARN("config watcher: start failed, live reload disabled\n");
+            }
         }
+        else
+            WARN("config watcher: alloc failed, live reload disabled\n");
     }
-    else
-        WARN("config watcher: CreateEvent failed, live reload disabled\n");
     return 0;
 }
 
@@ -1800,8 +1842,7 @@ configure_driver(IPipeASIOImpl *This)
     This->callback_audio_buffer = NULL;
     This->input_channel         = NULL;
     This->output_channel        = NULL;
-    This->config_watch_thread   = NULL;
-    This->config_watch_stop     = NULL;
+    This->config_watch          = NULL;
 
     /* Client (PipeWire node) name: the INI may pin one, otherwise derive it
      * from the host application's executable name. */
