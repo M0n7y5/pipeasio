@@ -57,6 +57,8 @@ static pid_t this_tid(void) { return (pid_t)syscall(SYS_gettid); }
 /* ---- spa_thread_utils that records every tid it spawns ---------------- */
 
 static atomic_int g_create_calls;
+static atomic_int g_acquire_calls;
+static atomic_int g_acquire_prio;
 static pid_t      g_spawned[8];
 static atomic_int g_n_spawned;
 static pthread_t  g_handles[8];
@@ -101,7 +103,12 @@ static int rt_join(void *data, struct spa_thread *thread, void **retval)
 static int rt_range(void *d, const struct spa_dict *p, int *mn, int *mx)
 { (void)d; (void)p; *mn = 0; *mx = 0; return 0; }
 static int rt_acq(void *d, struct spa_thread *t, int prio)
-{ (void)d; (void)t; (void)prio; return 0; }
+{
+    (void)d; (void)t;
+    atomic_fetch_add(&g_acquire_calls, 1);
+    atomic_store(&g_acquire_prio, prio);
+    return 0;
+}
 static int rt_drop(void *d, struct spa_thread *t) { (void)d; (void)t; return 0; }
 
 static const struct spa_thread_utils_methods rt_methods = {
@@ -212,9 +219,11 @@ int main(int argc, char **argv)
     struct spa_thread_utils iface;
     iface.iface = SPA_INTERFACE_INIT(SPA_TYPE_INTERFACE_ThreadUtils,
                                      SPA_VERSION_THREAD_UTILS, &rt_methods, NULL);
+    /* Stop (and join) the auto-started loop thread through the utils that
+     * created it BEFORE installing ours - the order src/audio.c uses. */
+    if (dance) pw_data_loop_stop(dl);
     pw_context_set_object(ctx, SPA_TYPE_INTERFACE_ThreadUtils, &iface);
     pw_data_loop_set_thread_utils(dl, &iface);
-    if (dance) pw_data_loop_stop(dl);
 
     pw_thread_loop_start(tl);
     pw_thread_loop_lock(tl);
@@ -283,9 +292,14 @@ int main(int argc, char **argv)
     int quantum_ok = e.obs_duration == BSIZE;
     uint32_t node_id = pw_filter_get_node_id(filter);
     int bound      = node_id != SPA_ID_INVALID;
+    /* Tripwire: PipeWire must route acquire_rt through the loop's
+     * thread-utils, or the driver's RT-priority mapping silently dies. */
+    int acq_ok     = !dance || atomic_load(&g_acquire_calls) > 0;
 
     fprintf(stderr, "\n[pw_probe] ==== report ====\n");
     fprintf(stderr, "[pw_probe] thread_utils.create() fired : %d\n", atomic_load(&g_create_calls));
+    fprintf(stderr, "[pw_probe] thread_utils.acquire_rt()   : %d call(s), last prio %d\n",
+            atomic_load(&g_acquire_calls), atomic_load(&g_acquire_prio));
     fprintf(stderr, "[pw_probe] process() cycles            : %d\n", cycles);
     fprintf(stderr, "[pw_probe] process() on bridged thread : %s\n",
             on_bridged ? "YES" : "NO (COM bufferSwitch would corrupt under Wine)");
@@ -308,7 +322,7 @@ int main(int argc, char **argv)
     pw_context_destroy(ctx);
     pw_thread_loop_destroy(tl);
 
-    int pass = cycles > 0 && on_bridged && quantum_ok && bound;
+    int pass = cycles > 0 && on_bridged && quantum_ok && bound && acq_ok;
     fprintf(stderr, "[pw_probe] RESULT: %s\n", pass ? "PASS" : "FAIL");
     return pass ? 0 : 1;
 }

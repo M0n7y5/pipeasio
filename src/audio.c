@@ -457,15 +457,18 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
     /* Native build: create the PipeWire RT thread through CreateThread so it
      * has a Wine TEB before it calls back into the ASIO host. */
     c->data_loop = pw_context_get_data_loop(c->ctx);
+
+    /* The context's acquire started the data loop with default pthread utils.
+     * Stop (and join) it through those SAME utils before installing the Wine
+     * bridge; joining through the bridge would see win_handle == NULL and leak
+     * the original thread.  audio_activate restarts the loop through the
+     * bridge, so the RT thread is CreateThread'd and has a Wine TEB. */
+    pw_data_loop_stop(c->data_loop);
 #ifndef PIPEASIO_AUDIO_UNIXLIB
     c->rt_iface.iface = SPA_INTERFACE_INIT(SPA_TYPE_INTERFACE_ThreadUtils, SPA_VERSION_THREAD_UTILS,
                                            &audio_rt_methods, &c->rt);
     pw_data_loop_set_thread_utils(c->data_loop, &c->rt_iface);
 #endif
-
-    /* The data loop already started with default thread utils.  Restart it so
-     * the next RT thread uses audio_rt_create. */
-    pw_data_loop_stop(c->data_loop);
 
     if (pw_thread_loop_start(c->loop) < 0)
     {
