@@ -50,6 +50,8 @@ extern HRESULT WINAPI PipeASIOCreateInstance(REFIID riid, LPVOID *ppobj);
 static HRESULT WINAPI
 CF_QueryInterface(LPCLASSFACTORY iface, REFIID riid, LPVOID *ppobj)
 {
+    (void)iface;
+    (void)riid;
     if (ppobj == NULL)
         return E_POINTER;
     return E_NOINTERFACE;
@@ -75,6 +77,8 @@ CF_Release(LPCLASSFACTORY iface)
 static HRESULT WINAPI
 CF_CreateInstance(LPCLASSFACTORY iface, LPUNKNOWN pOuter, REFIID riid, LPVOID *ppobj)
 {
+    (void)iface;
+    (void)riid;
     if (pOuter)
         return CLASS_E_NOAGGREGATION;
 
@@ -90,6 +94,8 @@ CF_CreateInstance(LPCLASSFACTORY iface, LPUNKNOWN pOuter, REFIID riid, LPVOID *p
 static HRESULT WINAPI
 CF_LockServer(LPCLASSFACTORY iface, BOOL dolock)
 {
+    (void)iface;
+    (void)dolock;
     return S_OK;
 }
 
@@ -152,6 +158,8 @@ DllCanUnloadNow(void)
 BOOL WINAPI
 DllMain(HINSTANCE hInstDLL, DWORD fdwReason, LPVOID lpvReserved)
 {
+    (void)hInstDLL;
+    (void)lpvReserved;
     switch (fdwReason)
     {
     case DLL_PROCESS_ATTACH:

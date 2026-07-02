@@ -487,7 +487,7 @@ static struct regsvr_coclass const coclass_list[] = {
 #else
       "pipeasio32.dll",
 #endif
-      "Apartment" },
+      "Apartment", NULL, NULL, NULL },
     { NULL } /* list terminator */
 };
 

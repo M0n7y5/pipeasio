@@ -109,6 +109,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(asio);
 
 #define THISCALL(func) __thiscall_##func
 #define THISCALL_NAME(func) __ASM_NAME("__thiscall_" #func)
+#undef __thiscall /* MinGW predefines it as the real attribute */
 #define __thiscall __stdcall
 #define DEFINE_THISCALL_WRAPPER(func, args)                                                        \
     extern void THISCALL(func)(void);                                                              \
@@ -121,13 +122,19 @@ WINE_DEFAULT_DEBUG_CHANNEL(asio);
 
 #define THISCALL(func) func
 #define THISCALL_NAME(func) __ASM_NAME(#func)
+#undef __thiscall
 #define __thiscall __stdcall
 #define DEFINE_THISCALL_WRAPPER(func, args) /* nothing */
 
 #endif /* __i386__ */
 
-/* Hide ELF symbols for COM members. */
+/* Hide ELF symbols for COM members (no-op in the PE build: PE has no ELF
+ * symbol visibility). */
+#ifdef PIPEASIO_WOW64_PE
+#define HIDDEN
+#else
 #define HIDDEN __attribute__((visibility("hidden")))
+#endif
 
 #ifdef _WIN64
 #define PIPEASIO_CALLBACK CALLBACK
@@ -430,12 +437,12 @@ AddRef(LPPIPEASIO iface)
  * looping over freed memory or waiting on a successor's stop event. */
 struct config_watch
 {
-    IPipeASIOImpl *owner;      /* valid while not orphaned (see stop_config_watch) */
+    IPipeASIOImpl *owner; /* valid while not orphaned (see stop_config_watch) */
     HANDLE         stop_event;
-    HANDLE         thread;     /* set by the spawner before it drops its ref */
+    HANDLE         thread; /* set by the spawner before it drops its ref */
     DWORD          tid;
-    LONG           refs;       /* 2 at spawn: owner + thread; last unref frees */
-    LONG           orphaned;   /* nonzero: thread must not touch owner again */
+    LONG           refs;     /* 2 at spawn: owner + thread; last unref frees */
+    LONG           orphaned; /* nonzero: thread must not touch owner again */
 };
 
 static void
@@ -456,7 +463,7 @@ config_watch_proc(LPVOID arg)
 {
     struct config_watch *w    = (struct config_watch *)arg;
     IPipeASIOImpl       *This = w->owner;
-    char           path[1024];
+    char                 path[1024];
 #ifndef PIPEASIO_WOW64_PE
     struct stat st;
     time_t      last_sec  = 0;
@@ -1355,8 +1362,8 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
         }
     }
     TRACE("%d audio channels initialized (active_in=%d active_out=%d)\n",
-          (int)(This->host_active_inputs + This->host_active_outputs), This->host_active_inputs,
-          This->host_active_outputs);
+          (int)(This->host_active_inputs + This->host_active_outputs),
+          (int)This->host_active_inputs, (int)This->host_active_outputs);
 
 #ifdef PIPEASIO_WOW64_PE
     /* Hand the shared callback buffer + channel activity to the unix RT loop;
@@ -1623,6 +1630,7 @@ DEFINE_THISCALL_WRAPPER(OutputReady, 4)
 HIDDEN LONG STDMETHODCALLTYPE
 OutputReady(LPPIPEASIO iface)
 {
+    (void)iface;
     return -1000;
 }
 
@@ -1633,6 +1641,7 @@ OutputReady(LPPIPEASIO iface)
 static inline int
 buffer_size_callback(audio_nframes_t nframes, void *arg)
 {
+    (void)nframes;
     IPipeASIOImpl *This = (IPipeASIOImpl *)arg;
 
     if (This->host_driver_state != Running)
@@ -1646,6 +1655,7 @@ buffer_size_callback(audio_nframes_t nframes, void *arg)
 static inline void
 latency_callback(audio_latency_mode_t mode, void *arg)
 {
+    (void)mode;
     IPipeASIOImpl *This = (IPipeASIOImpl *)arg;
 
     if (This->host_driver_state != Running)
@@ -1669,8 +1679,8 @@ pipeasio_host_buffer_switch(void *This, int32_t buffer_index, audio_nframes_t ad
     /* Native 64-bit counters, split into the ASIO hi/lo wire format only at
      * the edges.  Single RT writer; relaxed atomics keep GetSamplePosition's
      * COM-thread reads untorn. */
-    uint64_t samples = atomic_load_explicit(&impl->host_num_samples, memory_order_relaxed)
-                       + add_samples;
+    uint64_t samples
+            = atomic_load_explicit(&impl->host_num_samples, memory_order_relaxed) + add_samples;
     atomic_store_explicit(&impl->host_num_samples, samples, memory_order_relaxed);
     atomic_store_explicit(&impl->host_time_stamp, time_nsec, memory_order_relaxed);
 
@@ -1710,7 +1720,7 @@ process_callback(audio_nframes_t nframes, void *arg)
     {
         for (i = 0; i < This->host_active_outputs; i++)
         {
-            audio_sample_t *dst = audio_port_get_buffer(This->output_channel[i].port, nframes);
+            audio_sample_t *dst   = audio_port_get_buffer(This->output_channel[i].port, nframes);
             audio_nframes_t avail = audio_port_buffer_avail_frames(This->output_channel[i].port);
             audio_nframes_t n     = (dst && avail < nframes) ? avail : (dst ? nframes : 0);
             if (n)
@@ -1741,7 +1751,7 @@ process_callback(audio_nframes_t nframes, void *arg)
     for (i = 0; i < This->pipeasio_number_outputs; i++)
         if (This->output_channel[i].active)
         {
-            audio_sample_t *dst = audio_port_get_buffer(This->output_channel[i].port, nframes);
+            audio_sample_t *dst   = audio_port_get_buffer(This->output_channel[i].port, nframes);
             audio_nframes_t avail = audio_port_buffer_avail_frames(This->output_channel[i].port);
             audio_nframes_t n     = (dst && avail < nframes) ? avail : (dst ? nframes : 0);
             if (n)
@@ -1954,6 +1964,7 @@ HRESULT WINAPI
 PipeASIOCreateInstance(REFIID riid, LPVOID *ppobj)
 {
     IPipeASIOImpl *pobj;
+    (void)riid; /* ASIO convention: hosts query by CLSID via CoCreateInstance */
 
     /* Host-facing doubles must start at zero, not indeterminate bytes. */
     pobj = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*pobj));

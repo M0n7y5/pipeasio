@@ -219,8 +219,8 @@ audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
     {
         /* RLIMIT_RTPRIO may cap us below the default; retry at the cap. */
         struct rlimit rl;
-        if (getrlimit(RLIMIT_RTPRIO, &rl) == 0 && rl.rlim_cur > 0
-            && rl.rlim_cur != RLIM_INFINITY && rl.rlim_cur < (rlim_t)priority)
+        if (getrlimit(RLIMIT_RTPRIO, &rl) == 0 && rl.rlim_cur > 0 && rl.rlim_cur != RLIM_INFINITY
+            && rl.rlim_cur < (rlim_t)priority)
         {
             priority = (int)rl.rlim_cur;
             err      = pthread_setschedparam(s->ptid, SCHED_FIFO,
