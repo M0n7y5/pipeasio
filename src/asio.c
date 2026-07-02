@@ -1669,8 +1669,10 @@ process_callback(audio_nframes_t nframes, void *arg)
         for (i = 0; i < This->host_active_outputs; i++)
         {
             audio_sample_t *dst = audio_port_get_buffer(This->output_channel[i].port, nframes);
-            if (dst)
-                memset(dst, 0, sizeof(audio_sample_t) * nframes);
+            audio_nframes_t avail = audio_port_buffer_avail_frames(This->output_channel[i].port);
+            audio_nframes_t n     = (dst && avail < nframes) ? avail : (dst ? nframes : 0);
+            if (n)
+                memset(dst, 0, sizeof(audio_sample_t) * n);
         }
         return 0;
     }
@@ -1698,10 +1700,12 @@ process_callback(audio_nframes_t nframes, void *arg)
         if (This->output_channel[i].active)
         {
             audio_sample_t *dst = audio_port_get_buffer(This->output_channel[i].port, nframes);
-            if (dst)
+            audio_nframes_t avail = audio_port_buffer_avail_frames(This->output_channel[i].port);
+            audio_nframes_t n     = (dst && avail < nframes) ? avail : (dst ? nframes : 0);
+            if (n)
                 memcpy(dst,
                        &This->output_channel[i].audio_buffer[nframes * This->host_buffer_index],
-                       sizeof(audio_sample_t) * nframes);
+                       sizeof(audio_sample_t) * n);
         }
 
     This->host_buffer_index = This->host_buffer_index ? 0 : 1;

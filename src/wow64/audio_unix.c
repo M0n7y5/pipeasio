@@ -293,9 +293,11 @@ wow64_rt_process(audio_nframes_t nframes, void *arg)
         for (uint32_t i = 0; i < cc->n_out; i++)
             if (cc->out_active[i] && cc->out_port[i])
             {
-                audio_sample_t *dst = audio_port_get_buffer(cc->out_port[i], nframes);
-                if (dst)
-                    memset(dst, 0, sizeof(audio_sample_t) * nframes);
+                audio_sample_t *dst   = audio_port_get_buffer(cc->out_port[i], nframes);
+                audio_nframes_t avail = audio_port_buffer_avail_frames(cc->out_port[i]);
+                audio_nframes_t n     = (dst && avail < nframes) ? avail : (dst ? nframes : 0);
+                if (n)
+                    memset(dst, 0, sizeof(audio_sample_t) * n);
             }
         return 0;
     }
@@ -329,17 +331,21 @@ wow64_rt_process(audio_nframes_t nframes, void *arg)
             audio_sample_t *dst = audio_port_get_buffer(cc->out_port[i], nframes);
             if (!dst)
                 continue;
+            audio_nframes_t avail = audio_port_buffer_avail_frames(cc->out_port[i]);
+            audio_nframes_t n     = avail < nframes ? avail : nframes;
+            if (!n)
+                continue;
             if (produced)
             {
                 audio_sample_t *src
                         = cc->buffer_base
                           + pipeasio_host_output_offset_samples(i, cc->n_in, cc->buffer_size)
                           + pipeasio_host_half_offset_samples(half, cc->buffer_size);
-                memcpy(dst, src, sizeof(audio_sample_t) * nframes);
+                memcpy(dst, src, sizeof(audio_sample_t) * n);
             }
             else
             {
-                memset(dst, 0, sizeof(audio_sample_t) * nframes);
+                memset(dst, 0, sizeof(audio_sample_t) * n);
             }
         }
 
