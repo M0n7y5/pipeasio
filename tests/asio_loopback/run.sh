@@ -45,6 +45,8 @@ for tool in pw-cli pw-link wine; do
     command -v "$tool" >/dev/null || { echo "[loop] SKIP: $tool not found"; exit 77; }
 done
 pw-cli info 0 >/dev/null 2>&1 || { echo "[loop] SKIP: no PipeWire daemon"; exit 77; }
+[[ -f "${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio.dll.so" ]] \
+    || { echo "[loop] SKIP: driver not installed under $PIPEASIO_ROOT (cmake --install)"; exit 77; }
 
 if [[ -n "${FRESH:-}" ]]; then
     echo "[loop] wiping prefix $PROBE_PREFIX"

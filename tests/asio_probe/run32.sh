@@ -49,10 +49,12 @@ if ! wine reg query \
         || { echo "[run32] pipeasio-register failed"; exit 1; }
 fi
 
-# Keep the probe isolated from hardware by default.
+# Hermetic config: shield the run from the user's ~/.config/pipeasio/config.ini
+# and keep ports isolated (the driver reads INI + env, never the registry).
+export XDG_CONFIG_HOME="$PROBE_PREFIX/xdg"
 if [[ "${PROBE_AUTOCONNECT:-0}" != "1" ]]; then
-    wine reg add 'HKCU\Software\Wine\PipeASIO' /v 'Connect to hardware' \
-        /t REG_DWORD /d 0 /f >/dev/null 2>&1 || true
+    export PIPEASIO_CONNECT_TO_HARDWARE=off
+    echo "[run32] autoconnect disabled (set PROBE_AUTOCONNECT=1 to re-enable)"
 fi
 
 echo "[run32] prefix:    $WINEPREFIX"

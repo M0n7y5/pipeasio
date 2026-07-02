@@ -27,3 +27,13 @@ configure_file(
     "${CMAKE_CURRENT_BINARY_DIR}/run.sh"
     @ONLY
 )
+
+# Integration test: digital loopback analyzer (bit-exactness, continuity,
+# channel mapping, RTL) under Wine against a live PipeWire.  run.sh exits 77
+# (CTest SKIP) without wine/pw-cli/pw-link/a daemon/an installed driver.
+add_test(NAME asio_loopback COMMAND "${CMAKE_CURRENT_BINARY_DIR}/run.sh")
+set_tests_properties(asio_loopback PROPERTIES
+    SKIP_RETURN_CODE 77
+    TIMEOUT 300
+    RESOURCE_LOCK wineprefix
+    LABELS "integration;wine;pipewire")

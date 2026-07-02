@@ -46,12 +46,14 @@ if [[ "$mode" != "last" ]]; then
         echo "[gdb] creating wineprefix at $PROBE_PREFIX"
         wineboot --init >/dev/null 2>&1
     fi
-    if ! wine reg query 'HKCU\Software\ASIO\PipeASIO' >/dev/null 2>&1; then
+    if ! wine reg query 'HKLM\Software\ASIO\PipeASIO' >/dev/null 2>&1; then
         "${PIPEASIO_ROOT}/bin/pipeasio-register" \
             || { echo "[gdb] pipeasio-register failed"; exit 1; }
     fi
-    wine reg add 'HKCU\Software\Wine\PipeASIO' /v 'Connect to hardware' \
-         /t REG_DWORD /d 0 /f >/dev/null 2>&1 || true
+    # Hermetic config: shield the run from the user's config.ini and keep
+    # ports isolated (the driver reads INI + env, never the registry).
+    export XDG_CONFIG_HOME="$PROBE_PREFIX/xdg"
+    export PIPEASIO_CONNECT_TO_HARDWARE=off
 
     echo "[gdb] running probe (${seconds}s, expect it to crash)..."
     wine "$probe" "$seconds" 2>/tmp/probe.err >/dev/null || true

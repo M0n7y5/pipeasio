@@ -215,14 +215,14 @@ int main(void)
     pw_thread_loop_unlock(tl);
 
     /* Resolve our two node ids, then find their ports in the registry. */
-    uint32_t prod_node = 0, cons_node = 0, prod_out = 0, cons_in = 0;
+    uint32_t prod_node = SPA_ID_INVALID, cons_node = SPA_ID_INVALID, prod_out = 0, cons_in = 0;
     for (int i = 0; i < 100; i++) {
         usleep(20 * 1000);
         pw_thread_loop_lock(tl);
-        if (!prod_node) prod_node = pw_filter_get_node_id(pr.filter);
-        if (!cons_node) cons_node = pw_filter_get_node_id(co.filter);
-        if (prod_node) prod_out = reg_find(&reg, prod_node, 1);
-        if (cons_node) cons_in  = reg_find(&reg, cons_node, 0);
+        if (prod_node == SPA_ID_INVALID) prod_node = pw_filter_get_node_id(pr.filter);
+        if (cons_node == SPA_ID_INVALID) cons_node = pw_filter_get_node_id(co.filter);
+        if (prod_node != SPA_ID_INVALID) prod_out = reg_find(&reg, prod_node, 1);
+        if (cons_node != SPA_ID_INVALID) cons_in  = reg_find(&reg, cons_node, 0);
         int have = prod_out && cons_in;
         pw_thread_loop_unlock(tl);
         if (have) break;

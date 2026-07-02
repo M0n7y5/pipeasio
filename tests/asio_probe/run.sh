@@ -27,6 +27,14 @@ seconds="${1:-5}"
 : "${PIPEWIRE_DEBUG:=2}"
 : "${WINEDEBUG:=-all,+pipeasio,err+all}"
 
+# --- preconditions (77 = CTest SKIP) -----------------------------------------
+for tool in wine pw-cli; do
+    command -v "$tool" >/dev/null || { echo "[run] SKIP: $tool not found"; exit 77; }
+done
+pw-cli info 0 >/dev/null 2>&1 || { echo "[run] SKIP: no PipeWire daemon"; exit 77; }
+[[ -f "${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio.dll.so" ]] \
+    || { echo "[run] SKIP: driver not installed under $PIPEASIO_ROOT (cmake --install)"; exit 77; }
+
 if [[ -n "${FRESH:-}" ]]; then
     echo "[run] wiping prefix $PROBE_PREFIX"
     rm -rf -- "$PROBE_PREFIX"
@@ -69,23 +77,18 @@ if [[ ! -d "$PROBE_PREFIX/drive_c" ]]; then
 fi
 
 # Register PipeASIO if not already.
-if ! wine reg query 'HKCU\Software\ASIO\PipeASIO' >/dev/null 2>&1; then
+if ! wine reg query 'HKLM\Software\ASIO\PipeASIO' >/dev/null 2>&1; then
     echo "[run] registering PipeASIO in $PROBE_PREFIX"
     "${PIPEASIO_ROOT}/bin/pipeasio-register" \
         || { echo "[run] pipeasio-register failed"; exit 1; }
 fi
 
-# Suppress audible feedback during testing: setting "Connect to hardware" to 0
-# tells PipeASIO not to autoconnect inputs/outputs to default source/sink, so
-# the probe loads with isolated ports.  qpwgraph can still be used to wire
-# things up manually if needed.  Override with PROBE_AUTOCONNECT=1.
+# Hermetic config: shield the run from the user's ~/.config/pipeasio/config.ini
+# and keep ports isolated (no audible feedback).  PROBE_AUTOCONNECT=1 re-enables.
+export XDG_CONFIG_HOME="$PROBE_PREFIX/xdg"
 if [[ "${PROBE_AUTOCONNECT:-0}" != "1" ]]; then
-    if wine reg add 'HKCU\Software\Wine\PipeASIO' /v 'Connect to hardware' \
-           /t REG_DWORD /d 0 /f 2>&1 | grep -q "completed successfully"; then
-        echo "[run] autoconnect disabled (set PROBE_AUTOCONNECT=1 to re-enable)"
-    else
-        echo "[run] WARNING: failed to disable autoconnect"
-    fi
+    export PIPEASIO_CONNECT_TO_HARDWARE=off
+    echo "[run] autoconnect disabled (set PROBE_AUTOCONNECT=1 to re-enable)"
 fi
 
 echo "[run] prefix:    $WINEPREFIX"

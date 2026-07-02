@@ -32,6 +32,16 @@ configure_file(
     @ONLY
 )
 
+# Integration test: full COM/bufferSwitch path under Wine against a live
+# PipeWire.  run.sh exits 77 (CTest SKIP) without wine/pw-cli/a daemon/an
+# installed driver.
+add_test(NAME asio_probe COMMAND "${CMAKE_CURRENT_BINARY_DIR}/run.sh")
+set_tests_properties(asio_probe PROPERTIES
+    SKIP_RETURN_CODE 77
+    TIMEOUT 300
+    RESOURCE_LOCK wineprefix
+    LABELS "integration;wine;pipewire")
+
 # Optional i386 PE probe for WoW64.
 if(BUILD_WOW64_32)
     find_program(I686_W64_MINGW_GCC i686-w64-mingw32-gcc)
