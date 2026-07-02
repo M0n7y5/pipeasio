@@ -6,6 +6,51 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-07-02
+
+### Changed
+
+- The Wine integration probes (`asio_probe`, the PipeWire delivery/filter
+  probes) now run under CTest alongside the Linux-native unit tests, so
+  `ctest --test-dir build` drives the whole suite - including the run that
+  gates every tagged release.
+
+### Fixed
+
+- The real-time audio thread ran at normal scheduling priority (`SCHED_OTHER`)
+  on stock installs, causing xruns under any CPU load. PipeWire's data loop
+  requests the "configured default" RT priority, which the thread-utils bridge
+  treated as a no-op - and since that bridge bypasses module-rt/RTKit, nothing
+  else promoted the thread either. The default request now maps to a real
+  `SCHED_FIFO` priority (77, below the PipeWire daemon's data loop at 88), and
+  on `EPERM` retries clamped to `RLIMIT_RTPRIO`. The thread driving the whole
+  ASIO `bufferSwitch` chain now actually runs FIFO.
+- Every `audio_open` leaked one zombie thread and its stack: the context's
+  initial data loop was stopped through the Wine thread-utils bridge installed
+  *after* the loop had started, so the original pthread was never joined. The
+  loop is now stopped and joined through the utils that created it before the
+  bridge is installed.
+- Use-after-free when an ASIO host services `kAsioResetRequest` synchronously
+  on the config-watcher thread and releases the driver from inside the
+  notification: the watcher's state now lives in a refcounted heap context
+  owned jointly by the driver and the thread, the only call-out is wrapped in
+  `AddRef`/`Release`, and a same-thread stop orphans the context instead of
+  waiting on itself. A synchronous `DisposeBuffers`/`CreateBuffers` reset no
+  longer leaves two watchers racing the staged config or leaks the old
+  thread's handles.
+- The real-time output copy (and the silence paths) wrote a full host period
+  into the PipeWire buffer with no capacity check, overrunning the mapping
+  every cycle when the graph clamps the quantum below the host buffer size
+  (`clock.quantum-limit`). Output and silence writes are now clamped to the
+  dequeued buffer's capacity, mirroring the existing input-side clamp, in both
+  the 64-bit and WoW64 paths.
+- The 64-bit sample position wrapped every ~25 hours at 48 kHz again: on the
+  wine64 ELF build `ULONG` is 32-bit but `ULONG_MAX` is 2^64-1, so the hi-word
+  carry in the buffer-switch path never fired. The counters are now stored as
+  atomic 64-bit values and split into the ASIO hi/lo wire format only at the
+  edges, which also fixes a torn read of the position that raced the real-time
+  writer.
+
 ## [1.2.0] - 2026-06-29
 
 ### Added
@@ -205,7 +250,8 @@ the driver loads inside the Steam Runtime container that Proton uses.
 - Hardened channel-count limits from both the INI and the environment overrides,
   and tightened COM teardown and several NULL and error paths.
 
-[Unreleased]: https://github.com/M0n7y5/pipeasio/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/M0n7y5/pipeasio/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.2.1
 [1.2.0]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.2.0
 [1.1.0]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.1.0
 [1.0.0]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.0.0
