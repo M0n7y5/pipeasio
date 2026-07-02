@@ -242,11 +242,11 @@ typedef struct IPipeASIOImpl
     _Atomic LONG           follower_quantum; /* last observed device quantum */
     LONG                   host_current_buffersize;
     _Atomic INT            host_driver_state;
-    w_int64_t              host_num_samples;
+    _Atomic uint64_t       host_num_samples;
     double                 host_sample_rate;
     TimeInformation        host_time;
     BOOL                   host_time_info_mode;
-    w_int64_t              host_time_stamp;
+    _Atomic uint64_t       host_time_stamp;
     LONG                   host_version;
 
     /* PipeASIO configuration options */
@@ -838,8 +838,9 @@ Start(LPPIPEASIO iface)
         This->callback_audio_buffer[i] = 0;
 
     /* prime the callback by preprocessing one outbound host bufffer */
-    This->host_buffer_index   = 0;
-    This->host_num_samples.hi = This->host_num_samples.lo = 0;
+    This->host_buffer_index = 0;
+    atomic_store_explicit(&This->host_num_samples, 0, memory_order_relaxed);
+    atomic_store_explicit(&This->host_time_stamp, 0, memory_order_relaxed);
 
     /* systemTime from the PipeWire graph clock - 0 until the first process
      * cycle runs, which is fine for the one-shot prime. */
@@ -1060,10 +1061,13 @@ GetSamplePosition(LPPIPEASIO iface, w_int64_t *sPos, w_int64_t *tStamp)
     if (!sPos || !tStamp)
         return -998;
 
-    tStamp->lo = This->host_time_stamp.lo;
-    tStamp->hi = This->host_time_stamp.hi;
-    sPos->lo   = This->host_num_samples.lo;
-    sPos->hi   = This->host_num_samples.hi;
+    uint64_t stamp   = atomic_load_explicit(&This->host_time_stamp, memory_order_relaxed);
+    uint64_t samples = atomic_load_explicit(&This->host_num_samples, memory_order_relaxed);
+
+    tStamp->lo = (ULONG)(stamp & 0xFFFFFFFFu);
+    tStamp->hi = (ULONG)(stamp >> 32);
+    sPos->lo   = (ULONG)(samples & 0xFFFFFFFFu);
+    sPos->hi   = (ULONG)(samples >> 32);
 
     return 0;
 }
@@ -1620,20 +1624,21 @@ pipeasio_host_buffer_switch(void *This, int32_t buffer_index, audio_nframes_t ad
     IPipeASIOImpl *impl = (IPipeASIOImpl *)This;
     Callbacks     *cb   = atomic_load_explicit(&impl->host_callbacks, memory_order_relaxed);
 
-    if (impl->host_num_samples.lo > ULONG_MAX - add_samples)
-        impl->host_num_samples.hi++;
-    impl->host_num_samples.lo += add_samples;
-
-    impl->host_time_stamp.lo = (ULONG)(time_nsec & 0xFFFFFFFFu);
-    impl->host_time_stamp.hi = (ULONG)(time_nsec >> 32);
+    /* Native 64-bit counters, split into the ASIO hi/lo wire format only at
+     * the edges.  Single RT writer; relaxed atomics keep GetSamplePosition's
+     * COM-thread reads untorn. */
+    uint64_t samples = atomic_load_explicit(&impl->host_num_samples, memory_order_relaxed)
+                       + add_samples;
+    atomic_store_explicit(&impl->host_num_samples, samples, memory_order_relaxed);
+    atomic_store_explicit(&impl->host_time_stamp, time_nsec, memory_order_relaxed);
 
     if (impl->host_time_info_mode)
     {
         impl->host_time._2            = 1.0;
-        impl->host_time.numSamples.lo = impl->host_num_samples.lo;
-        impl->host_time.numSamples.hi = impl->host_num_samples.hi;
-        impl->host_time.timeStamp.lo  = impl->host_time_stamp.lo;
-        impl->host_time.timeStamp.hi  = impl->host_time_stamp.hi;
+        impl->host_time.numSamples.lo = (ULONG)(samples & 0xFFFFFFFFu);
+        impl->host_time.numSamples.hi = (ULONG)(samples >> 32);
+        impl->host_time.timeStamp.lo  = (ULONG)(time_nsec & 0xFFFFFFFFu);
+        impl->host_time.timeStamp.hi  = (ULONG)(time_nsec >> 32);
         impl->host_time.sampleRate    = impl->host_sample_rate;
         impl->host_time.flags         = 0x7;
 
