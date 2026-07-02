@@ -81,6 +81,7 @@ pipeasio_log_on(void)
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <unistd.h>
 #include <pmmintrin.h> /* _MM_SET_DENORMALS_ZERO_MODE */
 #include <xmmintrin.h> /* _MM_SET_FLUSH_ZERO_MODE */
@@ -105,6 +106,11 @@ audio_current_thread_id(void)
 /* SCHED_FIFO range offered to PipeWire's rt handling. */
 #define AUDIO_RT_PRIO_MIN 1
 #define AUDIO_RT_PRIO_MAX 80
+/* Used when PipeWire asks for the module default (-1): we bypass
+ * module-rt/RTKit, so pick our own.  77 sits below the PipeWire daemon's
+ * data loop (88 by default) - the graph driver must preempt us - and above
+ * typical desktop RT users. */
+#define AUDIO_RT_PRIO_DEFAULT 77
 
 #ifndef PIPEASIO_AUDIO_UNIXLIB
 /* Wine RT thread bridge for the PipeWire data loop. */
@@ -200,17 +206,34 @@ audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
     struct audio_rt_state *s = data;
     (void)thread;
 
+    /* SPA contract: priority <= 0 means "apply the configured default".
+     * module-rt is bypassed by our thread-utils override, so map it here. */
     if (priority <= 0)
-        return 0;
+        priority = AUDIO_RT_PRIO_DEFAULT;
+    if (priority > AUDIO_RT_PRIO_MAX)
+        priority = AUDIO_RT_PRIO_MAX;
 
     int err = pthread_setschedparam(s->ptid, SCHED_FIFO,
                                     &(struct sched_param){ .sched_priority = priority });
+    if (err == EPERM)
+    {
+        /* RLIMIT_RTPRIO may cap us below the default; retry at the cap. */
+        struct rlimit rl;
+        if (getrlimit(RLIMIT_RTPRIO, &rl) == 0 && rl.rlim_cur > 0
+            && rl.rlim_cur != RLIM_INFINITY && rl.rlim_cur < (rlim_t)priority)
+        {
+            priority = (int)rl.rlim_cur;
+            err      = pthread_setschedparam(s->ptid, SCHED_FIFO,
+                                             &(struct sched_param){ .sched_priority = priority });
+        }
+    }
     if (err)
     {
         WARN("pthread_setschedparam(SCHED_FIFO, %d) failed: %s\n", priority, strerror(err));
         return -1;
     }
     s->rt_priority = priority;
+    TRACE("rt thread acquired SCHED_FIFO %d\n", priority);
     return 0;
 }
 
