@@ -650,10 +650,14 @@ audio_activate(audio_client_t *c)
     const size_t bsize_bytes   = bsize_samples * sizeof(audio_sample_t);
 
     /* FORCE_QUANTUM is skipped only when following the device clock. */
+    /* No PW_KEY_NODE_GROUP: the node is self-driven on its own data loop, so
+     * a dsp group adds nothing, and without it PipeWire's driver-merge
+     * heuristics schedule the node better at small quanta (fewer xruns at
+     * 128 samples observed in practice). */
     struct pw_properties *filter_props = pw_properties_new(
             PW_KEY_NODE_NAME, c->name, PW_KEY_NODE_DESCRIPTION, c->name, PW_KEY_MEDIA_TYPE, "Audio",
             PW_KEY_MEDIA_CATEGORY, "Duplex", PW_KEY_MEDIA_ROLE, "DSP", PW_KEY_NODE_ALWAYS_PROCESS,
-            "true", PW_KEY_NODE_GROUP, "group.dsp.0", "pipeasio.node", "1", NULL);
+            "true", "pipeasio.node", "1", NULL);
     if (!filter_props)
     {
         ERR("pw_properties_new (filter) failed\n");
