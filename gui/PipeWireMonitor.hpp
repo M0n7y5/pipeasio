@@ -22,6 +22,8 @@
  */
 #pragma once
 
+#include "DeviceEnumerator.hpp"
+
 #include <QByteArray>
 #include <QObject>
 #include <QString>
@@ -44,9 +46,17 @@ struct NodeStats
     QString outputDeviceDetail; /* codec/format/state line for the output */
 };
 
-/* Parse `pw-top -b -n 1` output, returning stats for the first data row whose
- * trailing NAME contains `nodeNameSubstr`. Pure. */
+/* Parse `pw-top -b` output, returning stats for the first data row of the
+ * LAST table iteration whose trailing NAME contains `nodeNameSubstr`. Pure. */
 NodeStats parsePwTop(const QByteArray &out, const QString &nodeNameSubstr);
+
+/* Result of a pw-dump parse; produced on a worker thread (the dump is a few
+ * hundred KB of JSON and QJsonDocument parsing janked the GUI thread). */
+struct DumpResult
+{
+    QString                      ownName; /* findOwnNode(), may be empty */
+    DeviceEnumerator::Connections conn;
+};
 
 class PipeWireMonitor : public QObject
 {
@@ -65,23 +75,24 @@ class PipeWireMonitor : public QObject
     void updated(const NodeStats &stats);
 
   private slots:
-    void poll();
-    void onTopFinished();
+    void ensureTopRunning(); /* watchdog: (re)start pw-top if it died */
+    void onTopReadyRead();
     void onDumpFinished();
 
   private:
-    void startTop();
     void startDump();
+    void applyDumpResult(const DumpResult &result);
 
-    QTimer    *m_timer;
+    QTimer    *m_watchdog;           /* restarts pw-top, no per-tick respawn */
     QString    m_target;
-    bool       m_autoDiscover;   /* true => resolve our node via the marker prop */
-    QProcess  *m_proc = nullptr; /* in-flight child (pw-top or pw-dump) */
-    bool       m_busy = false;   /* a poll cycle is in flight */
-    QByteArray m_lastTop;        /* last pw-top output, re-parsed after discovery */
-    QString    m_connInput;      /* last-resolved Monitor connections */
+    bool       m_autoDiscover;       /* true => resolve our node via the marker prop */
+    QProcess  *m_topProc  = nullptr; /* long-lived `pw-top -b` */
+    QProcess  *m_dumpProc = nullptr; /* short-lived `pw-dump` */
+    QByteArray m_topBuf;             /* unparsed pw-top stdout tail */
+    NodeStats  m_pendingStats;       /* stats from the update that triggered a dump */
+    QString    m_connInput;          /* last-resolved Monitor connections */
     QString    m_connOutput;
-    QString    m_connInputDetail; /* second-line detail for the Monitor rows */
+    QString    m_connInputDetail;    /* second-line detail for the Monitor rows */
     QString    m_connOutputDetail;
-    int        m_pollsSinceDump = 1000; /* force a connection dump on first poll */
+    int        m_updatesSinceDump = 1000; /* force a connection dump on first update */
 };

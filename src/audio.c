@@ -341,6 +341,12 @@ struct audio_client
     audio_port_t **discovered;
     uint32_t       n_discovered;
     uint32_t       cap_discovered;
+
+    /* One-entry memo for audio_find_node: registry port globals for the same
+     * node arrive consecutively, so caching the last hit turns the per-port
+     * O(n_nodes) lookup into O(1).  Invalidated in global_remove. */
+    uint32_t                 memo_node_id;
+    struct audio_node_info  *memo_node;
 };
 
 struct audio_node_info
@@ -774,18 +780,28 @@ audio_activate(audio_client_t *c)
     TRACE("audio_activate: filter bound, our_node_id=%u\n", c->our_node_id);
 
     /* Port globals may arrive after the filter node is bound; adopt them with
-     * a bounded poll so CreateBuffers can connect to hardware. */
-    for (int attempt = 0; attempt < 50; attempt++)
+     * a bounded, event-driven wait (audio_cache_port signals the loop on each
+     * backfill) so CreateBuffers can connect to hardware without burning up to
+     * a second in a usleep poll. */
+    for (int attempt = 0; attempt < 20; attempt++)
     {
         audio_sync(c);
         audio_adopt_own_ports(c);
+
+        pw_thread_loop_lock(c->loop);
         uint32_t have = 0;
         for (uint32_t i = 0; i < c->n_ports; i++)
             if (c->ports[i]->pw_port_id != 0)
                 have++;
         if (have == c->n_ports)
+        {
+            pw_thread_loop_unlock(c->loop);
             break;
-        usleep(20 * 1000);
+        }
+        struct timespec ts;
+        pw_thread_loop_get_time(c->loop, &ts, 100 * SPA_NSEC_PER_MSEC);
+        pw_thread_loop_timed_wait_full(c->loop, &ts);
+        pw_thread_loop_unlock(c->loop);
     }
 
     /* Static latency: one buffer-period in either direction.  Refine
@@ -1053,10 +1069,13 @@ audio_get_ports(audio_client_t *c, const char *port_name_pattern, const char *ty
 
     pw_thread_loop_lock(c->loop);
 
-    /* Matching hardware ports in the direction requested by asio.c. */
-    uint32_t *match_idx = NULL;
-    uint32_t  n_match   = 0;
-    uint32_t  cap       = 0;
+    /* Matching hardware ports in the direction requested by asio.c.  Two
+     * passes, ONE allocation total: the result is a single block holding the
+     * NULL-terminated pointer array followed by a string arena (freed by one
+     * audio_free_ports call).  This keeps the previous O(n) realloc churn and
+     * per-name strdup out of the thread-loop critical section. */
+    uint32_t n_match = 0;
+    size_t   arena   = 0;
 
     /* Use one hardware node per direction to avoid async links across devices. */
     uint32_t target_node = audio_preferred_default_node(c, flags);
@@ -1069,46 +1088,36 @@ audio_get_ports(audio_client_t *c, const char *port_name_pattern, const char *ty
             target_node = p->pw_node_id;
         else if (p->pw_node_id != target_node)
             continue;
-
-        if (n_match == cap)
-        {
-            cap             = cap ? cap * 2 : 16;
-            uint32_t *grown = realloc(match_idx, cap * sizeof(*grown));
-            if (!grown)
-            {
-                free(match_idx);
-                pw_thread_loop_unlock(c->loop);
-                return NULL;
-            }
-            match_idx = grown;
-        }
-        match_idx[n_match++] = i;
+        n_match++;
+        arena += strlen(p->name) + 1;
     }
 
-    /* Allocate the NULL-terminated array.  We strdup each name so the caller
-     * does not hold pointers into the discovered cache (the registry
-     * callbacks free/realloc it on hotplug); free with audio_free_ports. */
-    const char **result = calloc(n_match + 1, sizeof(*result));
+    const char **result = malloc((n_match + 1) * sizeof(*result) + arena);
     if (!result)
     {
-        free(match_idx);
         pw_thread_loop_unlock(c->loop);
         return NULL;
     }
-    for (uint32_t i = 0; i < n_match; i++)
-    {
-        result[i] = strdup(c->discovered[match_idx[i]]->name);
-        if (!result[i])
-        {
-            audio_free_ports(result);
-            free(match_idx);
-            pw_thread_loop_unlock(c->loop);
-            return NULL;
-        }
-    }
-    result[n_match] = NULL;
+    char *names = (char *)(result + n_match + 1);
 
-    free(match_idx);
+    uint32_t out = 0;
+    target_node  = audio_preferred_default_node(c, flags);
+    for (uint32_t i = 0; i < c->n_discovered && out < n_match; i++)
+    {
+        audio_port_t *p = c->discovered[i];
+        if ((p->flags & flags) != flags)
+            continue;
+        if (target_node == SPA_ID_INVALID)
+            target_node = p->pw_node_id;
+        else if (p->pw_node_id != target_node)
+            continue;
+        size_t len = strlen(p->name) + 1;
+        memcpy(names, p->name, len);
+        result[out++] = names;
+        names += len;
+    }
+    result[out] = NULL;
+
     pw_thread_loop_unlock(c->loop);
     return result;
 }
@@ -1139,7 +1148,8 @@ audio_get_device_ports(audio_client_t *c, const char *node_name, uint64_t flags)
         return audio_get_ports(c, NULL, NULL, flags);
     }
 
-    uint32_t *idx = NULL, n = 0, cap = 0;
+    uint32_t n = 0;
+    size_t   arena = 0;
     for (uint32_t i = 0; i < c->n_discovered; i++)
     {
         audio_port_t *p = c->discovered[i];
@@ -1147,41 +1157,34 @@ audio_get_device_ports(audio_client_t *c, const char *node_name, uint64_t flags)
             continue;
         if ((p->flags & flags) != flags)
             continue;
-        if (n == cap)
-        {
-            cap             = cap ? cap * 2 : 16;
-            uint32_t *grown = realloc(idx, cap * sizeof(*grown));
-            if (!grown)
-            {
-                free(idx);
-                pw_thread_loop_unlock(c->loop);
-                return NULL;
-            }
-            idx = grown;
-        }
-        idx[n++] = i;
+        n++;
+        arena += strlen(p->name) + 1;
     }
 
-    const char **result = calloc(n + 1, sizeof(*result));
+    /* Single block: NULL-terminated pointer array + string arena (see
+     * audio_get_ports); one audio_free_ports call releases it. */
+    const char **result = malloc((n + 1) * sizeof(*result) + arena);
     if (!result)
     {
-        free(idx);
         pw_thread_loop_unlock(c->loop);
         return NULL;
     }
-    for (uint32_t i = 0; i < n; i++)
+    char *names = (char *)(result + n + 1);
+
+    uint32_t out = 0;
+    for (uint32_t i = 0; i < c->n_discovered && out < n; i++)
     {
-        result[i] = strdup(c->discovered[idx[i]]->name);
-        if (!result[i])
-        {
-            audio_free_ports(result);
-            free(idx);
-            pw_thread_loop_unlock(c->loop);
-            return NULL;
-        }
+        audio_port_t *p = c->discovered[i];
+        if (p->pw_node_id != target)
+            continue;
+        if ((p->flags & flags) != flags)
+            continue;
+        size_t len = strlen(p->name) + 1;
+        memcpy(names, p->name, len);
+        result[out++] = names;
+        names += len;
     }
-    result[n] = NULL;
-    free(idx);
+    result[out] = NULL;
     pw_thread_loop_unlock(c->loop);
     return result;
 }
@@ -1329,10 +1332,8 @@ audio_free(void *ptr)
 void
 audio_free_ports(const char **ports)
 {
-    if (!ports)
-        return;
-    for (size_t i = 0; ports[i]; i++)
-        free((void *)ports[i]);
+    /* audio_get_ports / audio_get_device_ports return ONE block: pointer
+     * array + string arena.  Single free releases everything. */
     free((void *)ports);
 }
 
@@ -1423,13 +1424,20 @@ audio_on_process(void *userdata, struct spa_io_position *position)
 
     if (pipeasio_log_on())
     {
+        /* Log startup cycles and clock changes only: snprintf+write() here is
+         * not RT-safe, so the steady-state cycle chatter was dropped — it
+         * blocked the data thread on stderr and caused the very xruns one
+         * would enable PIPEASIO_DEBUG to hunt. */
         static uint64_t cycle_count;
-        if (++cycle_count <= 8 || (cycle_count < 100 && cycle_count % 10 == 0)
-            || (cycle_count >= 100 && cycle_count % 100 == 0))
+        static uint32_t last_quantum, last_rate;
+        const uint32_t rate = position ? (uint32_t)position->clock.rate.denom : 0u;
+        ++cycle_count;
+        if (cycle_count <= 8 || quantum != last_quantum || rate != last_rate)
             TRACE("process: cycle=%lu tid=%lx buffer_size=%u quantum=%u rate=%u/%u\n",
                   (unsigned long)cycle_count, audio_current_thread_id(), (unsigned)c->buffer_size,
-                  (unsigned)quantum, position ? (unsigned)position->clock.rate.num : 0u,
-                  position ? (unsigned)position->clock.rate.denom : 0u);
+                  (unsigned)quantum, position ? (unsigned)position->clock.rate.num : 0u, rate);
+        last_quantum = quantum;
+        last_rate    = rate;
     }
 
     /* Run the ASIO host's process callback; audio_port_get_buffer returns
@@ -1632,11 +1640,28 @@ audio_cache_port(audio_client_t *c, uint32_t id, const struct spa_dict *props)
                 c->ports[i]->pw_port_id = id;
                 TRACE("registry: backfill local port \"%s\" -> node=%u port=%u\n", port_name,
                       node_id, id);
+                /* Wake the port-id wait in audio_activate. */
+                pw_thread_loop_signal(c->loop, false);
                 return;
             }
         }
         TRACE("registry: own-node port \"%s\" (id=%u) not in c->ports[]\n", port_name, id);
         return;
+    }
+
+    /* Look up the node once: the monitor filter below and the name build
+     * both need it.  Port globals for one node arrive consecutively, so the
+     * one-entry memo absorbs the O(n_nodes) rescan on every port. */
+    struct audio_node_info *n;
+    if (c->memo_node && c->memo_node_id == node_id)
+    {
+        n = c->memo_node;
+    }
+    else
+    {
+        n              = audio_find_node(c, node_id);
+        c->memo_node   = n;
+        c->memo_node_id = n ? node_id : SPA_ID_INVALID;
     }
 
     /* External port.  Skip monitor ports of sinks (avoid feedback loops),
@@ -1645,13 +1670,11 @@ audio_cache_port(audio_client_t *c, uint32_t id, const struct spa_dict *props)
      * port.monitor=true. */
     if (monitor && !strcmp(monitor, "true"))
     {
-        struct audio_node_info *mn = audio_find_node(c, node_id);
-        if (mn && mn->media_class && strstr(mn->media_class, "Sink"))
+        if (n && n->media_class && strstr(n->media_class, "Sink"))
             return;
     }
 
-    /* Look up the node to confirm it's audio, and to build the full name. */
-    struct audio_node_info *n = audio_find_node(c, node_id);
+    /* Confirm it's an audio node before building the full name. */
     if (!n)
     {
         TRACE("registry: skip orphan port id=%u node_id=%u (node not cached)\n", id, node_id);
@@ -1811,6 +1834,11 @@ audio_on_registry_global_remove(void *userdata, uint32_t id)
         if (c->nodes[i]->id == id)
         {
             struct audio_node_info *n = c->nodes[i];
+            if (c->memo_node == n) /* invalidate the audio_cache_port memo */
+            {
+                c->memo_node    = NULL;
+                c->memo_node_id = SPA_ID_INVALID;
+            }
             free(n->node_name);
             free(n->display_name);
             free(n->media_class);

@@ -21,19 +21,24 @@
 #include "PipeWireMonitor.hpp"
 #include "DeviceEnumerator.hpp"
 
+#include <QPointer>
 #include <QProcess>
 #include <QStringList>
 #include <QRegularExpression>
+#include <QThreadPool>
 #include <QTimer>
-
-#include <cmath>
 
 namespace
 {
 
-/* pw-dump cadence: refresh the connected sink/source every Nth poll. pw-top
- * runs every poll for fast stats; graph topology changes rarely. */
+/* pw-dump cadence: refresh the connected sink/source every Nth pw-top update.
+ * pw-top streams continuously; graph topology changes rarely. */
 constexpr int kDumpEvery = 5;
+
+/* Bound the unparsed pw-top stdout tail: pw-top -b prints one table per
+ * refresh forever.  parsePwTop only reads the LAST table, so dropping the
+ * older half mid-stream is lossless for our purposes. */
+constexpr qsizetype kTopBufKeep = 64 * 1024;
 
 int
 intOrZero(const QString &tok)
@@ -105,8 +110,9 @@ parsePwTop(const QByteArray &out, const QString &nodeNameSubstr)
                 = line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
         /* Fixed columns S ID QUANT RATE WAIT BUSY W/Q B/Q ERR occupy indices
          * 0..8; everything from index 9 on is the variable-width FORMAT, an
-         * optional +/=/* link marker, and the NAME (which may contain spaces).
-         * Substring-match the configured node name against that trailing run. */
+         * optional link marker (one of + = *), and the NAME (which may
+         * contain spaces).  Substring-match the configured node name against
+         * that trailing run. */
         if (tok.size() < 10)
             continue;
 
@@ -129,10 +135,12 @@ parsePwTop(const QByteArray &out, const QString &nodeNameSubstr)
 }
 
 PipeWireMonitor::PipeWireMonitor(QObject *parent)
-    : QObject(parent), m_timer(new QTimer(this)), m_autoDiscover(true)
+    : QObject(parent), m_watchdog(new QTimer(this)), m_autoDiscover(true)
 {
-    m_timer->setInterval(400);
-    connect(m_timer, &QTimer::timeout, this, &PipeWireMonitor::poll);
+    /* The watchdog's only job is to restart pw-top if the child died; the
+     * steady state costs zero process spawns. */
+    m_watchdog->setInterval(1000);
+    connect(m_watchdog, &QTimer::timeout, this, &PipeWireMonitor::ensureTopRunning);
 }
 
 PipeWireMonitor::~PipeWireMonitor() = default;
@@ -148,60 +156,67 @@ PipeWireMonitor::setTarget(const QString &nodeNameSubstr)
 void
 PipeWireMonitor::start()
 {
-    poll();
-    m_timer->start();
+    ensureTopRunning();
+    m_watchdog->start();
 }
 
 void
 PipeWireMonitor::stop()
 {
-    m_timer->stop();
-    if (m_proc)
+    m_watchdog->stop();
+    for (QProcess *p : { m_topProc, m_dumpProc })
     {
-        m_proc->disconnect(this);
-        m_proc->kill();
-        m_proc->deleteLater();
-        m_proc = nullptr;
+        if (!p)
+            continue;
+        p->disconnect(this);
+        p->kill();
+        p->deleteLater();
     }
-    m_busy = false;
+    m_topProc  = nullptr;
+    m_dumpProc = nullptr;
+    m_topBuf.clear();
 }
 
 void
-PipeWireMonitor::poll()
+PipeWireMonitor::ensureTopRunning()
 {
-    if (m_busy) /* skip overlapping ticks; the previous cycle is still running */
+    if (m_topProc)
+        return; /* already streaming */
+
+    /* One long-lived `pw-top -b` instead of a fork+exec every poll tick. */
+    m_topProc = new QProcess(this);
+    connect(m_topProc, &QProcess::readyReadStandardOutput, this,
+            &PipeWireMonitor::onTopReadyRead);
+    connect(m_topProc, &QProcess::finished, this, [this] {
+        m_topProc->deleteLater();
+        m_topProc = nullptr;
+        /* the watchdog respawns it on its next tick */
+    });
+    connect(m_topProc, &QProcess::errorOccurred, this, [this] {
+        m_topProc->deleteLater();
+        m_topProc = nullptr;
+    });
+    m_topProc->start(QStringLiteral("pw-top"), { QStringLiteral("-b") });
+}
+
+void
+PipeWireMonitor::onTopReadyRead()
+{
+    if (!m_topProc)
         return;
-    m_busy = true;
-    startTop();
-}
+    m_topBuf += m_topProc->readAllStandardOutput();
+    if (m_topBuf.size() > 2 * kTopBufKeep)
+        m_topBuf = m_topBuf.right(kTopBufKeep);
 
-void
-PipeWireMonitor::startTop()
-{
-    m_proc = new QProcess(this);
-    connect(m_proc, &QProcess::finished, this, &PipeWireMonitor::onTopFinished);
-    connect(m_proc, &QProcess::errorOccurred, this, &PipeWireMonitor::onTopFinished);
-    m_proc->start(QStringLiteral("pw-top"),
-                  { QStringLiteral("-b"), QStringLiteral("-n"), QStringLiteral("2") });
-}
+    const NodeStats st = parsePwTop(m_topBuf, m_target);
 
-void
-PipeWireMonitor::onTopFinished()
-{
-    if (!m_proc) /* guard the finished + errorOccurred double-fire */
-        return;
-    m_lastTop = m_proc->readAllStandardOutput();
-    m_proc->deleteLater();
-    m_proc = nullptr;
-
-    const NodeStats st = parsePwTop(m_lastTop, m_target);
     /* Dump the graph when we still need to discover our node (the host names it
      * after its own exe; we resolve it via the "pipeasio.node" marker) OR when a
      * connection refresh is due - the same pw-dump yields the sink/source our
      * ports are linked to. Between dumps, reuse the cached connection strings. */
-    ++m_pollsSinceDump;
+    ++m_updatesSinceDump;
     const bool needDiscover = m_autoDiscover && !st.found;
-    const bool refreshConn  = m_pollsSinceDump >= kDumpEvery;
+    const bool refreshConn  = m_updatesSinceDump >= kDumpEvery;
     if (!needDiscover && !refreshConn)
     {
         NodeStats out          = st;
@@ -210,49 +225,71 @@ PipeWireMonitor::onTopFinished()
         out.inputDeviceDetail  = m_connInputDetail;
         out.outputDeviceDetail = m_connOutputDetail;
         emit updated(out);
-        m_busy = false;
         return;
     }
+
+    /* Keep the stats that triggered the dump; applied when the worker-thread
+     * parse finishes (no second parsePwTop pass). */
+    m_pendingStats = st;
     startDump();
 }
 
 void
 PipeWireMonitor::startDump()
 {
-    m_proc = new QProcess(this);
-    connect(m_proc, &QProcess::finished, this, &PipeWireMonitor::onDumpFinished);
-    connect(m_proc, &QProcess::errorOccurred, this, &PipeWireMonitor::onDumpFinished);
-    m_proc->start(QStringLiteral("pw-dump"), QStringList());
+    if (m_dumpProc)
+        return; /* a dump is already in flight; its result refreshes everything */
+
+    m_dumpProc = new QProcess(this);
+    connect(m_dumpProc, &QProcess::finished, this, &PipeWireMonitor::onDumpFinished);
+    connect(m_dumpProc, &QProcess::errorOccurred, this, &PipeWireMonitor::onDumpFinished);
+    m_dumpProc->start(QStringLiteral("pw-dump"), QStringList());
 }
 
 void
 PipeWireMonitor::onDumpFinished()
 {
-    if (!m_proc)
+    if (!m_dumpProc)
         return;
-    const QByteArray dump = m_proc->readAllStandardOutput();
-    m_proc->deleteLater();
-    m_proc = nullptr;
+    const QByteArray dump = m_dumpProc->readAllStandardOutput();
+    m_dumpProc->deleteLater();
+    m_dumpProc = nullptr;
 
-    if (m_autoDiscover)
-    {
-        const QString name = DeviceEnumerator::findOwnNode(dump);
-        if (!name.isEmpty())
-            m_target = name;
-    }
+    if (dump.isEmpty())
+        return;
 
-    const DeviceEnumerator::Connections conn = DeviceEnumerator::resolveConnections(dump);
-    m_connInput                              = conn.input;
-    m_connInputDetail                        = conn.inputDetail;
-    m_connOutput                             = conn.output;
-    m_connOutputDetail                       = conn.outputDetail;
-    m_pollsSinceDump                         = 0;
+    /* Parse on a worker thread: a full pw-dump is hundreds of KB of JSON and
+     * QJsonDocument::fromJson on the GUI thread visibly janked the panel. */
+    QPointer<PipeWireMonitor> guard(this);
+    QThreadPool::globalInstance()->start([guard, dump]() {
+        DumpResult result;
+        result.ownName = DeviceEnumerator::findOwnNode(dump);
+        result.conn    = DeviceEnumerator::resolveConnections(dump);
+        if (!guard)
+            return;
+        QMetaObject::invokeMethod(guard, [guard, result]() {
+            if (guard)
+                guard->applyDumpResult(result);
+        }, Qt::QueuedConnection);
+    });
+}
 
-    NodeStats st          = parsePwTop(m_lastTop, m_target);
+void
+PipeWireMonitor::applyDumpResult(const DumpResult &result)
+{
+    if (m_autoDiscover && !result.ownName.isEmpty())
+        m_target = result.ownName;
+
+    m_connInput         = result.conn.input;
+    m_connInputDetail   = result.conn.inputDetail;
+    m_connOutput        = result.conn.output;
+    m_connOutputDetail  = result.conn.outputDetail;
+    m_updatesSinceDump  = 0;
+
+    NodeStats st          = m_pendingStats;
     st.inputDevice        = m_connInput;
     st.inputDeviceDetail  = m_connInputDetail;
     st.outputDevice       = m_connOutput;
     st.outputDeviceDetail = m_connOutputDetail;
     emit updated(st);
-    m_busy = false;
 }
