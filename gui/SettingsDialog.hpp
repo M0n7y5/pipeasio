@@ -63,6 +63,7 @@ class SettingsDialog : public QDialog
     QCheckBox *m_fixedBuffer       = nullptr;
     QCheckBox *m_followDeviceClock = nullptr;
     QLineEdit *m_nodeName          = nullptr;
+    QSpinBox  *m_rtPriority        = nullptr;
 
     /* Monitor widgets */
     QLabel        *m_monQuantum = nullptr;

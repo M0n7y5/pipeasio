@@ -263,6 +263,7 @@ typedef struct IPipeASIOImpl
     BOOL pipeasio_follow_device_clock;
     LONG pipeasio_preferred_buffersize;
     int  pipeasio_sample_rate; /* 0 = follow graph */
+    int  pipeasio_rt_priority;
     char pipeasio_output_device[PIPEASIO_DEVICE_NAME_MAX];
     char pipeasio_input_device[PIPEASIO_DEVICE_NAME_MAX];
 
@@ -555,6 +556,7 @@ config_watch_proc(LPVOID arg)
                                   || newcfg.sample_rate != last_cfg.sample_rate
                                   || newcfg.follow_device_clock != last_cfg.follow_device_clock
                                   || newcfg.auto_connect != last_cfg.auto_connect
+                                  || newcfg.rt_priority != last_cfg.rt_priority
                                   || strcmp(newcfg.output_device, last_cfg.output_device) != 0
                                   || strcmp(newcfg.input_device, last_cfg.input_device) != 0;
             bool reinit_changed = newcfg.inputs != last_cfg.inputs
@@ -724,6 +726,7 @@ Init(LPPIPEASIO iface, void *sysRef)
 
     audio_set_forced_rate(This->audio_client, (audio_nframes_t)This->pipeasio_sample_rate);
     audio_set_follow_device(This->audio_client, This->pipeasio_follow_device_clock);
+    audio_set_rt_priority(This->audio_client, This->pipeasio_rt_priority);
 
     This->host_sample_rate = audio_get_sample_rate(This->audio_client);
     /* Before CreateBuffers, report the configured preferred size. */
@@ -1161,6 +1164,7 @@ apply_pending_config(IPipeASIOImpl *This)
         This->pipeasio_follow_device_clock  = cfg.follow_device_clock ? TRUE : FALSE;
         This->pipeasio_preferred_buffersize = cfg.buffer_size; /* loader pow2-validated */
         This->pipeasio_sample_rate          = cfg.sample_rate;
+        This->pipeasio_rt_priority          = cfg.rt_priority;
         lstrcpynA(This->pipeasio_output_device, cfg.output_device,
                   sizeof This->pipeasio_output_device);
         lstrcpynA(This->pipeasio_input_device, cfg.input_device,
@@ -1168,9 +1172,11 @@ apply_pending_config(IPipeASIOImpl *This)
 
         audio_set_forced_rate(This->audio_client, (audio_nframes_t)This->pipeasio_sample_rate);
         audio_set_follow_device(This->audio_client, This->pipeasio_follow_device_clock);
-        TRACE("config: applied live reload (buffer_size=%d rate=%d follow=%d auto=%d)\n",
+        audio_set_rt_priority(This->audio_client, This->pipeasio_rt_priority);
+        TRACE("config: applied live reload (buffer_size=%d rate=%d follow=%d auto=%d rt=%d)\n",
               (int)This->pipeasio_preferred_buffersize, This->pipeasio_sample_rate,
-              (int)This->pipeasio_follow_device_clock, (int)This->pipeasio_connect_to_hardware);
+              (int)This->pipeasio_follow_device_clock, (int)This->pipeasio_connect_to_hardware,
+              This->pipeasio_rt_priority);
     }
     /* Forced quantum: follow-device uses the observed graph quantum, else the
      * configured preferred size.  Mirrors Init().  Runs every call so a
@@ -1842,6 +1848,7 @@ configure_driver(IPipeASIOImpl *This)
     This->pipeasio_follow_device_clock  = cfg.follow_device_clock ? TRUE : FALSE;
     This->pipeasio_preferred_buffersize = cfg.buffer_size;
     This->pipeasio_sample_rate          = cfg.sample_rate;
+    This->pipeasio_rt_priority          = cfg.rt_priority;
     lstrcpynA(This->pipeasio_output_device, cfg.output_device, sizeof This->pipeasio_output_device);
     lstrcpynA(This->pipeasio_input_device, cfg.input_device, sizeof This->pipeasio_input_device);
 

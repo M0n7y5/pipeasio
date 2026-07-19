@@ -47,6 +47,8 @@
 #define PIPEASIO_KEY_INPUT_DEVICE "input_device"
 #define PIPEASIO_KEY_NODE_NAME "node_name"
 #define PIPEASIO_KEY_FOLLOW_DEVICE_CLOCK "follow_device_clock"
+/* rt_priority bounds and default (mirror AUDIO_RT_PRIO_MIN/MAX in src/audio.c). */
+#define PIPEASIO_KEY_RT_PRIORITY "rt_priority"
 
 /* --- Defaults ------------------------------------------------------------- */
 #define PIPEASIO_DEFAULT_INPUTS 2
@@ -56,6 +58,10 @@
 #define PIPEASIO_DEFAULT_SAMPLE_RATE 0 /* 0 = follow the PipeWire graph */
 #define PIPEASIO_DEFAULT_AUTO_CONNECT true
 #define PIPEASIO_DEFAULT_FOLLOW_DEVICE_CLOCK false
+#define PIPEASIO_DEFAULT_RT_PRIORITY 15 /* below the PipeWire daemon (~20) */
+
+#define PIPEASIO_MIN_RT_PRIORITY 1
+#define PIPEASIO_MAX_RT_PRIORITY 80
 
 /* --- Bounds (mirror src/asio.c's PIPEASIO_{MINIMUM,MAXIMUM}_BUFFERSIZE) --- */
 #define PIPEASIO_MIN_BUFFER_SIZE 16
@@ -81,6 +87,11 @@ struct pipeasio_config
     char output_device[PIPEASIO_DEVICE_NAME_MAX]; /* node.name; "" = default sink   */
     char input_device[PIPEASIO_DEVICE_NAME_MAX];  /* node.name; "" = default source */
     char node_name[PIPEASIO_NODE_NAME_MAX];       /* "" = derive from app name      */
+
+    /* Appended at the END: the struct crosses the WoW64 unix ABI
+     * (pa_load_config_params), so existing field offsets must not move.
+     * Size went 792 -> 796; tests/wow64/unix_abi_layout.c pins it. */
+    int rt_priority; /* SCHED_FIFO priority, PIPEASIO_MIN..MAX_RT_PRIORITY */
 };
 
 #ifdef __cplusplus

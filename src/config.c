@@ -88,6 +88,7 @@ set_defaults(struct pipeasio_config *c)
     c->sample_rate         = PIPEASIO_DEFAULT_SAMPLE_RATE;
     c->auto_connect        = PIPEASIO_DEFAULT_AUTO_CONNECT;
     c->follow_device_clock = PIPEASIO_DEFAULT_FOLLOW_DEVICE_CLOCK;
+    c->rt_priority         = PIPEASIO_DEFAULT_RT_PRIORITY;
     c->output_device[0]    = '\0';
     c->input_device[0]     = '\0';
     c->node_name[0]        = '\0';
@@ -110,6 +111,8 @@ apply_kv(struct pipeasio_config *c, const char *key, const char *val)
         c->auto_connect = parse_bool(val);
     else if (!strcmp(key, PIPEASIO_KEY_FOLLOW_DEVICE_CLOCK))
         c->follow_device_clock = parse_bool(val);
+    else if (!strcmp(key, PIPEASIO_KEY_RT_PRIORITY))
+        c->rt_priority = atoi(val);
     else if (!strcmp(key, PIPEASIO_KEY_OUTPUT_DEVICE))
         copy_str(c->output_device, sizeof c->output_device, val);
     else if (!strcmp(key, PIPEASIO_KEY_INPUT_DEVICE))
@@ -134,6 +137,9 @@ validate(struct pipeasio_config *c)
 
     if (c->sample_rate < 0)
         c->sample_rate = 0;
+
+    if (c->rt_priority < PIPEASIO_MIN_RT_PRIORITY || c->rt_priority > PIPEASIO_MAX_RT_PRIORITY)
+        c->rt_priority = PIPEASIO_DEFAULT_RT_PRIORITY;
 }
 
 bool

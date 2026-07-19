@@ -125,6 +125,7 @@ struct audio_rt_state
     DWORD       win_tid;
     pthread_t   ptid;            /* captured inside the spawned thread */
     int         rt_priority;     /* current SCHED_FIFO priority, 0 = none */
+    int         config_priority; /* rt_priority from config.ini, 0 = legacy default */
     atomic_bool ready;           /* released once ptid is captured */
     void *(*user_entry)(void *); /* PipeWire-provided entry */
     void *user_arg;
@@ -204,14 +205,20 @@ audio_rt_get_range(void *data, const struct spa_dict *props, int *min, int *max)
     return 0;
 }
 
+/* RT priority is acquired directly: pthread_setschedparam(SCHED_FIFO).
+ * Works on a normal host and wherever RLIMIT_RTPRIO allows it (a sandbox
+ * inherits the session's rlimit); otherwise it degrades to a WARN and the
+ * thread stays on SCHED_OTHER.  config_priority (rt_priority in config.ini)
+ * wins over PipeWire's request; <= 0 falls back to AUDIO_RT_PRIO_DEFAULT. */
+
 static int
 audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
 {
     struct audio_rt_state *s = data;
     (void)thread;
 
-    /* SPA contract: priority <= 0 means "apply the configured default".
-     * module-rt is bypassed by our thread-utils override, so map it here. */
+    if (s->config_priority > 0)
+        priority = s->config_priority;
     if (priority <= 0)
         priority = AUDIO_RT_PRIO_DEFAULT;
     if (priority > AUDIO_RT_PRIO_MAX)
@@ -889,6 +896,20 @@ audio_set_follow_device(audio_client_t *c, bool follow)
     if (!c)
         return;
     c->follow_device = follow;
+}
+
+void
+audio_set_rt_priority(audio_client_t *c, int priority)
+{
+    if (!c)
+        return;
+#ifndef PIPEASIO_AUDIO_UNIXLIB
+    c->rt.config_priority = priority;
+#else
+    /* The WoW64 unixlib runs the data loop on PipeWire's default thread
+     * utils; the RT bridge only exists in the native build. */
+    (void)priority;
+#endif
 }
 
 audio_nframes_t

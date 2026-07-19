@@ -89,6 +89,11 @@ void audio_set_forced_rate(audio_client_t *client, audio_nframes_t rate);
  * Default off; wired devices keep the forced low-latency quantum. */
 void audio_set_follow_device(audio_client_t *client, bool follow);
 
+/* RT-priority for the data-loop thread (rt_priority in config.ini).
+ * priority 0 falls back to the built-in default; applied on the next
+ * data-loop (re)start. */
+void audio_set_rt_priority(audio_client_t *client, int priority);
+
 /* Most recent graph quantum (clock.duration) the process callback observed
  * while following a device, or 0 if none seen yet. Lets the ASIO side settle
  * its buffer size to the device-dictated quantum. */

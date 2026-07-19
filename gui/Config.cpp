@@ -78,6 +78,7 @@ defaults()
     c.sample_rate         = PIPEASIO_DEFAULT_SAMPLE_RATE;
     c.auto_connect        = PIPEASIO_DEFAULT_AUTO_CONNECT;
     c.follow_device_clock = PIPEASIO_DEFAULT_FOLLOW_DEVICE_CLOCK;
+    c.rt_priority         = PIPEASIO_DEFAULT_RT_PRIORITY;
     c.output_device[0]    = '\0';
     c.input_device[0]     = '\0';
     c.node_name[0]        = '\0';
@@ -148,6 +149,13 @@ parseIni(const QString &text)
         {
             c.follow_device_clock = parseBool(value, c.follow_device_clock);
         }
+        else if (key == QLatin1String(PIPEASIO_KEY_RT_PRIORITY))
+        {
+            bool      ok = false;
+            const int v  = value.toInt(&ok);
+            if (ok && v >= PIPEASIO_MIN_RT_PRIORITY && v <= PIPEASIO_MAX_RT_PRIORITY)
+                c.rt_priority = v;
+        }
         else if (key == QLatin1String(PIPEASIO_KEY_OUTPUT_DEVICE))
         {
             setStr(c.output_device, sizeof(c.output_device), value);
@@ -180,6 +188,7 @@ serializeIni(const pipeasio_config &c)
     s << PIPEASIO_KEY_SAMPLE_RATE << " = " << c.sample_rate << '\n';
     s << PIPEASIO_KEY_AUTO_CONNECT << " = " << (c.auto_connect ? 1 : 0) << '\n';
     s << PIPEASIO_KEY_FOLLOW_DEVICE_CLOCK << " = " << (c.follow_device_clock ? 1 : 0) << '\n';
+    s << PIPEASIO_KEY_RT_PRIORITY << " = " << c.rt_priority << '\n';
     s << PIPEASIO_KEY_OUTPUT_DEVICE << " = " << QString::fromUtf8(c.output_device) << '\n';
     s << PIPEASIO_KEY_INPUT_DEVICE << " = " << QString::fromUtf8(c.input_device) << '\n';
     s << PIPEASIO_KEY_NODE_NAME << " = " << QString::fromUtf8(c.node_name) << '\n';

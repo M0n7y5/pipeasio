@@ -180,6 +180,13 @@ SettingsDialog::buildSettingsTab()
            QStringLiteral("Override the PipeWire node/client name. Empty derives it from the "
                           "host application's name."));
 
+    m_rtPriority = new QSpinBox(page);
+    m_rtPriority->setRange(PIPEASIO_MIN_RT_PRIORITY, PIPEASIO_MAX_RT_PRIORITY);
+    addRow(QStringLiteral("RT priority"), m_rtPriority,
+           QStringLiteral("SCHED_FIFO priority of the audio thread. Must stay BELOW the "
+                          "PipeWire daemon's data loop (usually ~20) or it starves the audio "
+                          "device. Default 15. Applied on driver restart."));
+
     connect(m_bufferSize, &QComboBox::currentIndexChanged, this,
             &SettingsDialog::updateLatencyLabel);
     connect(m_sampleRate, &QComboBox::currentIndexChanged, this,
@@ -362,6 +369,8 @@ SettingsDialog::applyConfig(const pipeasio_config &c)
     m_followDeviceClock->setChecked(c.follow_device_clock);
     m_nodeName->setText(QString::fromUtf8(c.node_name));
 
+    m_rtPriority->setValue(c.rt_priority);
+
     updateLatencyLabel();
 }
 
@@ -382,6 +391,7 @@ SettingsDialog::onApply()
     cfg.sample_rate         = currentSampleRate();
     cfg.auto_connect        = m_autoConnect->isChecked();
     cfg.follow_device_clock = m_followDeviceClock->isChecked();
+    cfg.rt_priority         = m_rtPriority->value();
 
     const QByteArray out = m_outputDevice->currentData().toString().toUtf8();
     qstrncpy(cfg.output_device, out.constData(), sizeof(cfg.output_device));

@@ -76,9 +76,9 @@ CHECK(offsetof(pa_ports_params, names) == 784, "pa_ports_params names offset");
 CHECK(sizeof(pa_connect_params) == 524, "pa_connect_params size");
 CHECK(sizeof(pa_name_params) == 264, "pa_name_params size");
 
-CHECK(sizeof(pa_config_params) == 800, "pa_config_params size");
+CHECK(sizeof(pa_config_params) == 804, "pa_config_params size");
 CHECK(offsetof(pa_config_params, cfg) == 4, "pa_config_params cfg offset");
-CHECK(offsetof(pa_config_params, found) == 796, "pa_config_params found offset");
+CHECK(offsetof(pa_config_params, found) == 800, "pa_config_params found offset");
 
 CHECK(sizeof(pa_fingerprint_params) == 12, "pa_fingerprint_params size");
 CHECK(offsetof(pa_fingerprint_params, fp) == 4, "pa_fingerprint_params fp offset");
@@ -97,8 +97,10 @@ CHECK(offsetof(pa_reply_params, seq) == 8, "pa_reply_params seq offset");
 CHECK(offsetof(pa_reply_params, produced) == 12, "pa_reply_params produced offset");
 CHECK(offsetof(pa_reply_params, result) == 16, "pa_reply_params result offset");
 
-/* The embedded config struct must itself be pointer-free / arch-stable. */
-CHECK(sizeof(struct pipeasio_config) == 792, "pipeasio_config layout changed");
+/* The embedded config struct must itself be pointer-free / arch-stable.
+ * rt_priority was appended at the end (792 -> 796) without moving
+ * existing offsets, so both ABI halves agree when built together. */
+CHECK(sizeof(struct pipeasio_config) == 796, "pipeasio_config layout changed");
 
 int
 pipeasio_unix_abi_probe(void)
