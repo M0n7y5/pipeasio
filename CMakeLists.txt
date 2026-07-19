@@ -27,6 +27,15 @@ add_custom_target(build_info ALL
         -DOUT=${CMAKE_BINARY_DIR}/generated/build_info.h
         -P ${CMAKE_SOURCE_DIR}/cmake/GenBuildInfo.cmake
     VERBATIM)
+# Baseline at configure time so a fresh build tree compiles without ordering
+# tricks.  GenBuildInfo.cmake rewrites the header only when the content
+# changes, so dependents rebuild (via compiler depfiles) exactly when the
+# build id moves.
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/generated)
+execute_process(COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}
+    -DOUT=${CMAKE_BINARY_DIR}/generated/build_info.h
+    -P ${CMAKE_SOURCE_DIR}/cmake/GenBuildInfo.cmake)
 
 include(WineDLL)
 
@@ -44,11 +53,6 @@ add_wine_dll(
     LIBS      odbc32 ole32 uuid winmm user32 pipewire-0.3
 )
 add_dependencies(pipeasio64_objs build_info)
-# build_info.h is included by these files; make it a REAL dependency (the
-# target-level add_dependencies above is order-only and would not rebuild
-# them when the header is rewritten with a new build id).
-set_source_files_properties(src/audio.c src/asio.c PROPERTIES
-    OBJECT_DEPENDS "${CMAKE_BINARY_DIR}/generated/build_info.h")
 
 # Optional 32-bit WoW64 front end.
 # - pipeasio32.dll: i386 PE stub, installed under lib/wine/i386-windows
@@ -96,16 +100,21 @@ if(BUILD_WOW64_32)
         VERBATIM
         COMMENT "index i386 Wine import libraries")
 
-    set(_pa32_inc -I "${CMAKE_SOURCE_DIR}/include" -I "${CMAKE_SOURCE_DIR}/src/wow64")
+    set(_pa32_inc -I "${CMAKE_SOURCE_DIR}/include" -I "${CMAKE_SOURCE_DIR}/src/wow64"
+        -I "${CMAKE_BINARY_DIR}/generated")
     foreach(_d ${WINE_INCLUDE_DIRS})
         list(APPEND _pa32_inc -I "${_d}")
     endforeach()
-    set(_pa32_cflags -Wall -Wextra -Werror=implicit-function-declaration -msse3
+    # Per-config flags shared by the PE front end and the unixlib objects.
+    set(_pa32_config_cflags
         $<$<CONFIG:Release>:-O2> $<$<CONFIG:Release>:-DNDEBUG>
         $<$<CONFIG:RelWithDebInfo>:-O2> $<$<CONFIG:RelWithDebInfo>:-g>
         $<$<CONFIG:RelWithDebInfo>:-DNDEBUG>
         $<$<CONFIG:Debug>:-O0> $<$<CONFIG:Debug>:-g3> $<$<CONFIG:Debug>:-DDEBUG>
         $<$<CONFIG:Debug>:-fno-omit-frame-pointer>)
+
+    set(_pa32_cflags -Wall -Wextra -Werror=implicit-function-declaration -msse3
+        ${_pa32_config_cflags})
 
     # i386 PE front end.  The shared ASIO sources link against the WoW64
     # proxy instead of src/audio.c.
@@ -141,16 +150,14 @@ if(BUILD_WOW64_32)
     set_target_properties(pipeasio32_unix_objs PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(pipeasio32_unix_objs PRIVATE
         ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src/wow64
-        ${PIPEWIRE_INCLUDE_DIRS} ${WINE_INCLUDE_DIRS})
+        ${PIPEWIRE_INCLUDE_DIRS} ${WINE_INCLUDE_DIRS}
+        ${CMAKE_BINARY_DIR}/generated)
     target_compile_options(pipeasio32_unix_objs PRIVATE
         -DPIPEASIO_AUDIO_UNIXLIB -D_REENTRANT
         -Wall -fno-strict-aliasing -Werror=implicit-function-declaration
-        $<$<CONFIG:Release>:-O2> $<$<CONFIG:Release>:-DNDEBUG>
         $<$<CONFIG:Release>:-fvisibility=hidden>
-        $<$<CONFIG:RelWithDebInfo>:-O2> $<$<CONFIG:RelWithDebInfo>:-g>
-        $<$<CONFIG:RelWithDebInfo>:-DNDEBUG> $<$<CONFIG:RelWithDebInfo>:-fvisibility=hidden>
-        $<$<CONFIG:Debug>:-O0> $<$<CONFIG:Debug>:-g3> $<$<CONFIG:Debug>:-DDEBUG>
-        $<$<CONFIG:Debug>:-fno-omit-frame-pointer>)
+        $<$<CONFIG:RelWithDebInfo>:-fvisibility=hidden>
+        ${_pa32_config_cflags})
     add_custom_command(
         OUTPUT  "${PA32_SO}"
         COMMAND "${WINEGCC}" -shared
@@ -202,6 +209,54 @@ endif()
 option(BUILD_TESTS "Build the asio_probe Wine host and unit tests" ON)
 if(BUILD_TESTS)
     enable_testing()
+
+    # Shared recipe for the Wine PE integration probes: builds <name>.exe.so
+    # with winegcc, copies the runner scripts that exist (run.sh, gdb.sh),
+    # registers the CTest (run.sh exits 77 = SKIP without wine/pipewire), and
+    # adds the i386 WoW64 variant when BUILD_WOW64_32 is on and run32.sh
+    # exists.
+    function(pipeasio_add_wine_probe name)
+        find_program(WINEGCC winegcc REQUIRED)
+        set(src "${CMAKE_CURRENT_SOURCE_DIR}/${name}.c")
+        set(out "${CMAKE_CURRENT_BINARY_DIR}/${name}.exe.so")
+        add_custom_command(
+            OUTPUT  "${out}"
+            COMMAND ${WINEGCC} -m64 -mno-cygwin -mconsole
+                    -O0 -g -Wall -Wextra "${src}" -lole32 -o "${out}"
+            DEPENDS "${src}"
+            COMMENT "winegcc ${name} (Wine PE)"
+            VERBATIM)
+        add_custom_target(${name} ALL DEPENDS "${out}")
+        foreach(script run.sh gdb.sh)
+            if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${script}")
+                configure_file("${CMAKE_CURRENT_SOURCE_DIR}/${script}"
+                               "${CMAKE_CURRENT_BINARY_DIR}/${script}" @ONLY)
+            endif()
+        endforeach()
+        add_test(NAME ${name} COMMAND "${CMAKE_CURRENT_BINARY_DIR}/run.sh")
+        set_tests_properties(${name} PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 300
+            RESOURCE_LOCK wineprefix
+            LABELS "integration;wine;pipewire")
+        if(BUILD_WOW64_32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/run32.sh")
+            find_program(I686_W64_MINGW_GCC i686-w64-mingw32-gcc)
+            if(I686_W64_MINGW_GCC)
+                set(out32 "${CMAKE_CURRENT_BINARY_DIR}/${name}32.exe")
+                add_custom_command(
+                    OUTPUT  "${out32}"
+                    COMMAND ${I686_W64_MINGW_GCC} -mconsole -O0 -g -Wall -Wextra
+                            "${src}" -lole32 -o "${out32}"
+                    DEPENDS "${src}"
+                    COMMENT "mingw ${name}32.exe (32-bit WoW64 PE host)"
+                    VERBATIM)
+                add_custom_target(${name}32 ALL DEPENDS "${out32}")
+                configure_file("${CMAKE_CURRENT_SOURCE_DIR}/run32.sh"
+                               "${CMAKE_CURRENT_BINARY_DIR}/run32.sh" @ONLY)
+            endif()
+        endif()
+    endfunction()
+
     add_subdirectory(tests/asio_probe)
     add_subdirectory(tests/asio_loopback)
     add_subdirectory(tests/unit)

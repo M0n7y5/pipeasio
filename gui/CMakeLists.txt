@@ -6,8 +6,6 @@ add_executable(pipeasio-settings
 target_include_directories(pipeasio-settings PRIVATE ${CMAKE_SOURCE_DIR}/include
                            ${CMAKE_BINARY_DIR}/generated)
 add_dependencies(pipeasio-settings build_info)
-set_source_files_properties(SettingsDialog.cpp PROPERTIES
-    OBJECT_DEPENDS "${CMAKE_BINARY_DIR}/generated/build_info.h")
 target_compile_features(pipeasio-settings PRIVATE cxx_std_17)
 target_link_libraries(pipeasio-settings PRIVATE Qt6::Widgets)
 install(TARGETS pipeasio-settings RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
