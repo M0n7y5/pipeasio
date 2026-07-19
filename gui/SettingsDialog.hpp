@@ -22,6 +22,7 @@
 
 #include <QDialog>
 
+#include "PipeWireGraph.hpp"
 #include "PipeWireMonitor.hpp"
 
 class QCheckBox;
@@ -48,6 +49,7 @@ class SettingsDialog : public QDialog
     QWidget *buildAboutTab();
     void     applyConfig(const struct pipeasio_config &c);
     void     updateLatencyLabel();
+    void     refreshDevices(); /* repopulate device combos from the live graph */
     int      currentBufferSize() const;
     int      currentSampleRate() const;
 
@@ -74,5 +76,6 @@ class SettingsDialog : public QDialog
     QLabel        *m_monOutput  = nullptr;
     QLabel        *m_monInput   = nullptr;
 
+    PipeWireGraph   m_graph; /* destroyed first; m_monitor only holds a pointer */
     PipeWireMonitor m_monitor;
 };

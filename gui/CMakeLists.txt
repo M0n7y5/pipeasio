@@ -1,13 +1,13 @@
 find_package(Qt6 COMPONENTS Widgets REQUIRED)
 set(CMAKE_AUTOMOC ON)
 add_executable(pipeasio-settings
-    main.cpp SettingsDialog.cpp Config.cpp DeviceEnumerator.cpp PipeWireMonitor.cpp
-    LoadHistogram.cpp)
+    main.cpp SettingsDialog.cpp Config.cpp PipeWireMonitor.cpp
+    PipeWireGraph.cpp LoadHistogram.cpp)
 target_include_directories(pipeasio-settings PRIVATE ${CMAKE_SOURCE_DIR}/include
                            ${CMAKE_BINARY_DIR}/generated)
 add_dependencies(pipeasio-settings build_info)
 target_compile_features(pipeasio-settings PRIVATE cxx_std_17)
-target_link_libraries(pipeasio-settings PRIVATE Qt6::Widgets)
+target_link_libraries(pipeasio-settings PRIVATE Qt6::Widgets PkgConfig::PIPEWIRE)
 install(TARGETS pipeasio-settings RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # Desktop integration: menu entry + scalable icon (single source of truth is

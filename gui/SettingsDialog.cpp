@@ -22,7 +22,6 @@
 #include "build_info.h" /* PIPEASIO_BUILD_ID, generated per build */
 
 #include "Config.hpp"
-#include "DeviceEnumerator.hpp"
 #include "LoadHistogram.hpp"
 
 #include <QByteArray>
@@ -78,19 +77,12 @@ SettingsDialog::SettingsDialog(QWidget *parent) : QDialog(parent)
     layout->addWidget(tabs);
     layout->addWidget(buttons);
 
-    /* Populate device combos before applying the saved config so the saved
-     * device names can be matched and selected. */
-    const QList<DeviceEnumerator::Device> devices = DeviceEnumerator::enumerate();
-    m_outputDevice->addItem(QStringLiteral("Follow default"), QString());
-    m_inputDevice->addItem(QStringLiteral("Follow default"), QString());
-    for (const DeviceEnumerator::Device &d : devices)
-    {
-        const QString label = d.description.isEmpty() ? d.name : d.description;
-        if (d.isSink)
-            m_outputDevice->addItem(label, d.name);
-        else
-            m_inputDevice->addItem(label, d.name);
-    }
+    /* Live graph: start (and let the initial registry fill complete) before
+     * populating the device combos, so saved device names can be matched. */
+    m_graph.start();
+    m_monitor.setGraph(&m_graph);
+    refreshDevices();
+    connect(&m_graph, &PipeWireGraph::changed, this, &SettingsDialog::refreshDevices);
 
     const pipeasio_config cfg = Config::load();
     applyConfig(cfg);
@@ -100,6 +92,49 @@ SettingsDialog::SettingsDialog(QWidget *parent) : QDialog(parent)
      * "pipeasio.node" marker (the host names the node after its own exe). */
     m_monitor.setTarget(cfg.node_name[0] ? QString::fromUtf8(cfg.node_name) : QString());
     m_monitor.start();
+}
+
+/* Repopulate the sink/source combos from the live graph, preserving the
+ * current selection.  No-op while the device set is unchanged (the graph
+ * also fires for link/state churn). */
+void
+SettingsDialog::refreshDevices()
+{
+    const QList<PipeWireGraph::Device> devices = m_graph.audioDevices();
+
+    QStringList fresh;
+    for (const PipeWireGraph::Device &d : devices)
+        fresh << (d.isSink ? QStringLiteral("O:") : QStringLiteral("I:")) + d.name;
+
+    QStringList current;
+    for (int i = 1; i < m_outputDevice->count(); i++) /* 0 = Follow default */
+        current << QStringLiteral("O:") + m_outputDevice->itemData(i).toString();
+    for (int i = 1; i < m_inputDevice->count(); i++)
+        current << QStringLiteral("I:") + m_inputDevice->itemData(i).toString();
+    if (fresh == current)
+        return;
+
+    const QString savedOut = m_outputDevice->currentData().toString();
+    const QString savedIn  = m_inputDevice->currentData().toString();
+    m_outputDevice->clear();
+    m_inputDevice->clear();
+    m_outputDevice->addItem(QStringLiteral("Follow default"), QString());
+    m_inputDevice->addItem(QStringLiteral("Follow default"), QString());
+    for (const PipeWireGraph::Device &d : devices)
+    {
+        const QString label = d.description.isEmpty() ? d.name : d.description;
+        if (d.isSink)
+            m_outputDevice->addItem(label, d.name);
+        else
+            m_inputDevice->addItem(label, d.name);
+    }
+    /* Selections survive when the device still exists; else Follow default. */
+    const int outIdx = m_outputDevice->findData(savedOut);
+    if (outIdx >= 0)
+        m_outputDevice->setCurrentIndex(outIdx);
+    const int inIdx = m_inputDevice->findData(savedIn);
+    if (inIdx >= 0)
+        m_inputDevice->setCurrentIndex(inIdx);
 }
 
 QWidget *
