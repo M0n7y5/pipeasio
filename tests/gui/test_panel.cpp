@@ -107,6 +107,22 @@ test_cross_language()
     CHECK(std::strcmp(d.node_name, "Bar") == 0);
 }
 
+/* Keys under a foreign section header must be ignored (mirrors the driver's
+ * C parser); keys before any [section] header are tolerated. */
+static void
+test_section_filter()
+{
+    const QString ini = QStringLiteral("buffer_size = 256\n"
+                                       "[other]\n"
+                                       "buffer_size = 8192\n"
+                                       "inputs = 99\n"
+                                       "[" PIPEASIO_CONFIG_SECTION "]\n"
+                                       "buffer_size = 512\n");
+    const pipeasio_config c = Config::parseIni(ini);
+    CHECK(c.buffer_size == 512);
+    CHECK(c.inputs == PIPEASIO_DEFAULT_INPUTS); /* [other] inputs ignored */
+}
+
 static void
 test_parse_pwdump()
 {
@@ -266,6 +282,7 @@ main(int argc, char **argv)
 
     test_config_roundtrip();
     test_cross_language();
+    test_section_filter();
     test_parse_pwdump();
     test_parse_pwtop();
     test_find_own_node();

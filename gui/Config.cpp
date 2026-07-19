@@ -37,6 +37,13 @@ namespace Config
 namespace
 {
 
+/* This parser intentionally mirrors src/config.c (the driver's C parser),
+ * not a generic INI reader: keys land only from the [pipeasio] section
+ * (keys before any header are tolerated, like the C side).  Remaining
+ * intentional differences: the C parser validates after parsing with a
+ * fallback to defaults, while this one validates in place; both accept
+ * 1/0/true/on/yes for booleans, but serializeIni writes 1/0. */
+
 void
 setStr(char *dst, size_t cap, const QString &value)
 {
@@ -90,6 +97,8 @@ parseIni(const QString &text)
 {
     pipeasio_config c = defaults();
 
+    bool inSection = true; /* tolerate keys before any [section] header */
+
     const QStringList lines = text.split(QLatin1Char('\n'));
     for (const QString &rawLine : lines)
     {
@@ -98,7 +107,14 @@ parseIni(const QString &text)
             continue;
         if (line.startsWith(QLatin1Char('#')) || line.startsWith(QLatin1Char(';')))
             continue;
-        if (line.startsWith(QLatin1Char('['))) /* section header - single section */
+        if (line.startsWith(QLatin1Char('[')))
+        {
+            const int close = line.indexOf(QLatin1Char(']'));
+            if (close > 0)
+                inSection = line.mid(1, close - 1) == QLatin1String(PIPEASIO_CONFIG_SECTION);
+            continue;
+        }
+        if (!inSection)
             continue;
 
         const int eq = line.indexOf(QLatin1Char('='));
