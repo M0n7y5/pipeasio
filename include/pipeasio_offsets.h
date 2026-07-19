@@ -19,21 +19,13 @@
 
 /*
  * pipeasio_offsets.h - pure buffer-arithmetic helpers shared between the
- * Wine-side driver (src/audio.c, src/asio.c) and the Linux-native unit
- * tests (tests/unit/).
+ * Wine-side driver (src/asio.c, src/wow64/audio_unix.c) and the
+ * Linux-native unit tests (tests/unit/).
  *
  * Why a header: the math is small, but tests need to call it WITHOUT
  * compiling audio.c (which drags in pipewire/Wine headers).  Putting it
  * here as static-inline keeps a single source of truth - if the formula
- * ever changes, both audio.c and the tests pick it up.
- *
- * Memfd layout (audio.c side):
- *
- *   [ch0 half0][ch0 half1][ch1 half0][ch1 half1] ... [chN-1 half1]
- *
- *   - one shared memfd holds every channel's double buffer
- *   - each "half" is buffer_size float samples
- *   - total = n_ports * 2 * buffer_size * sizeof(float) bytes
+ * ever changes, both the driver and the tests pick it up.
  *
  * Host-side callback buffer layout (asio.c side):
  *
@@ -42,7 +34,6 @@
  *
  *   - one heap block holds every host channel's double buffer
  *   - inputs come first, outputs after
- *   - identical sizing formula to the memfd
  */
 #ifndef PIPEASIO_OFFSETS_H
 #define PIPEASIO_OFFSETS_H
@@ -52,40 +43,6 @@
 
 /* Number of buffer halves per channel (ASIO double-buffer). */
 #define PIPEASIO_BUFFER_HALVES 2u
-
-/* ----------------------------------------------------------------------
- * Memfd-side helpers (audio.c)
- * ---------------------------------------------------------------------- */
-
-/* Total bytes for the shared memfd backing n_ports channels of
- * buffer_size samples each, double-buffered. */
-static inline size_t
-pipeasio_memfd_size_bytes(uint32_t n_ports, size_t buffer_size_samples, size_t sample_size_bytes)
-{
-    return (size_t)n_ports * PIPEASIO_BUFFER_HALVES * buffer_size_samples * sample_size_bytes;
-}
-
-/* Byte offset into the memfd for (channel_idx, half).  Used to set
- * spa_data->mapoffset when wiring PipeWire DSP buffers. */
-static inline size_t
-pipeasio_mapoffset_bytes(uint32_t channel_idx, uint32_t half, size_t buffer_size_samples,
-                         size_t sample_size_bytes)
-{
-    return ((size_t)channel_idx * PIPEASIO_BUFFER_HALVES + half) * buffer_size_samples
-           * sample_size_bytes;
-}
-
-/* Sample offset into a float* view of the memfd for (channel_idx, half).
- * Used by audio_port_get_buffer. */
-static inline size_t
-pipeasio_port_buffer_offset_samples(uint32_t channel_idx, uint32_t half, size_t buffer_size_samples)
-{
-    return ((size_t)channel_idx * PIPEASIO_BUFFER_HALVES + half) * buffer_size_samples;
-}
-
-/* ----------------------------------------------------------------------
- * Host-side callback buffer helpers (asio.c)
- * ---------------------------------------------------------------------- */
 
 /* Total bytes for the host's callback_audio_buffer covering n_in inputs
  * plus n_out outputs, each double-buffered. */

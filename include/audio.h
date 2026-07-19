@@ -22,6 +22,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 /* Opaque handles */
 
@@ -117,7 +118,7 @@ const char     *audio_port_name(const audio_port_t *port);
 const char     *audio_port_type(const audio_port_t *port);
 audio_port_t   *audio_port_by_name(audio_client_t *client, const char *port_name);
 /* The returned NULL-terminated array and its name strings are duplicated
- * out of the discovered cache; free both with audio_free_ports (not audio_free). */
+ * out of the discovered cache; free with audio_free_ports. */
 const char **audio_get_ports(audio_client_t *client, const char *port_name_pattern,
                              const char *type_name_pattern, uint64_t flags);
 /* Like audio_get_ports, but restricted to the device whose PipeWire
@@ -140,7 +141,49 @@ bool audio_set_latency_callback(audio_client_t *client, audio_latency_cb cb, voi
 /* Connections / memory */
 
 bool audio_connect(audio_client_t *client, const char *src, const char *dst);
-void audio_free(void *ptr);
 /* Frees an array returned by audio_get_ports / audio_get_device_ports,
  * including the duplicated name strings. */
 void audio_free_ports(const char **ports);
+
+/* RT copy helpers shared by the native (src/asio.c) and WoW64
+ * (src/wow64/audio_unix.c) process callbacks.  avail is the daemon buffer
+ * capacity in frames for this cycle (audio_port_buffer_avail_frames);
+ * every transfer clamps to it because the graph quantum may be smaller
+ * than the host period. */
+
+/* Frames that can actually be transferred; 0 when the buffer is unmapped. */
+static inline audio_nframes_t
+audio_clamp_frames(const void *buf, audio_nframes_t avail, audio_nframes_t nframes)
+{
+    return buf ? (avail < nframes ? avail : nframes) : 0;
+}
+
+/* Silence n frames (no-op for n == 0 or an unmapped buffer). */
+static inline void
+audio_silence(audio_sample_t *dst, audio_nframes_t n)
+{
+    if (dst && n)
+        memset(dst, 0, sizeof(audio_sample_t) * n);
+}
+
+/* Gather: copy device->host clamped to avail, zero-fill the tail. */
+static inline void
+audio_gather(audio_sample_t *dst, const audio_sample_t *src, audio_nframes_t avail,
+             audio_nframes_t nframes)
+{
+    audio_nframes_t n = audio_clamp_frames(src, avail, nframes);
+    if (n)
+        memcpy(dst, src, sizeof(audio_sample_t) * n);
+    if (n < nframes)
+        memset(dst + n, 0, sizeof(audio_sample_t) * (nframes - n));
+}
+
+/* Scatter: copy host->device clamped to avail (no-op when unmapped). */
+static inline void
+audio_scatter(audio_sample_t *dst, const audio_sample_t *src, audio_nframes_t avail,
+              audio_nframes_t nframes)
+{
+    audio_nframes_t n = audio_clamp_frames(dst, avail, nframes);
+    if (n)
+        memcpy(dst, src, sizeof(audio_sample_t) * n);
+}

@@ -47,7 +47,6 @@
 #define PIPEASIO_KEY_INPUT_DEVICE "input_device"
 #define PIPEASIO_KEY_NODE_NAME "node_name"
 #define PIPEASIO_KEY_FOLLOW_DEVICE_CLOCK "follow_device_clock"
-/* rt_priority bounds and default (mirror AUDIO_RT_PRIO_MIN/MAX in src/audio.c). */
 #define PIPEASIO_KEY_RT_PRIORITY "rt_priority"
 
 /* --- Defaults ------------------------------------------------------------- */
@@ -63,7 +62,7 @@
 #define PIPEASIO_MIN_RT_PRIORITY 1
 #define PIPEASIO_MAX_RT_PRIORITY 80
 
-/* --- Bounds (mirror src/asio.c's PIPEASIO_{MINIMUM,MAXIMUM}_BUFFERSIZE) --- */
+/* --- Bounds (single source of truth; used by config.c, asio.c, audio.c) --- */
 #define PIPEASIO_MIN_BUFFER_SIZE 16
 #define PIPEASIO_MAX_BUFFER_SIZE 8192
 
@@ -73,6 +72,16 @@
 
 #define PIPEASIO_DEVICE_NAME_MAX 256
 #define PIPEASIO_NODE_NAME_MAX 256
+
+/* True when size is a power of two inside [PIPEASIO_MIN_BUFFER_SIZE,
+ * PIPEASIO_MAX_BUFFER_SIZE].  Single validation used by the config parser
+ * and the ASIO entry points. */
+static inline bool
+pipeasio_buffer_size_valid(int size)
+{
+    return size > 0 && (size & (size - 1)) == 0 && size >= PIPEASIO_MIN_BUFFER_SIZE
+           && size <= PIPEASIO_MAX_BUFFER_SIZE;
+}
 
 /* --- Parsed configuration ------------------------------------------------- */
 struct pipeasio_config

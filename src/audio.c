@@ -22,6 +22,7 @@
 
 #include "audio.h"
 #include "pipeasio_offsets.h"
+#include "pipeasio_config.h"
 #include "build_info.h" /* PIPEASIO_BUILD_ID, generated per build */
 
 #ifndef PIPEASIO_AUDIO_UNIXLIB
@@ -31,37 +32,7 @@
 #endif
 #include "wine/debug.h"
 
-#include <stdlib.h> /* getenv for PIPEASIO_DEBUG */
-
-/* Raw stderr logging; TRACE is gated by PIPEASIO_DEBUG. */
-#undef TRACE
-#undef WARN
-#undef ERR
-static inline int
-pipeasio_log_on(void)
-{
-    static int on = -1;
-    if (on < 0)
-        on = getenv("PIPEASIO_DEBUG") ? 1 : 0;
-    return on;
-}
-#define PIPEASIO_LOG(pfx, fmt, ...)                                                                \
-    do                                                                                             \
-    {                                                                                              \
-        char _buf[1024];                                                                           \
-        int  _n = snprintf(_buf, sizeof _buf, pfx fmt, ##__VA_ARGS__);                             \
-        if (_n > 0)                                                                                \
-            (void)write(STDERR_FILENO, _buf,                                                       \
-                        (size_t)_n < sizeof _buf ? (size_t)_n : sizeof _buf - 1);                  \
-    } while (0)
-#define TRACE(fmt, ...)                                                                            \
-    do                                                                                             \
-    {                                                                                              \
-        if (pipeasio_log_on())                                                                     \
-            PIPEASIO_LOG("[pipeasio] ", fmt, ##__VA_ARGS__);                                       \
-    } while (0)
-#define WARN(fmt, ...) PIPEASIO_LOG("[pipeasio] WARN: ", fmt, ##__VA_ARGS__)
-#define ERR(fmt, ...) PIPEASIO_LOG("[pipeasio] ERR: ", fmt, ##__VA_ARGS__)
+#include "pipeasio_log.h"
 
 /* Printed by audio_open to identify the loaded binary. */
 #define PIPEASIO_BUILD_TAG __DATE__ " " __TIME__
@@ -87,8 +58,6 @@ pipeasio_log_on(void)
 #include <pmmintrin.h> /* _MM_SET_DENORMALS_ZERO_MODE */
 #include <xmmintrin.h> /* _MM_SET_FLUSH_ZERO_MODE */
 
-WINE_DEFAULT_DEBUG_CHANNEL(asio);
-
 /* RT/data-loop thread id for diagnostics. */
 static unsigned long
 audio_current_thread_id(void)
@@ -104,9 +73,8 @@ audio_current_thread_id(void)
 #define AUDIO_DEFAULT_SAMPLE_RATE 48000u
 #define AUDIO_DEFAULT_BUFFER_SIZE 1024u
 
-/* SCHED_FIFO range offered to PipeWire's rt handling. */
-#define AUDIO_RT_PRIO_MIN 1
-#define AUDIO_RT_PRIO_MAX 80
+/* SCHED_FIFO range offered to PipeWire's rt handling
+ * (PIPEASIO_MIN/MAX_RT_PRIORITY from pipeasio_config.h). */
 /* Used when PipeWire asks for the module default (-1): we bypass
  * module-rt/RTKit, so pick our own.  The PipeWire daemon's data loop gets
  * its RT priority through RTKit on stock desktops, whose default cap is 20
@@ -201,8 +169,8 @@ audio_rt_get_range(void *data, const struct spa_dict *props, int *min, int *max)
 {
     (void)data;
     (void)props;
-    *min = AUDIO_RT_PRIO_MIN;
-    *max = AUDIO_RT_PRIO_MAX;
+    *min = PIPEASIO_MIN_RT_PRIORITY;
+    *max = PIPEASIO_MAX_RT_PRIORITY;
     return 0;
 }
 
@@ -222,8 +190,8 @@ audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
         priority = s->config_priority;
     if (priority <= 0)
         priority = AUDIO_RT_PRIO_DEFAULT;
-    if (priority > AUDIO_RT_PRIO_MAX)
-        priority = AUDIO_RT_PRIO_MAX;
+    if (priority > PIPEASIO_MAX_RT_PRIORITY)
+        priority = PIPEASIO_MAX_RT_PRIORITY;
 
     int err = pthread_setschedparam(s->ptid, SCHED_FIFO,
                                     &(struct sched_param){ .sched_priority = priority });
@@ -1021,34 +989,17 @@ audio_port_type(const audio_port_t *p)
     return p ? p->type : NULL;
 }
 
+static audio_port_t *audio_lookup_port(audio_client_t *c, const char *name, uint32_t *node_id_out);
+
 audio_port_t *
 audio_port_by_name(audio_client_t *c, const char *port_name)
 {
     if (!c || !port_name)
         return NULL;
     pw_thread_loop_lock(c->loop);
-    for (uint32_t i = 0; i < c->n_discovered; i++)
-    {
-        audio_port_t *p = c->discovered[i];
-        if (p->name && !strcmp(p->name, port_name))
-        {
-            pw_thread_loop_unlock(c->loop);
-            return p;
-        }
-    }
-    /* Also check our own (filter) ports, since asio.c does pass our own
-     * names through audio_port_by_name in some legacy paths. */
-    for (uint32_t i = 0; i < c->n_ports; i++)
-    {
-        audio_port_t *p = c->ports[i];
-        if (p->name && !strcmp(p->name, port_name))
-        {
-            pw_thread_loop_unlock(c->loop);
-            return p;
-        }
-    }
+    audio_port_t *p = audio_lookup_port(c, port_name, NULL);
     pw_thread_loop_unlock(c->loop);
-    return NULL;
+    return p;
 }
 
 /* Resolve the PipeWire default node only when it has a matching port. */
@@ -1103,8 +1054,10 @@ audio_get_ports(audio_client_t *c, const char *port_name_pattern, const char *ty
     uint32_t n_match = 0;
     size_t   arena   = 0;
 
-    /* Use one hardware node per direction to avoid async links across devices. */
-    uint32_t target_node = audio_preferred_default_node(c, flags);
+    /* Use one hardware node per direction to avoid async links across devices.
+     * The preferred default is resolved once; both passes start from it. */
+    const uint32_t preferred   = audio_preferred_default_node(c, flags);
+    uint32_t       target_node = preferred;
     for (uint32_t i = 0; i < c->n_discovered; i++)
     {
         audio_port_t *p = c->discovered[i];
@@ -1127,7 +1080,7 @@ audio_get_ports(audio_client_t *c, const char *port_name_pattern, const char *ty
     char *names = (char *)(result + n_match + 1);
 
     uint32_t out = 0;
-    target_node  = audio_preferred_default_node(c, flags);
+    target_node    = preferred;
     for (uint32_t i = 0; i < c->n_discovered && out < n_match; i++)
     {
         audio_port_t *p = c->discovered[i];
@@ -1347,12 +1300,6 @@ audio_connect(audio_client_t *c, const char *src, const char *dst)
     }
     TRACE("audio_connect: %s -> %s (link proxy %p)\n", src, dst, link);
     return true;
-}
-
-void
-audio_free(void *ptr)
-{
-    free(ptr);
 }
 
 void

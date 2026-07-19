@@ -351,6 +351,12 @@ audio_set_follow_device(audio_client_t *client, bool follow)
     set_u32((proxy_ctx *)client, PAU_SET_FOLLOW_DEVICE, follow ? 1 : 0);
 }
 
+void
+audio_set_rt_priority(audio_client_t *client, int priority)
+{
+    set_u32((proxy_ctx *)client, PAU_SET_RT_PRIORITY, (uint32_t)priority);
+}
+
 audio_nframes_t
 audio_observed_quantum(audio_client_t *client)
 {
@@ -660,13 +666,6 @@ audio_connect(audio_client_t *client, const char *src, const char *dst)
     if (UCALL(PAU_CONNECT, &p) != 0)
         return false;
     return p.ok != 0;
-}
-
-void
-audio_free(void *ptr)
-{
-    if (ptr)
-        HeapFree(GetProcessHeap(), 0, ptr);
 }
 
 void

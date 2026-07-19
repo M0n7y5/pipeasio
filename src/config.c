@@ -130,9 +130,7 @@ validate(struct pipeasio_config *c)
     if (c->outputs < 0 || c->outputs > PIPEASIO_MAX_CHANNELS)
         c->outputs = PIPEASIO_DEFAULT_OUTPUTS;
 
-    const int b = c->buffer_size;
-    if (!(b > 0 && (b & (b - 1)) == 0 && b >= PIPEASIO_MIN_BUFFER_SIZE
-          && b <= PIPEASIO_MAX_BUFFER_SIZE))
+    if (!pipeasio_buffer_size_valid(c->buffer_size))
         c->buffer_size = PIPEASIO_DEFAULT_BUFFER_SIZE;
 
     if (c->sample_rate < 0)
@@ -156,6 +154,9 @@ pipeasio_config_load(struct pipeasio_config *out)
         return false;
 
     char line[1024];
+    /* Section handling is mirrored by the settings panel (gui/Config.cpp);
+     * keep both in sync when changing it.  Intentional differences are
+     * documented there. */
     bool in_section = true; /* tolerate keys before any [section] header */
     while (fgets(line, sizeof line, f))
     {

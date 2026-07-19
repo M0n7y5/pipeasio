@@ -84,8 +84,6 @@ WINE_DEFAULT_DEBUG_CHANNEL(asio);
 
 #define MAX_ENVIRONMENT_SIZE 64
 #define PIPEASIO_MAX_NAME_LENGTH 32
-#define PIPEASIO_MINIMUM_BUFFERSIZE 16
-#define PIPEASIO_MAXIMUM_BUFFERSIZE 8192
 #define PIPEASIO_PREFERRED_BUFFERSIZE 1024
 
 /* i386 ASIO uses MS thiscall; GCC needs a trampoline. */
@@ -232,9 +230,6 @@ typedef struct IPipeASIOImpl
     const IPipeASIOVtbl *lpVtbl;
     LONG                 ref;
 
-    /* The app's main window handle on windows, 0 on OS/X */
-    HWND sys_ref;
-
     /* Host stuff */
     LONG host_active_inputs;
     LONG host_active_outputs;
@@ -355,10 +350,10 @@ HIDDEN void __thiscall_OutputReady(void);
  *  ASIO process callbacks
  */
 
-static inline int  buffer_size_callback(audio_nframes_t nframes, void *arg);
-static inline void latency_callback(audio_latency_mode_t mode, void *arg);
-static inline int  process_callback(audio_nframes_t nframes, void *arg);
-static inline int  sample_rate_callback(audio_nframes_t nframes, void *arg);
+static int  buffer_size_callback(audio_nframes_t nframes, void *arg);
+static void latency_callback(audio_latency_mode_t mode, void *arg);
+static int  process_callback(audio_nframes_t nframes, void *arg);
+static int  sample_rate_callback(audio_nframes_t nframes, void *arg);
 
 /*
  *  Support functions
@@ -367,9 +362,7 @@ static inline int  sample_rate_callback(audio_nframes_t nframes, void *arg);
 HRESULT WINAPI PipeASIOCreateInstance(REFIID riid, LPVOID *ppobj);
 static VOID    configure_driver(IPipeASIOImpl *This);
 
-/* {2d3ca9e2-1193-4c5d-b5fd-38798f3dc074} */
-static GUID const CLSID_PipeASIO
-        = { 0x2d3ca9e2, 0x1193, 0x4c5d, { 0xb5, 0xfd, 0x38, 0x79, 0x8f, 0x3d, 0xc0, 0x74 } };
+#include "pipeasio_clsid.h"
 
 static const IPipeASIOVtbl PipeASIO_Vtbl = { (void *)QueryInterface,
                                              (void *)AddRef,
@@ -712,7 +705,7 @@ Init(LPPIPEASIO iface, void *sysRef)
     uint32_t       audio_options = AUDIO_NULL_OPTION;
     int            i;
 
-    This->sys_ref = sysRef;
+    (void)sysRef; /* app's main window handle on Windows, unused on Linux */
     /* Do not call mlockall(MCL_FUTURE).  Wine's win32u maps USER shared memory
      * after driver init; locking those pages can exhaust RLIMIT_MEMLOCK and
      * crash plugin-heavy hosts.  PipeWire's RT module owns paging. */
@@ -789,44 +782,25 @@ Init(LPPIPEASIO iface, void *sysRef)
     TRACE("%i IOChannel structures initialized\n",
           This->pipeasio_number_inputs + This->pipeasio_number_outputs);
 
-    if (!audio_set_buffer_size_callback(This->audio_client, buffer_size_callback, This))
     {
-        audio_close(This->audio_client);
-        HeapFree(GetProcessHeap(), 0, This->input_channel);
-        ERR("Unable to register buffer size change callback\n");
-        audio_free_ports(This->phys_input_ports);
-        audio_free_ports(This->phys_output_ports);
-        return 0;
-    }
-
-    if (!audio_set_latency_callback(This->audio_client, latency_callback, This))
-    {
-        audio_close(This->audio_client);
-        HeapFree(GetProcessHeap(), 0, This->input_channel);
-        ERR("Unable to register latency callback\n");
-        audio_free_ports(This->phys_input_ports);
-        audio_free_ports(This->phys_output_ports);
-        return 0;
-    }
-
-    if (!audio_set_process_callback(This->audio_client, process_callback, This))
-    {
-        audio_close(This->audio_client);
-        HeapFree(GetProcessHeap(), 0, This->input_channel);
-        ERR("Unable to register process callback\n");
-        audio_free_ports(This->phys_input_ports);
-        audio_free_ports(This->phys_output_ports);
-        return 0;
-    }
-
-    if (!audio_set_sample_rate_callback(This->audio_client, sample_rate_callback, This))
-    {
-        audio_close(This->audio_client);
-        HeapFree(GetProcessHeap(), 0, This->input_channel);
-        ERR("Unable to register sample rate change callback\n");
-        audio_free_ports(This->phys_input_ports);
-        audio_free_ports(This->phys_output_ports);
-        return 0;
+        const char *failed = NULL;
+        if (!audio_set_buffer_size_callback(This->audio_client, buffer_size_callback, This))
+            failed = "buffer size change";
+        else if (!audio_set_latency_callback(This->audio_client, latency_callback, This))
+            failed = "latency";
+        else if (!audio_set_process_callback(This->audio_client, process_callback, This))
+            failed = "process";
+        else if (!audio_set_sample_rate_callback(This->audio_client, sample_rate_callback, This))
+            failed = "sample rate change";
+        if (failed)
+        {
+            ERR("Unable to register %s callback\n", failed);
+            audio_close(This->audio_client);
+            HeapFree(GetProcessHeap(), 0, This->input_channel);
+            audio_free_ports(This->phys_input_ports);
+            audio_free_ports(This->phys_output_ports);
+            return 0;
+        }
     }
 
     This->host_driver_state = Initialized;
@@ -869,17 +843,16 @@ HIDDEN LONG STDMETHODCALLTYPE
 Start(LPPIPEASIO iface)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
-    int            i;
 
     TRACE("iface: %p\n", iface);
 
     if (This->host_driver_state != Prepared)
         return -1000;
 
-    for (i = 0; i < (This->pipeasio_number_inputs + This->pipeasio_number_outputs) * 2
-                            * This->host_current_buffersize;
-         i++)
-        This->callback_audio_buffer[i] = 0;
+    memset(This->callback_audio_buffer, 0,
+           sizeof *This->callback_audio_buffer
+                   * (size_t)(This->pipeasio_number_inputs + This->pipeasio_number_outputs) * 2
+                   * This->host_current_buffersize);
 
     /* prime the callback by preprocessing one outbound host bufffer.
      * Position zeroes on every transport Start: with FL Studio's
@@ -1000,8 +973,8 @@ GetBufferSize(LPPIPEASIO iface, LONG *minSize, LONG *maxSize, LONG *preferredSiz
         return 0;
     }
 
-    *minSize       = PIPEASIO_MINIMUM_BUFFERSIZE;
-    *maxSize       = PIPEASIO_MAXIMUM_BUFFERSIZE;
+    *minSize       = PIPEASIO_MIN_BUFFER_SIZE;
+    *maxSize       = PIPEASIO_MAX_BUFFER_SIZE;
     *preferredSize = pref;
     *granularity   = -1;
     TRACE("The host can control buffersize (min=%d max=%d preferred=%d)\n", (int)*minSize,
@@ -1150,6 +1123,24 @@ GetChannelInfo(LPPIPEASIO iface, void *info)
     return 0;
 }
 
+/* Copy the live-tunable fields of cfg into the impl.  Channel counts are
+ * NOT set here: they apply only at init (configure_driver), a live reload
+ * needs re-init to change them. */
+static void
+apply_config_fields(IPipeASIOImpl *This, const struct pipeasio_config *cfg)
+{
+    This->pipeasio_connect_to_hardware  = cfg->auto_connect ? TRUE : FALSE;
+    This->pipeasio_fixed_buffersize     = cfg->fixed_buffer_size ? TRUE : FALSE;
+    This->pipeasio_follow_device_clock  = cfg->follow_device_clock ? TRUE : FALSE;
+    This->pipeasio_preferred_buffersize = cfg->buffer_size; /* loader pow2-validated */
+    This->pipeasio_sample_rate          = cfg->sample_rate;
+    This->pipeasio_rt_priority          = cfg->rt_priority;
+    lstrcpynA(This->pipeasio_output_device, cfg->output_device,
+              sizeof This->pipeasio_output_device);
+    lstrcpynA(This->pipeasio_input_device, cfg->input_device,
+              sizeof This->pipeasio_input_device);
+}
+
 /* Commit a config staged by the watcher; recompute the forced quantum.
  * MUST run only with the RT data loop stopped (CreateBuffers, between
  * DisposeBuffers and audio_activate): it writes audio_client->follow_device,
@@ -1165,16 +1156,7 @@ apply_pending_config(IPipeASIOImpl *This)
         atomic_store_explicit(&This->config_pending, false, memory_order_release);
         LeaveCriticalSection(&This->config_lock);
 
-        This->pipeasio_connect_to_hardware  = cfg.auto_connect ? TRUE : FALSE;
-        This->pipeasio_fixed_buffersize     = cfg.fixed_buffer_size ? TRUE : FALSE;
-        This->pipeasio_follow_device_clock  = cfg.follow_device_clock ? TRUE : FALSE;
-        This->pipeasio_preferred_buffersize = cfg.buffer_size; /* loader pow2-validated */
-        This->pipeasio_sample_rate          = cfg.sample_rate;
-        This->pipeasio_rt_priority          = cfg.rt_priority;
-        lstrcpynA(This->pipeasio_output_device, cfg.output_device,
-                  sizeof This->pipeasio_output_device);
-        lstrcpynA(This->pipeasio_input_device, cfg.input_device,
-                  sizeof This->pipeasio_input_device);
+        apply_config_fields(This, &cfg);
 
         audio_set_forced_rate(This->audio_client, (audio_nframes_t)This->pipeasio_sample_rate);
         audio_set_follow_device(This->audio_client, This->pipeasio_follow_device_clock);
@@ -1280,9 +1262,7 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
     }
     else
     { /* fail if not a power of two and if out of range */
-        if (!(bufferSize > 0 && !(bufferSize & (bufferSize - 1))
-              && bufferSize >= PIPEASIO_MINIMUM_BUFFERSIZE
-              && bufferSize <= PIPEASIO_MAXIMUM_BUFFERSIZE))
+        if (!pipeasio_buffer_size_valid(bufferSize))
         {
             WARN("Invalid buffersize %d requested\n", (int)bufferSize);
             return -997;
@@ -1651,7 +1631,7 @@ OutputReady(LPPIPEASIO iface)
  *  ASIO process callbacks
  */
 
-static inline int
+static int
 buffer_size_callback(audio_nframes_t nframes, void *arg)
 {
     (void)nframes;
@@ -1665,7 +1645,7 @@ buffer_size_callback(audio_nframes_t nframes, void *arg)
     return 0;
 }
 
-static inline void
+static void
 latency_callback(audio_latency_mode_t mode, void *arg)
 {
     (void)mode;
@@ -1721,7 +1701,7 @@ pipeasio_host_is_running(void *This)
     return ((IPipeASIOImpl *)This)->host_driver_state == Running;
 }
 
-static inline int
+static int
 process_callback(audio_nframes_t nframes, void *arg)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)arg;
@@ -1733,11 +1713,10 @@ process_callback(audio_nframes_t nframes, void *arg)
     {
         for (i = 0; i < This->host_active_outputs; i++)
         {
-            audio_sample_t *dst   = audio_port_get_buffer(This->output_channel[i].port, nframes);
-            audio_nframes_t avail = audio_port_buffer_avail_frames(This->output_channel[i].port);
-            audio_nframes_t n     = (dst && avail < nframes) ? avail : (dst ? nframes : 0);
-            if (n)
-                memset(dst, 0, sizeof(audio_sample_t) * n);
+            audio_port_t   *port = This->output_channel[i].port;
+            audio_sample_t *dst  = audio_port_get_buffer(port, nframes);
+            audio_silence(dst, audio_clamp_frames(dst, audio_port_buffer_avail_frames(port),
+                                                  nframes));
         }
         return 0;
     }
@@ -1746,15 +1725,10 @@ process_callback(audio_nframes_t nframes, void *arg)
     for (i = 0; i < This->pipeasio_number_inputs; i++)
         if (This->input_channel[i].active)
         {
-            audio_sample_t *src = audio_port_get_buffer(This->input_channel[i].port, nframes);
-            audio_sample_t *dst
-                    = &This->input_channel[i].audio_buffer[nframes * This->host_buffer_index];
-            audio_nframes_t avail = audio_port_buffer_avail_frames(This->input_channel[i].port);
-            audio_nframes_t n     = (src && avail < nframes) ? avail : (src ? nframes : 0);
-            if (n)
-                memcpy(dst, src, sizeof(audio_sample_t) * n);
-            if (n < nframes)
-                memset(dst + n, 0, sizeof(audio_sample_t) * (nframes - n));
+            audio_port_t *port = This->input_channel[i].port;
+            audio_gather(&This->input_channel[i].audio_buffer[nframes * This->host_buffer_index],
+                         audio_port_get_buffer(port, nframes),
+                         audio_port_buffer_avail_frames(port), nframes);
         }
 
     pipeasio_host_buffer_switch(This, This->host_buffer_index, nframes,
@@ -1764,20 +1738,17 @@ process_callback(audio_nframes_t nframes, void *arg)
     for (i = 0; i < This->pipeasio_number_outputs; i++)
         if (This->output_channel[i].active)
         {
-            audio_sample_t *dst   = audio_port_get_buffer(This->output_channel[i].port, nframes);
-            audio_nframes_t avail = audio_port_buffer_avail_frames(This->output_channel[i].port);
-            audio_nframes_t n     = (dst && avail < nframes) ? avail : (dst ? nframes : 0);
-            if (n)
-                memcpy(dst,
-                       &This->output_channel[i].audio_buffer[nframes * This->host_buffer_index],
-                       sizeof(audio_sample_t) * n);
+            audio_port_t *port = This->output_channel[i].port;
+            audio_scatter(audio_port_get_buffer(port, nframes),
+                          &This->output_channel[i].audio_buffer[nframes * This->host_buffer_index],
+                          audio_port_buffer_avail_frames(port), nframes);
         }
 
     This->host_buffer_index = This->host_buffer_index ? 0 : 1;
     return 0;
 }
 
-static inline int
+static int
 sample_rate_callback(audio_nframes_t nframes, void *arg)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)arg;
@@ -1848,16 +1819,9 @@ configure_driver(IPipeASIOImpl *This)
           cfg_found ? "loaded" : "MISSING -> defaults", cfg_path, cfg.buffer_size, cfg.inputs,
           cfg.outputs, cfg.fixed_buffer_size, cfg.sample_rate, cfg.auto_connect, cfg.output_device,
           cfg.input_device);
-    This->pipeasio_number_inputs        = cfg.inputs;
-    This->pipeasio_number_outputs       = cfg.outputs;
-    This->pipeasio_connect_to_hardware  = cfg.auto_connect ? TRUE : FALSE;
-    This->pipeasio_fixed_buffersize     = cfg.fixed_buffer_size ? TRUE : FALSE;
-    This->pipeasio_follow_device_clock  = cfg.follow_device_clock ? TRUE : FALSE;
-    This->pipeasio_preferred_buffersize = cfg.buffer_size;
-    This->pipeasio_sample_rate          = cfg.sample_rate;
-    This->pipeasio_rt_priority          = cfg.rt_priority;
-    lstrcpynA(This->pipeasio_output_device, cfg.output_device, sizeof This->pipeasio_output_device);
-    lstrcpynA(This->pipeasio_input_device, cfg.input_device, sizeof This->pipeasio_input_device);
+    This->pipeasio_number_inputs  = cfg.inputs;
+    This->pipeasio_number_outputs = cfg.outputs;
+    apply_config_fields(This, &cfg);
 
     This->audio_client          = NULL;
     This->client_name[0]        = 0;
@@ -1964,10 +1928,7 @@ configure_driver(IPipeASIOImpl *This)
 
     /* if pipeasio_preferred_buffersize is not a power of two or out of range,
      * fall back to PIPEASIO_PREFERRED_BUFFERSIZE */
-    if (!(This->pipeasio_preferred_buffersize > 0
-          && !(This->pipeasio_preferred_buffersize & (This->pipeasio_preferred_buffersize - 1))
-          && This->pipeasio_preferred_buffersize >= PIPEASIO_MINIMUM_BUFFERSIZE
-          && This->pipeasio_preferred_buffersize <= PIPEASIO_MAXIMUM_BUFFERSIZE))
+    if (!pipeasio_buffer_size_valid(This->pipeasio_preferred_buffersize))
         This->pipeasio_preferred_buffersize = PIPEASIO_PREFERRED_BUFFERSIZE;
 
     return;

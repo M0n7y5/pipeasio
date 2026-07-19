@@ -67,6 +67,7 @@ enum pa_call
     PAU_CONFIG_FINGERPRINT,
     PAU_WAIT_CALLBACK,
     PAU_REPLY_CALLBACK,
+    PAU_SET_RT_PRIORITY,
     PAU_CALL_COUNT
 };
 
@@ -108,7 +109,8 @@ typedef struct
     uint32_t  result; /* out */
 } pa_simple_params;
 
-/* PAU_SET_BUFFER_SIZE / PAU_SET_FORCED_RATE / PAU_SET_FOLLOW_DEVICE. */
+/* PAU_SET_BUFFER_SIZE / PAU_SET_FORCED_RATE / PAU_SET_FOLLOW_DEVICE /
+ * PAU_SET_RT_PRIORITY. */
 typedef struct
 {
     uint32_t  version;

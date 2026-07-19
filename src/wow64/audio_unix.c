@@ -296,11 +296,9 @@ wow64_rt_process(audio_nframes_t nframes, void *arg)
         for (uint32_t i = 0; i < cc->n_out; i++)
             if (cc->out_active[i] && cc->out_port[i])
             {
-                audio_sample_t *dst   = audio_port_get_buffer(cc->out_port[i], nframes);
-                audio_nframes_t avail = audio_port_buffer_avail_frames(cc->out_port[i]);
-                audio_nframes_t n     = (dst && avail < nframes) ? avail : (dst ? nframes : 0);
-                if (n)
-                    memset(dst, 0, sizeof(audio_sample_t) * n);
+                audio_sample_t *dst = audio_port_get_buffer(cc->out_port[i], nframes);
+                audio_silence(dst, audio_clamp_frames(dst, audio_port_buffer_avail_frames(
+                                                                 cc->out_port[i]), nframes));
             }
         return 0;
     }
@@ -310,46 +308,30 @@ wow64_rt_process(audio_nframes_t nframes, void *arg)
     /* Gather. */
     for (uint32_t i = 0; i < cc->n_in; i++)
         if (cc->in_active[i] && cc->in_port[i])
-        {
-            audio_sample_t *src = audio_port_get_buffer(cc->in_port[i], nframes);
-            audio_sample_t *dst = cc->buffer_base
-                                  + pipeasio_host_input_offset_samples(i, cc->buffer_size)
-                                  + pipeasio_host_half_offset_samples(half, cc->buffer_size);
-            audio_nframes_t avail = audio_port_buffer_avail_frames(cc->in_port[i]);
-            audio_nframes_t n     = (src && avail < nframes) ? avail : (src ? nframes : 0);
-            if (n)
-                memcpy(dst, src, sizeof(audio_sample_t) * n);
-            if (n < nframes)
-                memset(dst + n, 0, sizeof(audio_sample_t) * (nframes - n));
-        }
+            audio_gather(cc->buffer_base + pipeasio_host_input_offset_samples(i, cc->buffer_size)
+                                 + pipeasio_host_half_offset_samples(half, cc->buffer_size),
+                         audio_port_get_buffer(cc->in_port[i], nframes),
+                         audio_port_buffer_avail_frames(cc->in_port[i]), nframes);
 
     /* Host callback. */
     produced = bridge_invoke(cc, PAU_CB_BUFFER_SWITCH, half, nframes,
                              audio_get_time_nsec(cc->client), 0);
 
-    /* Scatter or silence. */
+    /* Scatter, or silence when the PE side missed the deadline. */
     for (uint32_t i = 0; i < cc->n_out; i++)
         if (cc->out_active[i] && cc->out_port[i])
         {
-            audio_sample_t *dst = audio_port_get_buffer(cc->out_port[i], nframes);
-            if (!dst)
-                continue;
+            audio_sample_t *dst   = audio_port_get_buffer(cc->out_port[i], nframes);
             audio_nframes_t avail = audio_port_buffer_avail_frames(cc->out_port[i]);
-            audio_nframes_t n     = avail < nframes ? avail : nframes;
-            if (!n)
-                continue;
             if (produced)
-            {
-                audio_sample_t *src
-                        = cc->buffer_base
-                          + pipeasio_host_output_offset_samples(i, cc->n_in, cc->buffer_size)
-                          + pipeasio_host_half_offset_samples(half, cc->buffer_size);
-                memcpy(dst, src, sizeof(audio_sample_t) * n);
-            }
+                audio_scatter(dst,
+                              cc->buffer_base
+                                      + pipeasio_host_output_offset_samples(i, cc->n_in,
+                                                                            cc->buffer_size)
+                                      + pipeasio_host_half_offset_samples(half, cc->buffer_size),
+                              avail, nframes);
             else
-            {
-                memset(dst, 0, sizeof(audio_sample_t) * n);
-            }
+                audio_silence(dst, audio_clamp_frames(dst, avail, nframes));
         }
 
     cc->half = !half;
@@ -952,75 +934,63 @@ wow64_reply_callback(void *args)
     return STATUS_SUCCESS;
 }
 
-/* Call tables.  Order must match enum pa_call. */
+static NTSTATUS
+wow64_set_rt_priority(void *args)
+{
+    pa_set_u32_params *p = args;
+    client_ctx        *cc;
 
-const unixlib_entry_t __wine_unix_call_funcs[] = {
-    wow64_open,
-    wow64_close,
-    wow64_get_sample_rate,
-    wow64_get_buffer_size,
-    wow64_set_buffer_size,
-    wow64_set_forced_rate,
-    wow64_set_follow_device,
-    wow64_observed_quantum,
-    wow64_get_time_nsec,
-    wow64_default_changed,
-    wow64_port_register,
-    wow64_port_unregister,
-    wow64_port_name,
-    wow64_port_type,
-    wow64_port_by_name,
-    wow64_port_latency_range,
-    wow64_get_ports,
-    wow64_get_device_ports,
-    wow64_connect,
-    wow64_get_client_name,
-    wow64_activate,
-    wow64_deactivate,
-    wow64_install_callbacks,
-    wow64_bind_rt,
-    wow64_load_config,
-    wow64_config_fingerprint,
-    wow64_wait_callback,
-    wow64_reply_callback,
-};
+    PAU_CHECK(p);
+    cc = cc_get(p->client);
+    if (!cc)
+        return STATUS_INVALID_HANDLE;
+    audio_set_rt_priority(cc->client, (int)p->value);
+    p->result = 1;
+    return STATUS_SUCCESS;
+}
+
+/* Single list driving both call tables.  Order must match enum pa_call. */
+#define WOW64_CALLS(X)                                                                             \
+    X(wow64_open)                                                                                  \
+    X(wow64_close)                                                                                 \
+    X(wow64_get_sample_rate)                                                                       \
+    X(wow64_get_buffer_size)                                                                       \
+    X(wow64_set_buffer_size)                                                                       \
+    X(wow64_set_forced_rate)                                                                       \
+    X(wow64_set_follow_device)                                                                     \
+    X(wow64_observed_quantum)                                                                      \
+    X(wow64_get_time_nsec)                                                                         \
+    X(wow64_default_changed)                                                                       \
+    X(wow64_port_register)                                                                         \
+    X(wow64_port_unregister)                                                                       \
+    X(wow64_port_name)                                                                             \
+    X(wow64_port_type)                                                                             \
+    X(wow64_port_by_name)                                                                          \
+    X(wow64_port_latency_range)                                                                    \
+    X(wow64_get_ports)                                                                             \
+    X(wow64_get_device_ports)                                                                      \
+    X(wow64_connect)                                                                               \
+    X(wow64_get_client_name)                                                                       \
+    X(wow64_activate)                                                                              \
+    X(wow64_deactivate)                                                                            \
+    X(wow64_install_callbacks)                                                                     \
+    X(wow64_bind_rt)                                                                               \
+    X(wow64_load_config)                                                                           \
+    X(wow64_config_fingerprint)                                                                    \
+    X(wow64_wait_callback)                                                                         \
+    X(wow64_reply_callback)                                                                        \
+    X(wow64_set_rt_priority)
+
+#define PAU_TABLE_ENTRY(name) name,
+
+const unixlib_entry_t __wine_unix_call_funcs[] = { WOW64_CALLS(PAU_TABLE_ENTRY) };
+_Static_assert(sizeof(__wine_unix_call_funcs) / sizeof(__wine_unix_call_funcs[0]) == PAU_CALL_COUNT,
+               "unix call table size drift");
 
 #ifdef _WIN64
 /* The i386 PE front end dispatches here. */
-const unixlib_entry_t __wine_unix_call_wow64_funcs[] = {
-    wow64_open,
-    wow64_close,
-    wow64_get_sample_rate,
-    wow64_get_buffer_size,
-    wow64_set_buffer_size,
-    wow64_set_forced_rate,
-    wow64_set_follow_device,
-    wow64_observed_quantum,
-    wow64_get_time_nsec,
-    wow64_default_changed,
-    wow64_port_register,
-    wow64_port_unregister,
-    wow64_port_name,
-    wow64_port_type,
-    wow64_port_by_name,
-    wow64_port_latency_range,
-    wow64_get_ports,
-    wow64_get_device_ports,
-    wow64_connect,
-    wow64_get_client_name,
-    wow64_activate,
-    wow64_deactivate,
-    wow64_install_callbacks,
-    wow64_bind_rt,
-    wow64_load_config,
-    wow64_config_fingerprint,
-    wow64_wait_callback,
-    wow64_reply_callback,
-};
+const unixlib_entry_t __wine_unix_call_wow64_funcs[] = { WOW64_CALLS(PAU_TABLE_ENTRY) };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0])
                        == PAU_CALL_COUNT,
                "wow64 unix call table size drift");
 #endif
-
-_Static_assert(sizeof(__wine_unix_call_funcs) / sizeof(__wine_unix_call_funcs[0]) == PAU_CALL_COUNT,
-               "unix call table size drift");
