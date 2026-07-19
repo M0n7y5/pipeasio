@@ -881,7 +881,12 @@ Start(LPPIPEASIO iface)
          i++)
         This->callback_audio_buffer[i] = 0;
 
-    /* prime the callback by preprocessing one outbound host bufffer */
+    /* prime the callback by preprocessing one outbound host bufffer.
+     * Position zeroes on every transport Start: with FL Studio's
+     * "playback tracking = driver" the playhead maps the driver position
+     * onto the timeline, so zero-at-play makes it track the audible stream
+     * from the moment playback begins.  (The song cursor itself is only
+     * known to the host - no ASIO API conveys it to the driver.) */
     This->host_buffer_index = 0;
     atomic_store_explicit(&This->host_num_samples, 0, memory_order_relaxed);
     atomic_store_explicit(&This->host_time_stamp, 0, memory_order_relaxed);
