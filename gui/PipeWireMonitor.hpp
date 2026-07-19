@@ -46,8 +46,9 @@ struct NodeStats
     QString outputDeviceDetail; /* codec/format/state line for the output */
 };
 
-/* Parse `pw-top -b` output, returning stats for the first data row of the
- * LAST table iteration whose trailing NAME contains `nodeNameSubstr`. Pure. */
+/* Parse `pw-top -b` output, returning stats for the NEWEST data row whose
+ * trailing NAME contains `nodeNameSubstr` (scans backwards; a trailing
+ * header-only iteration from block-buffered streaming is skipped). Pure. */
 NodeStats parsePwTop(const QByteArray &out, const QString &nodeNameSubstr);
 
 /* Result of a pw-dump parse; produced on a worker thread (the dump is a few

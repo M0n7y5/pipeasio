@@ -203,6 +203,22 @@ test_parse_pwtop()
 
     /* An empty target must not match a random row (panel shows "waiting"). */
     CHECK(!parsePwTop(two, QString()).found);
+
+    /* Streaming regression: pw-top stdout is block-buffered, so the live
+     * buffer usually ENDS with a fresh header whose rows have not arrived
+     * yet (and possibly a truncated first row).  The parser must still find
+     * the newest complete data row instead of reporting "waiting" forever. */
+    const QByteArray streaming
+            = "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME\n"
+              "R   54    256  48000  64.9us   1.1us  0.01  0.00    1    S24LE 1 48000 mic\n"
+              "R   78    256  48000  11.0us   1.7ms  0.00  0.42    7                   = FL64\n"
+              "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME\n"
+              "R   54    25"; /* truncated mid-row: not enough tokens */
+    const NodeStats w = parsePwTop(streaming, QStringLiteral("FL64"));
+    CHECK(w.found);
+    CHECK(w.quantum == 256);
+    CHECK(std::fabs(w.dspLoad - 0.42) < 1e-9);
+    CHECK(w.xruns == 7);
 }
 
 static void

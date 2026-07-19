@@ -88,19 +88,18 @@ parsePwTop(const QByteArray &out, const QString &nodeNameSubstr)
     const QString     text  = QString::fromUtf8(out);
     const QStringList lines = text.split(QLatin1Char('\n'));
 
-    /* In batch mode pw-top prints one full table per iteration, and the first
-     * iteration is an all-zero baseline (per-cycle timings not measured yet).
-     * Parse only the LAST iteration: locate the final header row, then scan
-     * the rows after it. */
-    int lastHeader = -1;
-    for (int i = 0; i < lines.size(); ++i)
-    {
-        const QString &l = lines.at(i);
-        if (l.contains(QLatin1String("ID")) && l.contains(QLatin1String("QUANT")))
-            lastHeader = i;
-    }
-
-    for (int i = lastHeader + 1; i < lines.size(); ++i)
+    /* pw-top -b streams one table per iteration with block-buffered stdout:
+     * the live buffer typically ENDS with a fresh header whose rows only
+     * arrive in the next 4K block, so parsing "below the last header" can
+     * see zero rows indefinitely.  Instead scan BACKWARDS for the newest
+     * data row of our node: a truncated tail row is rejected by the token
+     * count, and the all-zero baseline iteration is skipped naturally.
+     * Fixed columns S ID QUANT RATE WAIT BUSY W/Q B/Q ERR occupy indices
+     * 0..8; everything from index 9 on is the variable-width FORMAT, an
+     * optional link marker (one of + = *), and the NAME (which may contain
+     * spaces).  Substring-match the configured node name against that
+     * trailing run. */
+    for (int i = lines.size() - 1; i >= 0; --i)
     {
         const QString line = lines.at(i).trimmed();
         if (line.isEmpty())
@@ -108,12 +107,13 @@ parsePwTop(const QByteArray &out, const QString &nodeNameSubstr)
 
         const QStringList tok
                 = line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-        /* Fixed columns S ID QUANT RATE WAIT BUSY W/Q B/Q ERR occupy indices
-         * 0..8; everything from index 9 on is the variable-width FORMAT, an
-         * optional link marker (one of + = *), and the NAME (which may
-         * contain spaces).  Substring-match the configured node name against
-         * that trailing run. */
         if (tok.size() < 10)
+            continue;
+
+        /* The header row also has 10+ tokens; its "ID" column is not numeric. */
+        bool idOk = false;
+        tok.at(1).toInt(&idOk);
+        if (!idOk)
             continue;
 
         const QString tail = QStringList(tok.mid(9)).join(QLatin1Char(' '));
