@@ -19,6 +19,15 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
 message(STATUS "Found libpipewire-0.3 ${PIPEWIRE_VERSION}")
 
+# Build identification: build_info.h is regenerated on every build when the
+# git state moves (number = commit count, hash, -dirty marker).
+add_custom_target(build_info ALL
+    ${CMAKE_COMMAND}
+        -DSRC=${CMAKE_SOURCE_DIR}
+        -DOUT=${CMAKE_BINARY_DIR}/generated/build_info.h
+        -P ${CMAKE_SOURCE_DIR}/cmake/GenBuildInfo.cmake
+    VERBATIM)
+
 include(WineDLL)
 
 add_wine_dll(
@@ -31,8 +40,15 @@ add_wine_dll(
               src/regsvr.c
     INCLUDES  ${CMAKE_SOURCE_DIR}/include
               ${PIPEWIRE_INCLUDE_DIRS}
+              ${CMAKE_BINARY_DIR}/generated
     LIBS      odbc32 ole32 uuid winmm user32 pipewire-0.3
 )
+add_dependencies(pipeasio64_objs build_info)
+# build_info.h is included by these files; make it a REAL dependency (the
+# target-level add_dependencies above is order-only and would not rebuild
+# them when the header is rewritten with a new build id).
+set_source_files_properties(src/audio.c src/asio.c PROPERTIES
+    OBJECT_DEPENDS "${CMAKE_BINARY_DIR}/generated/build_info.h")
 
 # Optional 32-bit WoW64 front end.
 # - pipeasio32.dll: i386 PE stub, installed under lib/wine/i386-windows

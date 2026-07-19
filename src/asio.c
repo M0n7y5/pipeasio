@@ -57,6 +57,7 @@
 #include "audio.h"
 #include "pipeasio_offsets.h"
 #include "pipeasio_config.h"
+#include "build_info.h" /* PIPEASIO_BUILD_ID, generated per build */
 #include "pipeasio_rt.h"
 #ifdef PIPEASIO_WOW64_PE
 #include "pipeasio_wow64_pe.h"
@@ -1544,6 +1545,7 @@ ControlPanel(LPPIPEASIO iface)
         lstrcpynA(cfg_path, "$XDG_CONFIG_HOME/pipeasio/config.ini", sizeof cfg_path);
 
     snprintf(message, sizeof message,
+             "PipeASIO %s (build %s)\n\n"
              "Please launch the PipeASIO settings panel from a terminal on your "
              "Linux host:\n\n"
              "    pipeasio-settings\n\n"
@@ -1553,7 +1555,7 @@ ControlPanel(LPPIPEASIO iface)
              "Changes are applied automatically about a second after you save, "
              "while PipeASIO is active. If they don't appear, reselect PipeASIO "
              "or restart this application.",
-             cfg_path);
+             PIPEASIO_VERSION, PIPEASIO_BUILD_ID, cfg_path);
 
     MessageBoxA(NULL, message, "PipeASIO Settings", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
     return 0;

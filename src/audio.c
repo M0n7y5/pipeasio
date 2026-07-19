@@ -22,6 +22,7 @@
 
 #include "audio.h"
 #include "pipeasio_offsets.h"
+#include "build_info.h" /* PIPEASIO_BUILD_ID, generated per build */
 
 #ifndef PIPEASIO_AUDIO_UNIXLIB
 #define WIN32_LEAN_AND_MEAN
@@ -518,7 +519,7 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
      * default.audio.sink/source values only land on the next round-trip. */
     audio_sync(c);
 
-    TRACE("audio_open(%s) -> %p [build " PIPEASIO_BUILD_TAG "] "
+    TRACE("audio_open(%s) -> %p [build " PIPEASIO_BUILD_ID " " PIPEASIO_BUILD_TAG "] "
           "(registry sync done: %u nodes, %u ports discovered)\n",
           c->name, c, c->n_nodes, c->n_discovered);
     return c;

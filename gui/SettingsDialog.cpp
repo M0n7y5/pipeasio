@@ -19,6 +19,7 @@
  * this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 #include "SettingsDialog.hpp"
+#include "build_info.h" /* PIPEASIO_BUILD_ID, generated per build */
 
 #include "Config.hpp"
 #include "DeviceEnumerator.hpp"
@@ -57,7 +58,7 @@ const SampleRateItem kSampleRates[] = {
 
 SettingsDialog::SettingsDialog(QWidget *parent) : QDialog(parent)
 {
-    setWindowTitle(QStringLiteral("PipeASIO Settings - " PIPEASIO_VERSION));
+    setWindowTitle(QStringLiteral("PipeASIO Settings - " PIPEASIO_VERSION " (" PIPEASIO_BUILD_ID ")"));
 
     auto *tabs = new QTabWidget(this);
     tabs->addTab(buildSettingsTab(), QStringLiteral("Settings"));
@@ -265,6 +266,13 @@ SettingsDialog::buildAboutTab()
     auto *version = new QLabel(QStringLiteral("Version " PIPEASIO_VERSION), page);
     version->setStyleSheet(QStringLiteral("color: gray;"));
     layout->addWidget(version);
+
+    auto *build = new QLabel(QStringLiteral("Build " PIPEASIO_BUILD_ID), page);
+    build->setStyleSheet(QStringLiteral("color: gray;"));
+    build->setToolTip(QStringLiteral("Build number (commit count), git hash and -dirty marker "
+                                     "of the running panel. Compare with the build line in the "
+                                     "driver's control panel dialog."));
+    layout->addWidget(build);
 
     auto *desc = new QLabel(
             QStringLiteral("A PipeWire-native ASIO driver for Wine and Proton. It gives "
