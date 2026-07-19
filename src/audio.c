@@ -1639,9 +1639,16 @@ audio_cache_port(audio_client_t *c, uint32_t id, const struct spa_dict *props)
         return;
     }
 
-    /* External port.  Skip monitor-of-sink (avoid feedback loops). */
+    /* External port.  Skip monitor ports of sinks (avoid feedback loops),
+     * but keep monitor ports of sources: virtual sources such as
+     * easyeffects_source expose their usable capture ports with
+     * port.monitor=true. */
     if (monitor && !strcmp(monitor, "true"))
-        return;
+    {
+        struct audio_node_info *mn = audio_find_node(c, node_id);
+        if (mn && mn->media_class && strstr(mn->media_class, "Sink"))
+            return;
+    }
 
     /* Look up the node to confirm it's audio, and to build the full name. */
     struct audio_node_info *n = audio_find_node(c, node_id);

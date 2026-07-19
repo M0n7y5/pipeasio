@@ -57,8 +57,8 @@ parsePwDump(const QByteArray &json)
                                           .toObject();
 
         const QString mediaClass = props.value(QStringLiteral("media.class")).toString();
-        const bool    isSink     = (mediaClass == QLatin1String("Audio/Sink"));
-        const bool    isSource   = (mediaClass == QLatin1String("Audio/Source"));
+        const bool    isSink     = mediaClass.startsWith(QLatin1String("Audio/Sink"));
+        const bool    isSource   = mediaClass.startsWith(QLatin1String("Audio/Source"));
         if (!isSink && !isSource)
             continue;
 
