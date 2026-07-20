@@ -49,10 +49,12 @@
 #include <objbase.h>
 #include <mmsystem.h>
 #include <winreg.h>
-#include <winuser.h> /* MessageBoxA for the ControlPanel info dialog */
+#include <winuser.h>
 #ifdef WINE_WITH_UNICODE
 #include <wine/unicode.h>
 #endif
+
+#include "control_panel.h"
 
 #include "audio.h"
 #include "pipeasio_offsets.h"
@@ -1516,33 +1518,8 @@ DEFINE_THISCALL_WRAPPER(ControlPanel, 4)
 HIDDEN LONG STDMETHODCALLTYPE
 ControlPanel(LPPIPEASIO iface)
 {
-    char cfg_path[1024];
-    char message[1536];
-
     TRACE("iface: %p\n", iface);
-
-    /* The settings panel (pipeasio-settings) is a native Linux/Qt app and
-     * cannot run inside the Wine/Proton container the host loads us into:
-     * the container has no Qt libraries and no clean route back to the host.
-     * Rather than fork/exec it and silently fail, tell the user to launch it
-     * from a host terminal, and point at the exact INI it edits. */
-    if (!pipeasio_config_path(cfg_path, sizeof cfg_path))
-        lstrcpynA(cfg_path, "$XDG_CONFIG_HOME/pipeasio/config.ini", sizeof cfg_path);
-
-    snprintf(message, sizeof message,
-             "PipeASIO %s (build %s)\n\n"
-             "Please launch the PipeASIO settings panel from a terminal on your "
-             "Linux host:\n\n"
-             "    pipeasio-settings\n\n"
-             "It is a native Linux app, so it cannot run inside this Wine/Proton "
-             "container.\n\n"
-             "Settings are saved to:\n    %s\n\n"
-             "Changes are applied automatically about a second after you save, "
-             "while PipeASIO is active. If they don't appear, reselect PipeASIO "
-             "or restart this application.",
-             PIPEASIO_VERSION, PIPEASIO_BUILD_ID, cfg_path);
-
-    MessageBoxA(NULL, message, "PipeASIO Settings", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+    pipeasio_control_panel();
     return 0;
 }
 

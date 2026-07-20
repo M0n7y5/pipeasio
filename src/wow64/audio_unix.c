@@ -852,6 +852,27 @@ wow64_load_config(void *args)
 }
 
 static NTSTATUS
+wow64_save_config(void *args)
+{
+    pa_config_params *p = args;
+
+    PAU_CHECK(p);
+    p->found = pipeasio_config_save(&p->cfg) ? 1 : 0;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+wow64_config_path(void *args)
+{
+    pa_name_params *p = args;
+
+    PAU_CHECK(p);
+    p->name[0] = '\0';
+    pipeasio_config_path(p->name, sizeof p->name);
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 wow64_config_fingerprint(void *args)
 {
     pa_fingerprint_params *p = args;
@@ -979,7 +1000,9 @@ wow64_set_rt_priority(void *args)
     X(wow64_config_fingerprint)                                                                    \
     X(wow64_wait_callback)                                                                         \
     X(wow64_reply_callback)                                                                        \
-    X(wow64_set_rt_priority)
+    X(wow64_set_rt_priority)                                                                       \
+    X(wow64_save_config)                                                                           \
+    X(wow64_config_path)
 
 #define PAU_TABLE_ENTRY(name) name,
 

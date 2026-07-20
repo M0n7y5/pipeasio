@@ -42,6 +42,8 @@ class SettingsDialog : public QDialog
     void onApply();
     void onRestoreDefaults();
     void onMonitorUpdated(const NodeStats &stats);
+    void onCfgWatch(); /* config file changed on disk => reload (unless dirty) */
+    void markDirty();  /* user touched a setting: pause the file watch */
 
   private:
     QWidget *buildSettingsTab();
@@ -78,4 +80,11 @@ class SettingsDialog : public QDialog
 
     PipeWireGraph   m_graph; /* destroyed first; m_monitor only holds a pointer */
     PipeWireMonitor m_monitor;
+
+    /* Config file watch: reload when the file changes on disk (driver's
+     * ControlPanel or an external editor), unless the user has unsaved edits. */
+    class QTimer *m_cfgWatch = nullptr;
+    QString       m_cfgFp;
+    bool          m_dirty    = false;
+    bool          m_applying = false; /* applyConfig in progress (not user edit) */
 };

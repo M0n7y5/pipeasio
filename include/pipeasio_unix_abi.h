@@ -68,6 +68,8 @@ enum pa_call
     PAU_WAIT_CALLBACK,
     PAU_REPLY_CALLBACK,
     PAU_SET_RT_PRIORITY,
+    PAU_SAVE_CONFIG,
+    PAU_CONFIG_PATH,
     PAU_CALL_COUNT
 };
 
@@ -177,7 +179,8 @@ typedef struct
     uint32_t  ok; /* out */
 } pa_connect_params;
 
-/* PAU_GET_CLIENT_NAME: audio_get_client_name(client) -> name. */
+/* PAU_GET_CLIENT_NAME / PAU_CONFIG_PATH: name is out (client unused for
+ * PAU_CONFIG_PATH; empty name = failure). */
 typedef struct
 {
     uint32_t  version;

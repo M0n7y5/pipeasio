@@ -124,6 +124,14 @@ extern "C"
  */
     bool pipeasio_config_path(char *buf, size_t n);
 
+    /*
+ * Serialize `c` to the config file in the panel's INI format (the single
+ * writer used by the settings panel and the driver's ASIO ControlPanel).
+ * Writes via a temporary file + atomic rename so the driver's config watcher
+ * never observes a half-written file; creates the config directory if needed.
+ */
+    bool pipeasio_config_save(const struct pipeasio_config *c);
+
 #ifdef __cplusplus
 }
 #endif

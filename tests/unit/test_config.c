@@ -152,6 +152,53 @@ main(void)
         EXPECT_EQ(c.outputs, 3);
     }
 
+    /* Save -> load roundtrip: every field survives; the on-disk format is
+     * the panel's ([pipeasio] section, "key = value" lines). */
+    TEST_GROUP("save/load roundtrip")
+    {
+        struct pipeasio_config w;
+        pipeasio_config_load(&w); /* defaults as the base */
+        w.inputs              = 4;
+        w.outputs             = 6;
+        w.buffer_size         = 512;
+        w.fixed_buffer_size   = false;
+        w.sample_rate         = 96000;
+        w.auto_connect        = false;
+        w.follow_device_clock = true;
+        w.rt_priority         = 25;
+        snprintf(w.output_device, sizeof w.output_device, "sink.test");
+        snprintf(w.input_device, sizeof w.input_device, "src.test");
+        snprintf(w.node_name, sizeof w.node_name, "MyNode");
+        EXPECT_TRUE(pipeasio_config_save(&w));
+
+        struct pipeasio_config r;
+        EXPECT_TRUE(pipeasio_config_load(&r));
+        EXPECT_EQ(r.inputs, 4);
+        EXPECT_EQ(r.outputs, 6);
+        EXPECT_EQ(r.buffer_size, 512);
+        EXPECT_EQ(r.fixed_buffer_size, false);
+        EXPECT_EQ(r.sample_rate, 96000);
+        EXPECT_EQ(r.auto_connect, false);
+        EXPECT_EQ(r.follow_device_clock, true);
+        EXPECT_EQ(r.rt_priority, 25);
+        EXPECT_TRUE(!strcmp(r.output_device, "sink.test"));
+        EXPECT_TRUE(!strcmp(r.input_device, "src.test"));
+        EXPECT_TRUE(!strcmp(r.node_name, "MyNode"));
+
+        /* The written file carries the panel's section header. */
+        char path[400];
+        cfg_path(path, sizeof path);
+        FILE *f = fopen(path, "r");
+        char body[2048] = { 0 };
+        if (f)
+        {
+            (void)fread(body, 1, sizeof body - 1, f);
+            fclose(f);
+        }
+        EXPECT_TRUE(strstr(body, "[pipeasio]") != NULL);
+        EXPECT_TRUE(strstr(body, "buffer_size = 512") != NULL);
+    }
+
     remove_cfg();
     return test_report();
 }

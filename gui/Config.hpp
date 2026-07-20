@@ -1,9 +1,9 @@
 /*
  * Config.hpp - INI read/write for the PipeASIO settings panel.
  *
- * Reuses `struct pipeasio_config` from the shared driver/panel contract.
- * parseIni() and serializeIni() are PURE (no file I/O) so they are unit
- * testable with fixture strings.
+ * Thin Qt wrapper over the driver's own reader/writer (src/config.c): there
+ * is exactly ONE INI parser and ONE serializer in the project, so the panel
+ * and the driver can never drift apart on the on-disk format.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
@@ -38,22 +38,13 @@ namespace Config
  * are left empty. */
 pipeasio_config defaults();
 
-/* Parse a flat INI document. Pure: operates on the passed text only.
- * Lenient - optional [pipeasio] header, key = value lines, #/; comments,
- * whitespace trimmed. Unknown keys ignored, missing keys keep defaults,
- * out-of-range numerics fall back to defaults. */
-pipeasio_config parseIni(const QString &text);
-
-/* Serialize to the exact flat format the driver parses. Pure. */
-QString serializeIni(const pipeasio_config &c);
-
 /* Absolute path to the config file (QStandardPaths ConfigLocation). */
 QString configPath();
 
-/* Read configPath() and parse it; defaults() when the file is missing. */
+/* Read the config file via the driver's C reader; defaults() when missing. */
 pipeasio_config load();
 
-/* mkpath the directory and write serializeIni() to configPath(). */
+/* Write via the driver's C writer (atomic tmp+rename). */
 bool save(const pipeasio_config &c);
 
 } // namespace Config

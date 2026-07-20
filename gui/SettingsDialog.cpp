@@ -24,6 +24,9 @@
 #include "Config.hpp"
 #include "LoadHistogram.hpp"
 
+#include <QFileInfo>
+#include <QTimer>
+
 #include <QByteArray>
 #include <QCheckBox>
 #include <QComboBox>
@@ -52,6 +55,23 @@ const SampleRateItem kSampleRates[] = {
     { "Follow PipeWire", 0 }, { "44100", 44100 }, { "48000", 48000 },
     { "88200", 88200 },       { "96000", 96000 }, { "192000", 192000 },
 };
+
+} // namespace
+
+namespace
+{
+
+/* mtime+size tag of config.ini; cheap change detector for the file watch. */
+QString
+configFingerprint()
+{
+    const QFileInfo fi(Config::configPath());
+    if (!fi.exists())
+        return {};
+    return QStringLiteral("%1:%2")
+            .arg(fi.lastModified().toMSecsSinceEpoch())
+            .arg(fi.size());
+}
 
 } // namespace
 
@@ -87,6 +107,22 @@ SettingsDialog::SettingsDialog(QWidget *parent) : QDialog(parent)
     const pipeasio_config cfg = Config::load();
     applyConfig(cfg);
 
+    /* Watch the config file for external changes (the driver's ControlPanel
+     * or a text editor).  onCfgWatch skips reloads while the user has unsaved
+     * edits (m_dirty). */
+    m_cfgFp    = configFingerprint();
+    m_cfgWatch = new QTimer(this);
+    m_cfgWatch->setInterval(1500);
+    connect(m_cfgWatch, &QTimer::timeout, this, &SettingsDialog::onCfgWatch);
+    m_cfgWatch->start();
+    for (QSpinBox *sb : { m_inputs, m_outputs, m_rtPriority })
+        connect(sb, &QSpinBox::valueChanged, this, &SettingsDialog::markDirty);
+    for (QComboBox *cb : { m_bufferSize, m_sampleRate, m_outputDevice, m_inputDevice })
+        connect(cb, &QComboBox::currentIndexChanged, this, &SettingsDialog::markDirty);
+    for (QCheckBox *ck : { m_autoConnect, m_fixedBuffer, m_followDeviceClock })
+        connect(ck, &QCheckBox::toggled, this, &SettingsDialog::markDirty);
+    connect(m_nodeName, &QLineEdit::textEdited, this, &SettingsDialog::markDirty);
+
     connect(&m_monitor, &PipeWireMonitor::updated, this, &SettingsDialog::onMonitorUpdated);
     /* Empty target => the monitor auto-discovers our node via the driver's
      * "pipeasio.node" marker (the host names the node after its own exe). */
@@ -116,6 +152,9 @@ SettingsDialog::refreshDevices()
 
     const QString savedOut = m_outputDevice->currentData().toString();
     const QString savedIn  = m_inputDevice->currentData().toString();
+    /* Rebuilding programmatically must not count as a user edit (m_dirty is
+     * what the config file watch keys off). */
+    const QSignalBlocker blockOut(m_outputDevice), blockIn(m_inputDevice);
     m_outputDevice->clear();
     m_inputDevice->clear();
     m_outputDevice->addItem(QStringLiteral("Follow default"), QString());
@@ -374,6 +413,7 @@ SettingsDialog::updateLatencyLabel()
 void
 SettingsDialog::applyConfig(const pipeasio_config &c)
 {
+    m_applying = true;
     m_inputs->setValue(c.inputs);
     m_outputs->setValue(c.outputs);
 
@@ -415,12 +455,14 @@ SettingsDialog::applyConfig(const pipeasio_config &c)
     m_rtPriority->setValue(c.rt_priority);
 
     updateLatencyLabel();
+    m_applying = false;
 }
 
 void
 SettingsDialog::onRestoreDefaults()
 {
     applyConfig(Config::defaults());
+    m_dirty = true; /* user still has to Apply */
 }
 
 void
@@ -444,6 +486,28 @@ SettingsDialog::onApply()
     qstrncpy(cfg.node_name, node.constData(), sizeof(cfg.node_name));
 
     Config::save(cfg);
+    m_cfgFp  = configFingerprint(); /* our own write: don't treat as external */
+    m_dirty  = false;
+}
+
+void
+SettingsDialog::markDirty()
+{
+    if (!m_applying)
+        m_dirty = true;
+}
+
+void
+SettingsDialog::onCfgWatch()
+{
+    const QString fp = configFingerprint();
+    if (fp == m_cfgFp)
+        return;             /* unchanged */
+    if (m_dirty)
+        return;             /* user's unsaved edits win; retry next tick */
+
+    applyConfig(Config::load());
+    m_cfgFp = fp;
 }
 
 /* Device name on top, its attributes on a smaller muted line below. */

@@ -25,10 +25,23 @@
 #include "pipeasio_config.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h> /* strcasecmp */
+#include <sys/stat.h>
+#include <unistd.h>
+
+#ifdef _WIN32
+#include <direct.h> /* _mkdir */
+#include <io.h>      /* _unlink */
+#define cfg_mkdir(d) (_mkdir(d))
+#define cfg_unlink(f) (_unlink(f))
+#else
+#define cfg_mkdir(d) (mkdir(d, 0755))
+#define cfg_unlink(f) (unlink(f))
+#endif
 
 bool
 pipeasio_config_path(char *buf, size_t n)
@@ -186,4 +199,54 @@ pipeasio_config_load(struct pipeasio_config *out)
     fclose(f);
     validate(out);
     return true;
+}
+
+
+/* The single writer for the panel's INI format; the Qt panel calls this too,
+ * so the on-disk layout has exactly one implementation. */
+bool
+pipeasio_config_save(const struct pipeasio_config *c)
+{
+    char path[1024];
+    if (!pipeasio_config_path(path, sizeof path))
+        return false;
+
+    /* Ensure the config directory exists (one level under the config home). */
+    char dir[1024];
+    snprintf(dir, sizeof dir, "%s", path);
+    char *slash = strrchr(dir, '/');
+    if (slash)
+    {
+        *slash = '\0';
+        if (cfg_mkdir(dir) != 0 && errno != EEXIST)
+            return false;
+    }
+
+    /* tmp + rename: the driver's config watcher polls every second and must
+     * never read a half-written file. */
+    char tmp[1100];
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+
+    FILE *f = fopen(tmp, "w");
+    if (!f)
+        return false;
+
+    fprintf(f, "# PipeASIO settings - written by pipeasio-settings\n");
+    fprintf(f, "[" PIPEASIO_CONFIG_SECTION "]\n");
+    fprintf(f, PIPEASIO_KEY_INPUTS " = %d\n", c->inputs);
+    fprintf(f, PIPEASIO_KEY_OUTPUTS " = %d\n", c->outputs);
+    fprintf(f, PIPEASIO_KEY_BUFFER_SIZE " = %d\n", c->buffer_size);
+    fprintf(f, PIPEASIO_KEY_FIXED_BUFFER_SIZE " = %d\n", c->fixed_buffer_size ? 1 : 0);
+    fprintf(f, PIPEASIO_KEY_SAMPLE_RATE " = %d\n", c->sample_rate);
+    fprintf(f, PIPEASIO_KEY_AUTO_CONNECT " = %d\n", c->auto_connect ? 1 : 0);
+    fprintf(f, PIPEASIO_KEY_FOLLOW_DEVICE_CLOCK " = %d\n", c->follow_device_clock ? 1 : 0);
+    fprintf(f, PIPEASIO_KEY_RT_PRIORITY " = %d\n", c->rt_priority);
+    fprintf(f, PIPEASIO_KEY_OUTPUT_DEVICE " = %s\n", c->output_device);
+    fprintf(f, PIPEASIO_KEY_INPUT_DEVICE " = %s\n", c->input_device);
+    fprintf(f, PIPEASIO_KEY_NODE_NAME " = %s\n", c->node_name);
+
+    bool ok = fclose(f) == 0 && rename(tmp, path) == 0;
+    if (!ok)
+        cfg_unlink(tmp);
+    return ok;
 }

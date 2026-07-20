@@ -45,12 +45,13 @@ add_wine_dll(
     SOURCES   src/asio.c
               src/audio.c
               src/config.c
+              src/control_panel.c
               src/main.c
               src/regsvr.c
     INCLUDES  ${CMAKE_SOURCE_DIR}/include
               ${PIPEWIRE_INCLUDE_DIRS}
               ${CMAKE_BINARY_DIR}/generated
-    LIBS      odbc32 ole32 uuid winmm user32 pipewire-0.3
+    LIBS      odbc32 ole32 uuid winmm user32 shell32 gdi32 comctl32 pipewire-0.3
 )
 add_dependencies(pipeasio64_objs build_info)
 
@@ -79,7 +80,7 @@ if(BUILD_WOW64_32)
 
     # The i386 Wine import libs must be copied, made writable, and re-indexed
     # with the i686 ranlib before the mingw linker accepts them.
-    set(_pa32_imp_names winecrt0 ntdll ole32 uuid)
+    set(_pa32_imp_names winecrt0 ntdll ole32 uuid shell32 gdi32 comctl32)
     set(_pa32_imp_libs "")
     set(_pa32_imp_cmds "")
     set(_pa32_imp_deps "")
@@ -125,15 +126,13 @@ if(BUILD_WOW64_32)
                 "${CMAKE_SOURCE_DIR}/src/main.c"
                 "${CMAKE_SOURCE_DIR}/src/regsvr.c"
                 "${CMAKE_SOURCE_DIR}/src/config.c"
+                "${CMAKE_SOURCE_DIR}/src/control_panel.c"
                 "${CMAKE_SOURCE_DIR}/src/wow64/audio_proxy.c"
                 "${PA32_DEF}"
-                "${CMAKE_BINARY_DIR}/libwinecrt0-i386.a"
                 -DPIPEASIO_WOW64_PE
                 ${_pa32_inc} ${_pa32_cflags}
                 -o "${PA32_DLL}"
-                "${CMAKE_BINARY_DIR}/libntdll-i386.a"
-                "${CMAKE_BINARY_DIR}/libole32-i386.a"
-                "${CMAKE_BINARY_DIR}/libuuid-i386.a"
+                ${_pa32_imp_libs}
         COMMAND "${WINEBUILD}" -m32 --builtin "${PA32_DLL}"
         DEPENDS "${CMAKE_SOURCE_DIR}/src/asio.c"
                 "${CMAKE_SOURCE_DIR}/src/main.c"

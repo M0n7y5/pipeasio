@@ -2,7 +2,8 @@ find_package(Qt6 COMPONENTS Widgets REQUIRED)
 set(CMAKE_AUTOMOC ON)
 add_executable(pipeasio-settings
     main.cpp SettingsDialog.cpp Config.cpp PipeWireMonitor.cpp
-    PipeWireGraph.cpp LoadHistogram.cpp)
+    PipeWireGraph.cpp LoadHistogram.cpp
+    ${CMAKE_SOURCE_DIR}/src/config.c)
 target_include_directories(pipeasio-settings PRIVATE ${CMAKE_SOURCE_DIR}/include
                            ${CMAKE_BINARY_DIR}/generated)
 add_dependencies(pipeasio-settings build_info)

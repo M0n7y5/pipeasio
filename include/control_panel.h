@@ -1,0 +1,25 @@
+/*
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Copyright (C) 2026 PipeASIO contributors
+ *
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/* The ASIO ControlPanel dialog (src/control_panel.c): hands off to the
+ * native pipeasio-settings panel when launchable, otherwise shows the
+ * built-in Win32 dialog.  Called from the ASIO ControlPanel entry point. */
+#pragma once
+
+void pipeasio_control_panel(void);

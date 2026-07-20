@@ -695,6 +695,36 @@ pipeasio_wow64_load_config(struct pipeasio_config *out)
     return p.found != 0;
 }
 
+bool
+pipeasio_wow64_save_config(const struct pipeasio_config *c)
+{
+    pa_config_params p;
+
+    if (!c || !ensure_unixlib())
+        return false;
+    memset(&p, 0, sizeof p);
+    p.version = PIPEASIO_UNIX_ABI_VERSION;
+    p.cfg     = *c;
+    if (UCALL(PAU_SAVE_CONFIG, &p) != 0)
+        return false;
+    return p.found != 0;
+}
+
+bool
+pipeasio_wow64_config_path(char *buf, size_t n)
+{
+    pa_name_params p;
+
+    if (!buf || !n || !ensure_unixlib())
+        return false;
+    memset(&p, 0, sizeof p);
+    p.version = PIPEASIO_UNIX_ABI_VERSION;
+    if (UCALL(PAU_CONFIG_PATH, &p) != 0 || !p.name[0])
+        return false;
+    lstrcpynA(buf, p.name, (int)n);
+    return true;
+}
+
 uint64_t
 pipeasio_wow64_config_fingerprint(void)
 {

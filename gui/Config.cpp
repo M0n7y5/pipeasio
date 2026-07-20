@@ -1,5 +1,5 @@
 /*
- * Config.cpp - implementation of the panel INI read/write.
+ * Config.cpp - Qt wrapper over the driver's INI reader/writer (src/config.c).
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
@@ -20,59 +20,10 @@
  */
 #include "Config.hpp"
 
-#include <QByteArray>
-#include <QDir>
-#include <QFile>
-#include <QSaveFile>
 #include <QStandardPaths>
-#include <QStringList>
-#include <QFileInfo>
-#include <QTextStream>
-
-#include <cstring>
 
 namespace Config
 {
-
-namespace
-{
-
-/* This parser intentionally mirrors src/config.c (the driver's C parser),
- * not a generic INI reader: keys land only from the [pipeasio] section
- * (keys before any header are tolerated, like the C side).  Remaining
- * intentional differences: the C parser validates after parsing with a
- * fallback to defaults, while this one validates in place; both accept
- * 1/0/true/on/yes for booleans, but serializeIni writes 1/0. */
-
-void
-setStr(char *dst, size_t cap, const QString &value)
-{
-    const QByteArray utf8 = value.toUtf8();
-    const size_t     n    = qMin<size_t>(utf8.size(), cap - 1);
-    std::memcpy(dst, utf8.constData(), n);
-    dst[n] = '\0';
-}
-
-bool
-parseBool(const QString &raw, bool fallback)
-{
-    const QString v = raw.trimmed().toLower();
-    if (v == QLatin1String("1") || v == QLatin1String("true") || v == QLatin1String("on")
-        || v == QLatin1String("yes"))
-        return true;
-    if (v == QLatin1String("0") || v == QLatin1String("false") || v == QLatin1String("off")
-        || v == QLatin1String("no"))
-        return false;
-    return fallback;
-}
-
-bool
-isPowerOfTwo(int v)
-{
-    return v > 0 && (v & (v - 1)) == 0;
-}
-
-} // namespace
 
 pipeasio_config
 defaults()
@@ -92,125 +43,6 @@ defaults()
     return c;
 }
 
-pipeasio_config
-parseIni(const QString &text)
-{
-    pipeasio_config c = defaults();
-
-    bool inSection = true; /* tolerate keys before any [section] header */
-
-    const QStringList lines = text.split(QLatin1Char('\n'));
-    for (const QString &rawLine : lines)
-    {
-        QString line = rawLine.trimmed();
-        if (line.isEmpty())
-            continue;
-        if (line.startsWith(QLatin1Char('#')) || line.startsWith(QLatin1Char(';')))
-            continue;
-        if (line.startsWith(QLatin1Char('[')))
-        {
-            const int close = line.indexOf(QLatin1Char(']'));
-            if (close > 0)
-                inSection = line.mid(1, close - 1) == QLatin1String(PIPEASIO_CONFIG_SECTION);
-            continue;
-        }
-        if (!inSection)
-            continue;
-
-        const int eq = line.indexOf(QLatin1Char('='));
-        if (eq < 0)
-            continue;
-
-        const QString key   = line.left(eq).trimmed();
-        const QString value = line.mid(eq + 1).trimmed();
-
-        if (key == QLatin1String(PIPEASIO_KEY_INPUTS))
-        {
-            bool      ok = false;
-            const int v  = value.toInt(&ok);
-            if (ok && v >= 0)
-                c.inputs = v;
-        }
-        else if (key == QLatin1String(PIPEASIO_KEY_OUTPUTS))
-        {
-            bool      ok = false;
-            const int v  = value.toInt(&ok);
-            if (ok && v >= 0)
-                c.outputs = v;
-        }
-        else if (key == QLatin1String(PIPEASIO_KEY_BUFFER_SIZE))
-        {
-            bool      ok = false;
-            const int v  = value.toInt(&ok);
-            if (ok && isPowerOfTwo(v) && v >= PIPEASIO_MIN_BUFFER_SIZE
-                && v <= PIPEASIO_MAX_BUFFER_SIZE)
-                c.buffer_size = v;
-        }
-        else if (key == QLatin1String(PIPEASIO_KEY_FIXED_BUFFER_SIZE))
-        {
-            c.fixed_buffer_size = parseBool(value, c.fixed_buffer_size);
-        }
-        else if (key == QLatin1String(PIPEASIO_KEY_SAMPLE_RATE))
-        {
-            bool      ok = false;
-            const int v  = value.toInt(&ok);
-            if (ok)
-                c.sample_rate = v < 0 ? 0 : v;
-        }
-        else if (key == QLatin1String(PIPEASIO_KEY_AUTO_CONNECT))
-        {
-            c.auto_connect = parseBool(value, c.auto_connect);
-        }
-        else if (key == QLatin1String(PIPEASIO_KEY_FOLLOW_DEVICE_CLOCK))
-        {
-            c.follow_device_clock = parseBool(value, c.follow_device_clock);
-        }
-        else if (key == QLatin1String(PIPEASIO_KEY_RT_PRIORITY))
-        {
-            bool      ok = false;
-            const int v  = value.toInt(&ok);
-            if (ok && v >= PIPEASIO_MIN_RT_PRIORITY && v <= PIPEASIO_MAX_RT_PRIORITY)
-                c.rt_priority = v;
-        }
-        else if (key == QLatin1String(PIPEASIO_KEY_OUTPUT_DEVICE))
-        {
-            setStr(c.output_device, sizeof(c.output_device), value);
-        }
-        else if (key == QLatin1String(PIPEASIO_KEY_INPUT_DEVICE))
-        {
-            setStr(c.input_device, sizeof(c.input_device), value);
-        }
-        else if (key == QLatin1String(PIPEASIO_KEY_NODE_NAME))
-        {
-            setStr(c.node_name, sizeof(c.node_name), value);
-        }
-        /* unknown keys ignored */
-    }
-
-    return c;
-}
-
-QString
-serializeIni(const pipeasio_config &c)
-{
-    QString     out;
-    QTextStream s(&out);
-    s << "# PipeASIO settings - written by pipeasio-settings\n";
-    s << '[' << PIPEASIO_CONFIG_SECTION << "]\n";
-    s << PIPEASIO_KEY_INPUTS << " = " << c.inputs << '\n';
-    s << PIPEASIO_KEY_OUTPUTS << " = " << c.outputs << '\n';
-    s << PIPEASIO_KEY_BUFFER_SIZE << " = " << c.buffer_size << '\n';
-    s << PIPEASIO_KEY_FIXED_BUFFER_SIZE << " = " << (c.fixed_buffer_size ? 1 : 0) << '\n';
-    s << PIPEASIO_KEY_SAMPLE_RATE << " = " << c.sample_rate << '\n';
-    s << PIPEASIO_KEY_AUTO_CONNECT << " = " << (c.auto_connect ? 1 : 0) << '\n';
-    s << PIPEASIO_KEY_FOLLOW_DEVICE_CLOCK << " = " << (c.follow_device_clock ? 1 : 0) << '\n';
-    s << PIPEASIO_KEY_RT_PRIORITY << " = " << c.rt_priority << '\n';
-    s << PIPEASIO_KEY_OUTPUT_DEVICE << " = " << QString::fromUtf8(c.output_device) << '\n';
-    s << PIPEASIO_KEY_INPUT_DEVICE << " = " << QString::fromUtf8(c.input_device) << '\n';
-    s << PIPEASIO_KEY_NODE_NAME << " = " << QString::fromUtf8(c.node_name) << '\n';
-    return out;
-}
-
 QString
 configPath()
 {
@@ -222,30 +54,17 @@ configPath()
 pipeasio_config
 load()
 {
-    QFile f(configPath());
-    if (!f.exists() || !f.open(QIODevice::ReadOnly | QIODevice::Text))
-        return defaults();
-    const QString text = QString::fromUtf8(f.readAll());
-    f.close();
-    return parseIni(text);
+    pipeasio_config c;
+    /* pipeasio_config_load leaves defaults in c when the file is missing;
+     * its XDG_CONFIG_HOME/HOME resolution matches QStandardPaths. */
+    pipeasio_config_load(&c);
+    return c;
 }
 
 bool
 save(const pipeasio_config &c)
 {
-    const QString path = configPath();
-    QDir().mkpath(QFileInfo(path).absolutePath());
-
-    /* QSaveFile writes to a temporary file and atomically renames it into place
-     * on commit(), so the driver's config watcher (and loader) never observes a
-     * half-written config.ini. */
-    QSaveFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
-        return false;
-    const QByteArray bytes = serializeIni(c).toUtf8();
-    if (f.write(bytes) != bytes.size())
-        return false;
-    return f.commit();
+    return pipeasio_config_save(&c);
 }
 
 } // namespace Config

@@ -34,6 +34,13 @@ extern "C"
     /* Config is read by the unixlib; native builds use src/config.c directly. */
     bool pipeasio_wow64_load_config(struct pipeasio_config *out);
 
+    /* Config write (ControlPanel); native builds use pipeasio_config_save. */
+    bool pipeasio_wow64_save_config(const struct pipeasio_config *c);
+
+    /* Absolute config.ini path for display; native builds use
+     * pipeasio_config_path. */
+    bool pipeasio_wow64_config_path(char *buf, size_t n);
+
     /* Live-reload fingerprint.  Zero means no config file. */
     uint64_t pipeasio_wow64_config_fingerprint(void);
 
