@@ -1,11 +1,10 @@
 /*
  * PipeWireMonitor.hpp - live telemetry for the Monitor tab.
  *
- * Node stats (quantum/rate/DSP load/xruns/state) come from a long-lived
- * `pw-top -b` subprocess; parsePwTop() is PURE (operates on captured output)
- * so it is unit testable.  Graph topology (our node discovery and its
- * connections) comes from PipeWireGraph's event-driven registry listener -
- * no pw-dump polling.
+ * Everything comes from PipeWireGraph's event-driven PipeWire connection:
+ * node discovery and connections via the registry listener, DSP stats
+ * (quantum/rate/load/xruns/state) via the daemon's Profiler interface.
+ * No subprocesses, no text parsing.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
@@ -28,12 +27,8 @@
 
 #include "PipeWireGraph.hpp"
 
-#include <QByteArray>
 #include <QObject>
 #include <QString>
-
-class QTimer;
-class QProcess;
 
 struct NodeStats
 {
@@ -50,11 +45,6 @@ struct NodeStats
     QString outputDeviceDetail; /* codec/format/state line for the output */
 };
 
-/* Parse `pw-top -b` output, returning stats for the NEWEST data row whose
- * trailing NAME contains `nodeNameSubstr` (scans backwards; a trailing
- * header-only iteration from block-buffered streaming is skipped). Pure. */
-NodeStats parsePwTop(const QByteArray &out, const QString &nodeNameSubstr);
-
 class PipeWireMonitor : public QObject
 {
     Q_OBJECT
@@ -62,9 +52,9 @@ class PipeWireMonitor : public QObject
     explicit PipeWireMonitor(QObject *parent = nullptr);
     ~PipeWireMonitor() override;
 
-    void setTarget(const QString &nodeNameSubstr);
-    /* Live graph for node discovery + connection tracking; its changed()
-     * signal re-resolves everything event-driven. */
+    void setTarget(const QString &nodeName);
+    /* Live graph for discovery, connections and profiler stats; its
+     * changed() signal re-resolves everything event-driven. */
     void setGraph(PipeWireGraph *graph);
 
   public slots:
@@ -75,20 +65,10 @@ class PipeWireMonitor : public QObject
     void updated(const NodeStats &stats);
 
   private slots:
-    void ensureTopRunning(); /* watchdog: (re)start pw-top if it died */
-    void onTopReadyRead();
-    void refreshFromGraph(); /* graph changed: re-resolve node + connections */
+    void refreshFromGraph(); /* graph changed: re-resolve stats + connections */
 
   private:
-    QTimer        *m_watchdog; /* restarts pw-top, no per-tick respawn */
     QString        m_target;
-    bool           m_autoDiscover;     /* true => resolve our node via the marker prop */
-    PipeWireGraph *m_graph   = nullptr;
-    QProcess      *m_topProc = nullptr; /* long-lived `pw-top -b` */
-    QByteArray     m_topBuf;            /* unparsed pw-top stdout tail */
-    NodeStats      m_lastStats;         /* last pw-top parse (conn fields aside) */
-    QString        m_connInput;         /* last-resolved Monitor connections */
-    QString        m_connOutput;
-    QString        m_connInputDetail;   /* second-line detail for the Monitor rows */
-    QString        m_connOutputDetail;
+    bool           m_autoDiscover = true; /* true => resolve our node via the marker */
+    PipeWireGraph *m_graph        = nullptr;
 };

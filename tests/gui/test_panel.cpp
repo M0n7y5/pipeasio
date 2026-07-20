@@ -2,12 +2,10 @@
  * test_panel.cpp - unit tests for the Qt panel's pure functions:
  *   - Config::serializeIni / parseIni round-trip
  *   - cross-language: panel-written INI parsed by the driver's C reader
- *   - parsePwTop (fixture)
  *
  * No GUI is constructed; these are pure-data tests runnable headless.
  */
 #include "Config.hpp"
-#include "PipeWireMonitor.hpp"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -121,62 +119,6 @@ test_section_filter()
     CHECK(c.inputs == PIPEASIO_DEFAULT_INPUTS); /* [other] inputs ignored */
 }
 
-static void
-test_parse_pwtop()
-{
-    /* Single-iteration sanity (period decimals, multi-token FORMAT column). */
-    const QByteArray one
-            = "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT        NAME\n"
-              "R   45    1024  48000  10.0us  20.0us 0.01  0.25    2  F32P 2 48000 PipeASIO\n"
-              "C   52       0      0    ---     ---   ---   ---     0               "
-              "alsa_output.test\n";
-    const NodeStats s = parsePwTop(one, QStringLiteral("PipeASIO"));
-    CHECK(s.found);
-    CHECK(s.quantum == 1024);
-    CHECK(s.rate == 48000);
-    CHECK(std::fabs(s.dspLoad - 0.25) < 1e-9);
-    CHECK(s.xruns == 2);
-    CHECK(!parsePwTop(one, QStringLiteral("NoSuchNode")).found);
-
-    /* Realistic batch output: pw-top emits an all-zero baseline first, then a
-     * measured iteration.  The parser must read the LAST iteration, cope with
-     * comma decimals (non-C locale), and handle a driver row whose FORMAT
-     * column is empty (only a "=" link marker before the NAME). */
-    const QByteArray two
-            = "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME\n"
-              "C   54      0      0    ---     ---   ---   ---     0                  mic\n"
-              "C   78      0      0    ---     ---   ---   ---     0                  FL64\n"
-              "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME\n"
-              "R   54    256  48000  64,9us   1,1us  0,01  0,00    1    S24LE 1 48000 mic\n"
-              "R   78    256  48000  11,0us   1,7ms  0,00  0,17    3                   = FL64\n";
-    const NodeStats m = parsePwTop(two, QStringLiteral("FL64"));
-    CHECK(m.found);
-    CHECK(m.state == QStringLiteral("R")); /* measured iteration, not baseline "C" */
-    CHECK(m.quantum == 256);
-    CHECK(m.rate == 48000);
-    CHECK(std::fabs(m.dspLoad - 0.17) < 1e-9); /* comma decimal parsed */
-    CHECK(m.xruns == 3);
-
-    /* An empty target must not match a random row (panel shows "waiting"). */
-    CHECK(!parsePwTop(two, QString()).found);
-
-    /* Streaming regression: pw-top stdout is block-buffered, so the live
-     * buffer usually ENDS with a fresh header whose rows have not arrived
-     * yet (and possibly a truncated first row).  The parser must still find
-     * the newest complete data row instead of reporting "waiting" forever. */
-    const QByteArray streaming
-            = "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME\n"
-              "R   54    256  48000  64.9us   1.1us  0.01  0.00    1    S24LE 1 48000 mic\n"
-              "R   78    256  48000  11.0us   1.7ms  0.00  0.42    7                   = FL64\n"
-              "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME\n"
-              "R   54    25"; /* truncated mid-row: not enough tokens */
-    const NodeStats w = parsePwTop(streaming, QStringLiteral("FL64"));
-    CHECK(w.found);
-    CHECK(w.quantum == 256);
-    CHECK(std::fabs(w.dspLoad - 0.42) < 1e-9);
-    CHECK(w.xruns == 7);
-}
-
 int
 main(int argc, char **argv)
 {
@@ -186,7 +128,6 @@ main(int argc, char **argv)
     test_config_roundtrip();
     test_cross_language();
     test_section_filter();
-    test_parse_pwtop();
 
     std::fprintf(stderr, "[%s] %d checks, %d failed\n", g_fail ? "FAIL" : "PASS", g_total, g_fail);
     return g_fail ? 1 : 0;

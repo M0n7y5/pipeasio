@@ -21,8 +21,12 @@
 #include "PipeWireGraph.hpp"
 
 #include <pipewire/pipewire.h>
+#include <pipewire/impl.h>
+#include <pipewire/extensions/profiler.h>
 #include <spa/debug/types.h>
 #include <spa/param/audio/format-utils.h>
+#include <spa/param/profiler.h>
+#include <spa/pod/parser.h>
 
 #include <QMutex>
 #include <QPointer>
@@ -154,6 +158,15 @@ struct PipeWireGraphImpl
     QHash<uint32_t, LinkRec>      links;
     QHash<uint32_t, NodeBinding *> bindings; /* bound Audio/* and own nodes */
 
+    /* Profiler (pw-top's data source): one proxy to the daemon's Profiler
+     * object, latest measurement of our target node. */
+    pw_proxy  *profilerProxy = nullptr;
+    uint32_t   profilerId    = SPA_ID_INVALID;
+    spa_hook   profilerHook{};
+    PipeWireGraph::ProfilerStats prof;
+    uint32_t   profId = SPA_ID_INVALID; /* node id the prof stats belong to */
+    QString    profName;                /* manual node_name target (else marker) */
+
     void noteChanged();
 };
 
@@ -217,6 +230,132 @@ static const pw_node_events nodeEvents = {
         .param   = graph_node_param,
 };
 
+/* --- profiler events (loop thread): per-cycle driver measurements -------- */
+
+namespace
+{
+
+/* Driver-level block of a Profiler object: clock + error counters. */
+struct DriverInfo
+{
+    int64_t  duration  = 0; /* frames per cycle (the QUANT column) */
+    uint32_t rateNum   = 0; /* sample rate (the RATE column) */
+    uint32_t rateDenom = 1;
+    uint32_t xrunCount = 0;
+    bool     haveClock = false;
+};
+
+} // namespace
+
+static void
+prof_process_info(const spa_pod *pod, DriverInfo *info)
+{
+    float    load[3];
+    int32_t  xruns = 0;
+    int64_t  count = 0;
+    if (spa_pod_parse_struct(pod, SPA_POD_Long(&count), SPA_POD_Float(&load[0]),
+                             SPA_POD_Float(&load[1]), SPA_POD_Float(&load[2]),
+                             SPA_POD_Int(&xruns)) >= 0)
+        info->xrunCount = (uint32_t)xruns;
+}
+
+static void
+prof_process_clock(const spa_pod *pod, DriverInfo *info)
+{
+    spa_io_clock clock;
+    if (spa_pod_parse_struct(pod, SPA_POD_Int(&clock.flags), SPA_POD_Int(&clock.id),
+                             SPA_POD_Stringn(clock.name, sizeof(clock.name)),
+                             SPA_POD_Long(&clock.nsec), SPA_POD_Fraction(&clock.rate),
+                             SPA_POD_Long(&clock.position), SPA_POD_Long(&clock.duration),
+                             SPA_POD_Long(&clock.delay), SPA_POD_Double(&clock.rate_diff),
+                             SPA_POD_Long(&clock.next_nsec)) >= 0)
+    {
+        info->duration  = clock.duration;
+        info->rateNum   = clock.rate.num;
+        info->rateDenom = clock.rate.denom ? clock.rate.denom : 1;
+        info->haveClock = true;
+    }
+}
+
+static void
+prof_process_block(PipeWireGraphImpl *impl, const spa_pod *pod, const DriverInfo &info)
+{
+    uint32_t            id     = 0;
+    char               *name   = nullptr;
+    int64_t             prev_signal = 0, signal = 0, awake = 0, finish = 0;
+    int32_t             status = 0;
+    struct spa_fraction latency = SPA_FRACTION(0, 1);
+    uint32_t            xruns  = (uint32_t)-1;
+    bool                async  = false;
+
+    if (spa_pod_parse_struct(pod, SPA_POD_Int(&id), SPA_POD_String(&name),
+                             SPA_POD_Long(&prev_signal), SPA_POD_Long(&signal),
+                             SPA_POD_Long(&awake), SPA_POD_Long(&finish),
+                             SPA_POD_Int(&status), SPA_POD_Fraction(&latency),
+                             SPA_POD_OPT_Int(&xruns), SPA_POD_OPT_Bool(&async)) < 0)
+        return;
+
+    const NodeRec rec = impl->nodes.value(id);
+    const bool    isTarget
+            = rec.isPipeAsio || (!impl->profName.isEmpty() && rec.name == impl->profName);
+    if (!isTarget)
+        return;
+
+    impl->profId       = id;
+    impl->prof.found   = true;
+    impl->prof.quantum = info.haveClock ? (int)info.duration : 0;
+    /* spa_io_clock.rate is the PERIOD fraction (1/48000), so the Hz rate is
+     * its denominator; pw-top prints them as QUANT/RATE = duration/denom. */
+    impl->prof.rate    = info.haveClock ? (int)info.rateDenom : 0;
+    /* B/Q of pw-top: busy (finish - awake) over the cycle period. */
+    const double busyNs   = finish >= awake ? (double)(finish - awake) : 0.0;
+    const double periodNs = info.haveClock && info.rateDenom
+                                    ? 1e9 * (double)info.duration * info.rateNum / info.rateDenom
+                                    : 0.0;
+    impl->prof.dspLoad = periodNs > 0 ? busyNs / periodNs : 0.0;
+    impl->prof.xruns   = xruns != (uint32_t)-1 ? (long)xruns : (long)info.xrunCount;
+    impl->noteChanged();
+}
+
+static void
+graph_profiler_profile(void *data, const spa_pod *pod)
+{
+    auto               *impl = static_cast<PipeWireGraphImpl *>(data);
+    struct spa_pod     *o;
+    struct spa_pod_prop *p;
+
+    SPA_POD_STRUCT_FOREACH(pod, o)
+    {
+        if (!spa_pod_is_object_type(o, SPA_TYPE_OBJECT_Profiler))
+            continue;
+
+        DriverInfo info;
+        SPA_POD_OBJECT_FOREACH((struct spa_pod_object *)o, p)
+        {
+            switch (p->key)
+            {
+            case SPA_PROFILER_info:
+                prof_process_info(&p->value, &info);
+                break;
+            case SPA_PROFILER_clock:
+                prof_process_clock(&p->value, &info);
+                break;
+            case SPA_PROFILER_driverBlock:
+            case SPA_PROFILER_followerBlock:
+                prof_process_block(impl, &p->value, info);
+                break;
+            default:
+                break;
+            }
+        }
+    }
+}
+
+static const pw_profiler_events profilerEvents = {
+        PW_VERSION_PROFILER_EVENTS,
+        graph_profiler_profile,
+};
+
 /* --- registry events (loop thread) --------------------------------------- */
 
 static void
@@ -256,6 +395,19 @@ graph_registry_global(void *data, uint32_t id, uint32_t /*permissions*/, const c
         impl->links.insert(id, rec);
         impl->noteChanged();
     }
+    else if (!strcmp(type, PW_TYPE_INTERFACE_Profiler) && !impl->profilerProxy)
+    {
+        /* The daemon loads module-profiler by default; bind its Profiler
+         * object for per-cycle driver measurements (pw-top's data). */
+        impl->profilerProxy = static_cast<pw_proxy *>(
+                pw_registry_bind(impl->registry, id, type, PW_VERSION_PROFILER, 0));
+        if (impl->profilerProxy)
+        {
+            impl->profilerId = id;
+            pw_profiler_add_listener(reinterpret_cast<pw_profiler *>(impl->profilerProxy),
+                                     &impl->profilerHook, &profilerEvents, impl);
+        }
+    }
 }
 
 static void
@@ -264,6 +416,14 @@ graph_registry_global_remove(void *data, uint32_t id)
     auto *impl = static_cast<PipeWireGraphImpl *>(data);
     impl->nodes.remove(id);
     impl->links.remove(id);
+    if (id == impl->profilerId)
+    {
+        pw_proxy_destroy(impl->profilerProxy);
+        impl->profilerProxy = nullptr;
+        impl->profilerId    = SPA_ID_INVALID;
+        impl->prof          = {};
+        impl->profId        = SPA_ID_INVALID;
+    }
     if (NodeBinding *binding = impl->bindings.take(id))
     {
         pw_proxy_destroy(binding->proxy);
@@ -312,7 +472,11 @@ PipeWireGraph::PipeWireGraph(QObject *parent) : QObject(parent), m_impl(new Pipe
 void
 PipeWireGraph::kickCoalesce()
 {
-    m_coalesce->start();
+    /* Fire-and-cap, NOT restart: profiler events arrive per audio cycle
+     * (~200/s) and a restarting timer would never fire.  One kick starts the
+     * timer; further kicks while it runs are coalesced away. */
+    if (!m_coalesce->isActive())
+        m_coalesce->start();
 }
 
 PipeWireGraph::~PipeWireGraph()
@@ -338,9 +502,21 @@ PipeWireGraph::start()
         m_impl->loop = nullptr;
         return;
     }
+    /* Registers the Profiler interface client-side; without it binding the
+     * daemon's Profiler object fails (unknown interface type). */
+    pw_context_load_module(m_impl->context, PW_EXTENSION_MODULE_PROFILER, NULL, NULL);
 
     pw_thread_loop_lock(m_impl->loop);
-    m_impl->core = pw_context_connect(m_impl->context, nullptr, 0);
+    /* The daemon's Profiler object lives on the manager socket: plain clients
+     * can see the global but binding it returns NULL.  Connect with manager
+     * intention (what pw-top does); fall back to a plain connection. */
+    m_impl->core = pw_context_connect(
+            m_impl->context,
+            pw_properties_new(PW_KEY_REMOTE_INTENTION, "manager", PW_KEY_REMOTE_NAME,
+                              "[" PW_DEFAULT_REMOTE "-manager," PW_DEFAULT_REMOTE "]", NULL),
+            0);
+    if (!m_impl->core)
+        m_impl->core = pw_context_connect(m_impl->context, nullptr, 0);
     if (m_impl->core)
     {
         m_impl->registry = pw_core_get_registry(m_impl->core, PW_VERSION_REGISTRY, 0);
@@ -384,6 +560,12 @@ PipeWireGraph::stop()
 
     pw_thread_loop_lock(m_impl->loop);
     spa_hook_remove(&m_impl->registryListener);
+    if (m_impl->profilerProxy)
+    {
+        pw_proxy_destroy(m_impl->profilerProxy);
+        m_impl->profilerProxy = nullptr;
+        m_impl->profilerId    = SPA_ID_INVALID;
+    }
     const auto bindings = m_impl->bindings;
     m_impl->bindings.clear();
     for (NodeBinding *binding : bindings)
@@ -531,4 +713,47 @@ PipeWireGraph::ownConnections()
 
     pw_thread_loop_unlock(m_impl->loop);
     return conn;
+}
+
+/* pw-top's S column letter for a node state string. */
+static QString
+stateLetter(const QString &state)
+{
+    if (state == QLatin1String("running"))
+        return QStringLiteral("R");
+    if (state == QLatin1String("idle"))
+        return QStringLiteral("I");
+    if (state == QLatin1String("suspended"))
+        return QStringLiteral("S");
+    if (state == QLatin1String("error"))
+        return QStringLiteral("E");
+    if (state == QLatin1String("creating"))
+        return QStringLiteral("C");
+    return state;
+}
+
+PipeWireGraph::ProfilerStats
+PipeWireGraph::profilerStats(const QString &nodeName)
+{
+    ProfilerStats out;
+    if (!m_impl->running)
+        return out;
+
+    pw_thread_loop_lock(m_impl->loop);
+    m_impl->profName = nodeName; /* manual target for the profile matcher */
+
+    uint32_t target = SPA_ID_INVALID;
+    for (auto it = m_impl->nodes.constBegin(); it != m_impl->nodes.constEnd(); ++it)
+        if (nodeName.isEmpty() ? it->isPipeAsio : it->name == nodeName)
+        {
+            target = it.key();
+            break;
+        }
+    if (target != SPA_ID_INVALID && target == m_impl->profId && m_impl->prof.found)
+    {
+        out       = m_impl->prof;
+        out.state = stateLetter(m_impl->nodes.value(target).state);
+    }
+    pw_thread_loop_unlock(m_impl->loop);
+    return out;
 }

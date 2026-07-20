@@ -68,6 +68,19 @@ class PipeWireGraph : public QObject
         QString inputDetail;
     };
 
+    /* Live DSP stats for one node, from the daemon's Profiler interface
+     * (the data pw-top renders).  found == false while the node is not
+     * being measured (suspended / not driven). */
+    struct ProfilerStats
+    {
+        bool    found = false;
+        int     quantum = 0;  /* driver clock duration, frames per cycle */
+        int     rate    = 0;  /* driver clock rate, Hz */
+        double  dspLoad = 0;  /* busy time / cycle period, [0..1+] */
+        long    xruns   = 0;  /* cumulative xrun counter */
+        QString state;        /* "R" running, "I" idle, "S" suspended, "E" error */
+    };
+
     explicit PipeWireGraph(QObject *parent = nullptr);
     ~PipeWireGraph() override;
 
@@ -86,6 +99,10 @@ class PipeWireGraph : public QObject
 
     /* Connections of the driver's own node (empty names when not wired). */
     Connections ownConnections();
+
+    /* DSP stats of a node: the driver's own node when nodeName is empty,
+     * else the node whose node.name equals nodeName. */
+    ProfilerStats profilerStats(const QString &nodeName = QString());
 
   signals:
     /* Coalesced "something in the graph changed" hint for UI refresh. */
