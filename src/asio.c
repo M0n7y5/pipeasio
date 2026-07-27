@@ -87,6 +87,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(asio);
 #define MAX_ENVIRONMENT_SIZE 64
 #define PIPEASIO_MAX_NAME_LENGTH 32
 #define PIPEASIO_PREFERRED_BUFFERSIZE 1024
+#define PIPEASIO_MAX_ERROR_MESSAGE 256
 
 /* i386 ASIO uses MS thiscall; GCC needs a trampoline. */
 #if defined(PIPEASIO_WOW64_PE) /* i386 PE / COFF (MinGW) */
@@ -277,6 +278,11 @@ typedef struct IPipeASIOImpl
     audio_sample_t *callback_audio_buffer;
     IOChannel      *input_channel;
     IOChannel      *output_channel;
+
+    /* Last init/start failure for GetErrorMessage(); empty when there is
+     * nothing to report.  Kept short: ASIO hosts typically pass a 256-byte
+     * buffer (see ASIOSDK's asioDrivers sample). */
+    char last_error[PIPEASIO_MAX_ERROR_MESSAGE];
 } IPipeASIOImpl;
 
 enum
@@ -696,6 +702,26 @@ Release(LPPIPEASIO iface)
     return ref;
 }
 
+/* Store a short, human-readable failure reason that ASIO hosts can show via
+ * GetErrorMessage(). */
+static void
+set_driver_error(IPipeASIOImpl *This, const char *msg)
+{
+    lstrcpynA(This->last_error, msg, sizeof This->last_error);
+}
+
+/* Format once, then feed both the ASIO error buffer and stderr so the two
+ * cannot drift apart.  Buffer name avoids the `_buf` used inside
+ * pipeasio_log.h's macros. */
+#define DRIVER_FAIL(This, fmt, ...)                                                                \
+    do                                                                                             \
+    {                                                                                              \
+        char driver_err_buf_[PIPEASIO_MAX_ERROR_MESSAGE];                                          \
+        snprintf(driver_err_buf_, sizeof driver_err_buf_, fmt, ##__VA_ARGS__);                     \
+        set_driver_error((This), driver_err_buf_);                                                 \
+        ERR("%s\n", driver_err_buf_);                                                              \
+    } while (0)
+
 /* sysRef is 0 on OS/X; on Windows it is the application's main window handle.
  * Returns 0 on error, 1 on success. */
 
@@ -714,9 +740,12 @@ Init(LPPIPEASIO iface, void *sysRef)
      * crash plugin-heavy hosts.  PipeWire's RT module owns paging. */
     configure_driver(This);
 
+    /* A re-init after a previous failure must not report the stale reason. */
+    This->last_error[0] = '\0';
+
     if (!(This->audio_client = audio_open(This->client_name, audio_options, &audio_status)))
     {
-        WARN("Unable to open an audio client as: %s\n", This->client_name);
+        DRIVER_FAIL(This, "Unable to open an audio client as: %s", This->client_name);
         return 0;
     }
     TRACE("audio client opened as: '%s'\n", audio_get_client_name(This->audio_client));
@@ -743,8 +772,8 @@ Init(LPPIPEASIO iface, void *sysRef)
     if (!This->input_channel)
     {
         audio_close(This->audio_client);
-        ERR("Unable to allocate IOChannel structures for %i channels\n",
-            This->pipeasio_number_inputs);
+        DRIVER_FAIL(This, "Unable to allocate IOChannel structures for %i channels",
+                    This->pipeasio_number_inputs);
         return 0;
     }
     This->output_channel = This->input_channel + This->pipeasio_number_inputs;
@@ -797,7 +826,7 @@ Init(LPPIPEASIO iface, void *sysRef)
             failed = "sample rate change";
         if (failed)
         {
-            ERR("Unable to register %s callback\n", failed);
+            DRIVER_FAIL(This, "Unable to register %s callback", failed);
             audio_close(This->audio_client);
             HeapFree(GetProcessHeap(), 0, This->input_channel);
             audio_free_ports(This->phys_input_ports);
@@ -834,8 +863,15 @@ DEFINE_THISCALL_WRAPPER(GetErrorMessage, 8)
 HIDDEN void STDMETHODCALLTYPE
 GetErrorMessage(LPPIPEASIO iface, char *string)
 {
+    IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
+
     TRACE("iface: %p, string: %p)\n", iface, string);
-    strcpy(string, "PipeASIO does not return error messages\n");
+    if (!string)
+        return;
+    if (This->last_error[0])
+        lstrcpynA(string, This->last_error, PIPEASIO_MAX_ERROR_MESSAGE);
+    else
+        strcpy(string, "PipeASIO does not return error messages\n");
     return;
 }
 

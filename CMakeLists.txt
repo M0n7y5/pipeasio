@@ -271,6 +271,7 @@ if(BUILD_TESTS)
     endfunction()
 
     add_subdirectory(tests/asio_probe)
+    add_subdirectory(tests/asio_error)
     add_subdirectory(tests/asio_loopback)
     add_subdirectory(tests/unit)
     add_subdirectory(tests/pw_probe)
