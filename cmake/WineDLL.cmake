@@ -20,31 +20,18 @@
 find_program(WINEBUILD winebuild REQUIRED)
 find_program(WINEGCC   winegcc   REQUIRED)
 
-# Probe for Wine include directories.  We mirror the fallback list the legacy
-# Makefile.mk used, but filter to those that actually exist on this host so
-# clangd doesn't choke on dangling -I flags.
+# Probe for Wine include directories; see WineIncludes.cmake for the
+# candidate roots (override with PIPEASIO_WINE_PREFIX_ROOTS).  Only existing
+# directories are kept so clangd doesn't choke on dangling -I flags.
+include(WineIncludes)
 if(NOT WINE_INCLUDE_DIRS)
-    set(_wine_inc_candidates
-        /usr/include/wine
-        /usr/include/wine/windows
-        # Debian/Ubuntu nest the Windows SDK under wine/wine/ (libwine-dev).
-        /usr/include/wine/wine
-        /usr/include/wine/wine/windows
-        /usr/include/wine-development
-        /usr/include/wine-development/wine/windows
-        /opt/wine-stable/include
-        /opt/wine-stable/include/wine/windows
-        /opt/wine-staging/include
-        /opt/wine-staging/include/wine/windows)
-    set(WINE_INCLUDE_DIRS "")
-    foreach(_d ${_wine_inc_candidates})
-        if(IS_DIRECTORY "${_d}")
-            list(APPEND WINE_INCLUDE_DIRS "${_d}")
-        endif()
-    endforeach()
+    pipeasio_detect_wine_includes(WINE_INCLUDE_DIRS)
 endif()
 if(NOT WINE_INCLUDE_DIRS)
-    message(FATAL_ERROR "No Wine SDK include directory found. Install wine-devel / wine-dev / winehq-stable-dev.")
+    message(FATAL_ERROR
+        "No Wine SDK include directory found. Install wine-devel / wine-dev / "
+        "winehq-stable-dev, or pass -DWINE_INCLUDE_DIRS=<dir that contains "
+        "wine/debug.h> (e.g. /opt/wine-devel/include).")
 endif()
 message(STATUS "Wine include dirs: ${WINE_INCLUDE_DIRS}")
 

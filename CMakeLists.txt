@@ -278,4 +278,12 @@ if(BUILD_TESTS)
     if(BUILD_SETTINGS_PANEL AND Qt6_FOUND)
         add_subdirectory(tests/gui)
     endif()
+
+    # Pure-CMake test for the Wine SDK include detection (issue #14).
+    add_test(NAME wine_includes_detect
+        COMMAND ${CMAKE_COMMAND}
+            -DPIPEASIO_MODULE_DIR=${CMAKE_SOURCE_DIR}/cmake
+            -DFAKE_WINE_PREFIX=${CMAKE_BINARY_DIR}/tests/cmake/fake-wine
+            -P ${CMAKE_SOURCE_DIR}/tests/cmake/test_wine_includes.cmake)
+    set_tests_properties(wine_includes_detect PROPERTIES LABELS "cmake")
 endif()
