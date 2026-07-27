@@ -19,6 +19,9 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
 message(STATUS "Found libpipewire-0.3 ${PIPEWIRE_VERSION}")
 
+# Ahead of WineDLL: the SDK probe requires unixlib.h only when this is on.
+option(BUILD_WOW64_32 "Build the experimental 32-bit WoW64 PE front end + unixlib" OFF)
+
 include(WineDLL)
 
 add_wine_dll(
@@ -37,7 +40,6 @@ add_wine_dll(
 # Optional 32-bit WoW64 front end.
 # - pipeasio32.dll: i386 PE stub, installed under lib/wine/i386-windows
 # - pipeasio32.so:  x86_64 unixlib, installed under lib/wine/x86_64-unix
-option(BUILD_WOW64_32 "Build the experimental 32-bit WoW64 PE front end + unixlib" OFF)
 if(BUILD_WOW64_32)
     find_program(I686_W64_MINGW_GCC i686-w64-mingw32-gcc)
     find_program(I686_W64_MINGW_RANLIB i686-w64-mingw32-ranlib)
