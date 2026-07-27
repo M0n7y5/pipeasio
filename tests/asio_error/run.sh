@@ -19,7 +19,7 @@ probe="${here}/asio_error.exe.so"
 : "${PIPEASIO_ROOT:=$HOME/.local}"
 : "${WINEDEBUG:=-all,+pipeasio,err+all}"
 
-WINE_BIN="$(command -v wine64 || command -v wine)"
+WINE_BIN="$(command -v wine64 || command -v wine || true)"
 [[ -n "$WINE_BIN" ]] || { echo "[run] SKIP: wine64/wine not found"; exit 77; }
 
 # --- preconditions (77 = CTest SKIP) -----------------------------------------
