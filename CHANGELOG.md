@@ -6,6 +6,35 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Wine SDK discovery derives the include directories from the `winebuild` on
+  `PATH` (`<prefix>/bin/winebuild` implies `<prefix>/include`), so Wine
+  installed outside `/usr` builds without a manual `-DWINE_INCLUDE_DIRS`
+  ([#14](https://github.com/M0n7y5/pipeasio/issues/14)). A root is accepted
+  only when it holds `wine/debug.h` and the Win32 headers, and the first
+  complete one wins, so two Wine versions' headers are never mixed.
+- `cmake/WineDLL.cmake` validates the include directories it ends up with,
+  probed or user-supplied. A wrong `-DWINE_INCLUDE_DIRS` (the install root
+  instead of its include directories) configured cleanly and failed later with
+  `wine/debug.h: No such file or directory`; it now fails at configure time
+  naming the missing header. With `BUILD_WOW64_32=ON` the check also requires
+  `unixlib.h`, which the mingw cross compiler cannot reach through
+  `/usr/include`; the option moved above `include(WineDLL)` so the probe sees
+  it.
+- Configure warns when `winebuild` comes from a prefix whose `include/` holds
+  no SDK and another Wine's headers are used instead. The WineHQ repositories
+  ship the branch (`wine-devel`, `bin/` only) separately from its SDK
+  (`wine-devel-devel` on Fedora, `wine-devel-dev` on Debian).
+
+### Changed
+
+- README: per-distribution dependency sets (Arch, Fedora, Debian/Ubuntu)
+  instead of one Debian-flavoured mix, a section on Wine outside `/usr`
+  covering the WineHQ split packages and the `wine-devel` name collision, and
+  troubleshooting entries for the missing-package, `wine/debug.h`,
+  mismatched-prefix and skipped-Qt6-panel cases.
+
 ## [1.2.3] - 2026-07-21
 
 ### Added

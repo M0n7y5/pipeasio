@@ -393,7 +393,7 @@
   <section id="quickstart">
     <div class="wrap reveal">
       <h2>Quick start</h2>
-      <p class="lead">x86_64 only. Building from source needs CMake 3.20+, the Wine SDK, <code>pkg-config</code>, <code>libpipewire-0.3-dev</code>, and (for the panel) <code>qt6-base-dev</code>.</p>
+      <p class="lead">x86_64 only. Building from source needs CMake 3.20+, <code>gcc</code>, <code>pkg-config</code>, the Wine SDK and the PipeWire headers, plus Qt6 Widgets for the optional settings panel. Package names differ per distro - Arch: <code>wine libpipewire qt6-base</code>, Fedora: <code>wine-devel pipewire-devel qt6-qtbase-devel</code>, Debian/Ubuntu: <code>wine64-tools libwine-dev libpipewire-0.3-dev qt6-base-dev</code>.</p>
 
       <div class="step">Arch Linux / CachyOS: skip the build</div>
 <pre><span class="c"># driver + settings panel, from the AUR</span>
@@ -428,7 +428,7 @@ sudo cmake --install build --prefix /usr</pre>
       <p class="note">In Faugus, enable the <b>WoW64</b> option in the game's settings, or add <code>PROTON_USE_WOW64=1</code> to the same environment field as <code>WINEDLLPATH</code>. 64-bit games and hosts do not need this.</p>
 
       <div class="step">5 / Configure with the panel</div>
-      <p>The same install drops a native settings app, <code>pipeasio-settings</code> (built whenever <code>qt6-base-dev</code> is present). Launch it to set channels, buffer size and device routing, and to watch the live Monitor. Saves apply within about a second, with no host restart.</p>
+      <p>The same install drops a native settings app, <code>pipeasio-settings</code> (built whenever Qt6 Widgets is present; the driver builds fine without it). Launch it to set channels, buffer size and device routing, and to watch the live Monitor. Saves apply within about a second, with no host restart.</p>
 <pre>pipeasio-settings</pre>
     </div>
   </section>

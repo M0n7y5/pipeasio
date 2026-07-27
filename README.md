@@ -74,16 +74,83 @@ Under Proton or Steam, also set `WINEDLLPATH=$HOME/.local/lib/wine` in the launc
 CMake only. The driver is 64-bit. Opt-in 32-bit (WoW64) support for 32-bit
 Windows hosts is covered in [32-bit applications](#32-bit-applications-experimental).
 
-Requirements: `cmake` (3.20 or newer), `ninja-build` (recommended) or GNU make,
-`gcc`, the Wine SDK (`wine-devel` / `winehq-stable-dev`), `pkg-config`, and
-`libpipewire-0.3-dev`. The optional Qt6 settings panel also needs a C++ compiler
-and `qt6-base-dev`. The panel builds by default when those are present and is
-skipped otherwise. Pass `-DBUILD_SETTINGS_PANEL=OFF` to force it off.
+Requirements: `cmake` (3.20 or newer), `ninja` (recommended) or GNU make,
+`gcc`, `pkg-config`, the Wine SDK (headers plus `winebuild` and `winegcc`), and
+the PipeWire development headers. The Qt6 settings panel is optional: it builds
+when a C++ compiler and Qt6 Widgets are present and is skipped with a warning
+otherwise, which does not affect the driver. Pass `-DBUILD_SETTINGS_PANEL=OFF`
+to skip it deliberately and silence the warning.
+
+Package names differ per distribution. These are the sets CI builds against,
+plus the Qt6 package for the optional panel:
+
+```sh
+# Arch / CachyOS / EndeavourOS / Manjaro
+sudo pacman -S --needed cmake ninja gcc pkgconf wine libpipewire qt6-base
+
+# Fedora
+sudo dnf install cmake ninja-build gcc gcc-c++ pkgconf \
+    wine-devel pipewire-devel qt6-qtbase-devel
+
+# Debian / Ubuntu
+sudo apt install cmake ninja-build gcc g++ pkg-config \
+    wine64-tools libwine-dev libpipewire-0.3-dev qt6-base-dev
+```
+
+There is no `libpipewire-0.3-dev` or `winehq-*-dev` on Fedora, and no
+`wine-devel` on Debian; installing the wrong name makes the whole transaction
+fail, and the build then stops at `libpipewire-0.3 not found` or `Wine SDK
+headers not found`. Those are the distributions' own packages. Wine from the
+WineHQ repositories works differently (see
+[Wine outside /usr](#wine-outside-usr)): Fedora's `wine-devel` is a headers
+package in `/usr/include/wine`, while WineHQ's `wine-devel` is a whole Wine
+branch in `/opt/wine-devel`.
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
+
+### Wine outside /usr
+
+The WineHQ packages install into `/opt/wine-{devel,stable,staging}`, and some
+installer scripts drop a private Wine under `$HOME`. Put that Wine's `bin/` on
+`PATH`: CMake finds `winebuild` there and takes the headers from the same
+prefix, so the SDK belongs to the Wine you build against.
+
+```sh
+PATH=/opt/wine-devel/bin:$PATH cmake -B build -DCMAKE_BUILD_TYPE=Release
+```
+
+This works only if the SDK is installed in that prefix too. WineHQ splits every
+branch in two: the branch package ships `bin/` (including `winebuild`), while a
+separate companion ships `include/wine/`. An `/opt/wine-devel` with no
+`include/` directory is the usual case:
+
+```sh
+# Fedora, WineHQ repository - match the branch you installed
+sudo dnf install wine-devel-devel     # or wine-stable-devel / wine-staging-devel
+
+# Debian / Ubuntu, WineHQ repository
+sudo apt install wine-devel-dev       # or wine-stable-dev / wine-staging-dev
+```
+
+Configure warns when `winebuild` comes from a prefix whose `include/` has no
+SDK and another Wine's headers are used instead.
+
+Only if that fails, override the probe with `-DWINE_INCLUDE_DIRS` - and pass
+the include *directories*, not the install root. All three matter: the root
+resolves `wine/debug.h`, `wine/` holds `unixlib.h` (needed by the 32-bit WoW64
+halves), and `wine/windows/` is the Win32 SDK:
+
+```sh
+cmake -B build -DCMAKE_BUILD_TYPE=Release \
+    -DWINE_INCLUDE_DIRS="/opt/wine-devel/include;/opt/wine-devel/include/wine;/opt/wine-devel/include/wine/windows"
+```
+
+Debian's `libwine-dev` nests one level deeper (`/usr/include/wine`,
+`/usr/include/wine/wine`, `/usr/include/wine/wine/windows`). Configure checks
+the list before compiling and names whichever header it cannot reach.
 
 Debug build (assertions and Wine debug-channel macros):
 
@@ -399,12 +466,22 @@ A few knobs affect xrun-free, low-latency operation:
 
 The native settings panel (`pipeasio-settings`, C++/Qt6 Widgets) is built from the
 `gui` subdirectory and installed to `bin`, together with a desktop entry and icon,
-so it also appears in the application menu as **PipeASIO Settings**. It runs on
+so it also appears in the application menu as **PipeASIO Settings**. It is built
+only when Qt6 Widgets is found at configure time - otherwise configure warns,
+the driver still builds, and no panel binary is produced. It runs on
 your Linux host. The in-app ASIO control-panel button shows a message pointing
 here, because the Qt panel cannot run inside the Wine/Proton container the host
 loads the driver into.
 
 ## Troubleshooting
+
+**Configure fails with `libpipewire-0.3 not found` or `Wine SDK headers not found`.** The development packages are missing or named differently on your distribution - see [Building](#building) for the per-distro sets. Fedora has `pipewire-devel` and `wine-devel`, not `libpipewire-0.3-dev` or `winehq-*-dev`.
+
+**Build fails with `wine/debug.h` or `unixlib.h`: `No such file or directory`.** Configure picked an SDK that does not hold the headers. For Wine outside `/usr`, install its SDK companion (`wine-devel-devel` on Fedora, `wine-devel-dev` on Debian/Ubuntu, matching your branch) and put that prefix's `bin/` on `PATH`. A manual `-DWINE_INCLUDE_DIRS` must list the include directories, not the install root, and needs all three: `/opt/wine-devel/include;/opt/wine-devel/include/wine;/opt/wine-devel/include/wine/windows`. The `wine/` one carries `unixlib.h`, used only by the 32-bit WoW64 build.
+
+**`... holds no Wine SDK, so ... is used instead`.** `winebuild` came from a private prefix with no headers beside it, so another Wine's SDK was used. Install the matching `-devel`/`-dev` companion package, or the driver is compiled against a different Wine version than it runs on.
+
+**`Qt6 Widgets not found - skipping the settings panel`.** The driver still builds, but `pipeasio-settings` does not, so there is no panel to open. Install Qt6 Widgets (`qt6-base` on Arch, `qt6-qtbase-devel` on Fedora, `qt6-base-dev` on Debian/Ubuntu), then re-run configure, rebuild and re-install. Run it from a host terminal or the **PipeASIO Settings** menu entry; your DAW's ASIO control-panel button never opens it, with or without Qt, and only shows a message pointing here. Pass `-DBUILD_SETTINGS_PANEL=OFF` if you want no panel.
 
 **No sound, or the driver does not load under Proton.** Proton's container cannot see `/usr/lib/wine`. Install under `$HOME` and set `WINEDLLPATH` in the game's launch options (Steam: `WINEDLLPATH=/home/<you>/.local/lib/wine %command%`; Faugus: the same variable in the per-game environment field), then register in that prefix.
 
