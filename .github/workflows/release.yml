@@ -22,7 +22,7 @@ jobs:
       TAG: ${{ github.ref_name }}
     steps:
       - name: Install toolchain
-        run: pacman -Syu --noconfirm gcc cmake ninja pkgconf git wine libpipewire pipewire mingw-w64-gcc qt6-base github-cli
+        run: pacman -Syu --noconfirm gcc cmake ninja pkgconf git curl wine libpipewire pipewire mingw-w64-gcc qt6-base github-cli
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -41,6 +41,41 @@ jobs:
       - name: Stage install tree
         run: DESTDIR="$PWD/stage" cmake --install build --prefix /usr
 
+      # The shipped .so halves are built against Arch's PipeWire, which is
+      # newer than the 1.4.2 floor, so "it compiled" proves nothing about what
+      # they import.  Check the staged artifacts themselves against the exact
+      # libpipewire Proton's steamrt4 runtime loads: every pw_/spa_ symbol they
+      # reference must exist there, or the release stops.  This is what makes
+      # the floor claim in BUILD-INFO.txt true for the binaries in the tarball,
+      # not just for the separate binary the CI floor job builds.
+      - name: Verify the artifacts import no PipeWire newer than the floor
+        run: |
+          set -euo pipefail
+          deb='libpipewire-0.3-0t64_1.4.2-1%2Bsteamrt4.1%2Bbsrt4.2_amd64.deb'
+          work="$(mktemp -d)"
+          curl -fsSL -o "$work/pw.deb" \
+            "https://repo.steampowered.com/steamrt4/apt/pool/main/p/pipewire/${deb}"
+          ( cd "$work" && ar x pw.deb && tar xf data.tar.* )
+          floor_lib="$(find "$work" -name 'libpipewire-0.3.so.0.*' | head -1)"
+          test -n "$floor_lib" || { echo "::error::no libpipewire in ${deb}"; exit 1; }
+          echo "floor library: ${floor_lib##*/}"
+          nm -D --defined-only "$floor_lib" | awk '{print $3}' | sort -u > "$work/floor"
+          rc=0
+          for so in stage/usr/lib/wine/x86_64-unix/pipeasio64.dll.so \
+                    stage/usr/lib/wine/x86_64-unix/pipeasio32.so; do
+            test -f "$so" || continue
+            nm -D --undefined-only "$so" | awk '{print $NF}' | sed 's/@.*//' \
+              | grep -E '^(pw|spa)_' | sort -u > "$work/used"
+            missing="$(comm -23 "$work/used" "$work/floor")"
+            if [ -n "$missing" ]; then
+              rc=1
+              echo "::error::${so##*/} imports PipeWire symbols absent from 1.4.2: $(echo "$missing" | tr '\n' ' ')"
+            else
+              echo "${so##*/}: $(wc -l < "$work/used") PipeWire imports, all present in 1.4.2"
+            fi
+          done
+          exit "$rc"
+
       - name: Write BUILD-INFO.txt
         run: |
           glibc=$(ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+$')
@@ -51,7 +86,7 @@ jobs:
             "Commit:           ${GITHUB_SHA}" \
             "Wine (build SDK): $(wine --version)" \
             "glibc:            ${glibc}" \
-            "libpipewire-0.3:  $(pkg-config --modversion libpipewire-0.3)" \
+            "libpipewire-0.3:  $(pkg-config --modversion libpipewire-0.3) (built against; minimum 1.4.2)" \
             "MinGW (i386 PE):  $(i686-w64-mingw32-gcc -dumpversion)" \
             "Kernel:           $(uname -sr)" \
             "" \
@@ -70,6 +105,10 @@ jobs:
             "COMPATIBILITY: the ELF .so halves are linked against the Wine and glibc" \
             "shown above. A different Wine version or an older glibc may fail to load" \
             "(regsvr32 c0000135). Build from source in that case. See the README." \
+            "PipeWire is the exception: it is resolved at run time and any" \
+            "libpipewire-0.3 from 1.4.2 up works. These exact .so files were" \
+            "checked at release time - every PipeWire symbol they import exists in" \
+            "the 1.4.2 that Proton's steamrt4 runtime loads." \
             > stage/usr/BUILD-INFO.txt
           cat stage/usr/BUILD-INFO.txt
 

@@ -35,6 +35,7 @@ DISTRO_TABLE="
 fedora|registry.fedoraproject.org/fedora:latest|dnf install -y --setopt=install_weak_deps=False cmake ninja-build gcc g++ pkgconf wine-devel pipewire-devel redhat-rpm-config git|tests/distro/flags/fedora.sh|yes
 ubuntu|docker.io/library/ubuntu:latest|export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y --no-install-recommends cmake ninja-build gcc g++ pkg-config wine64-tools libwine-dev libpipewire-0.3-dev pipewire dpkg-dev git ca-certificates|tests/distro/flags/ubuntu.sh|no
 arch|docker.io/library/archlinux:latest|pacman -Syu --noconfirm gcc cmake ninja pkgconf wine libpipewire pipewire git|tests/distro/flags/arch.sh|no
+steamrt4|registry.gitlab.steamos.cloud/steamrt/steamrt4/sdk@sha256:2c4c6520a268ef53255d511ae5988e35855b39a4b6c1e9865d56e5011c76ec3e|export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y --no-install-recommends cmake ninja-build gcc g++ pkg-config wine wine64-tools libwine-dev dpkg-dev git ca-certificates|tests/distro/flags/steamrt4.sh|no
 "
 
 usage() {
@@ -46,7 +47,7 @@ Usage: $(basename "$0") [--clean] [--help]
   --help      this text
 
 Env:
-  DISTROS="fedora ubuntu"   subset of: fedora ubuntu arch
+  DISTROS="fedora ubuntu"   subset of: fedora ubuntu arch steamrt4
   FRESH=1                   recreate containers before running
 EOF
 }
