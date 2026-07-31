@@ -6,8 +6,45 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- CI job `build (Steam Runtime 4, PipeWire floor)` builds and tests inside the
+  official Steam Runtime 4 SDK image, pinned by digest rather than a moving
+  tag. That image is the build environment for the steamrt4 runtime Proton 11+
+  executes in, not the runtime itself, but both ship the same
+  `libpipewire-0.3 1.4.2-1+steamrt4.1+bsrt4.2`, so the minimum is proven
+  against the version the driver actually meets there rather than against a
+  distro that happens to ship something similar. The job asserts
+  `pkg-config --modversion libpipewire-0.3` is exactly `1.4.2` before
+  building, so a re-pinned or rebuilt SDK that moves off the floor fails
+  loudly instead of silently testing something newer. `tests/distro/run.sh`
+  gains the matching `steamrt4` leg (`DISTROS=steamrt4`) with the same assert
+  in `tests/distro/flags/steamrt4.sh`.
+- The release workflow verifies the shipped binaries themselves against the
+  floor. Release artifacts are built on Arch against a newer PipeWire, so the
+  Steam Runtime 4 CI job proves nothing about them - it builds a different
+  binary, and a future header-version-guarded call could compile there while
+  the Arch artifact imports a 1.6-only symbol. The new step downloads the
+  exact `libpipewire-0.3` that Proton's steamrt4 runtime loads
+  (`1.4.2-1+steamrt4.1+bsrt4.2`, from `repo.steampowered.com`) and fails the
+  release if any `pw_`/`spa_` symbol imported by `pipeasio64.dll.so` or
+  `pipeasio32.so` is missing from it. Today both import 36 and 35 PipeWire
+  symbols respectively, all present.
+
 ### Fixed
 
+- The 64-bit driver now links the PipeWire that `pkg-config` selected instead
+  of whichever `libpipewire-0.3.so` the linker happened to find first.
+  `add_wine_dll` turned `LIBS` into bare `-lpipewire-0.3` with no search path,
+  so a PipeWire outside `/usr` (`PKG_CONFIG_PATH` at a custom prefix) compiled
+  against its headers but silently linked the system library - verified: a
+  1.4.2 prefix produced a binary linked against the system 1.6.8. `LIBS` now
+  carries only the Win32 import libraries, and a new `LDFLAGS` parameter takes
+  `${PIPEWIRE_LINK_LIBRARIES}`, which is an absolute path. The WoW64 unixlib
+  link uses the same form. Absolute paths rather than `-L`: injecting a raw
+  `-L/usr/lib` ahead of winegcc's own directories makes `-luuid` resolve to
+  util-linux's libuuid instead of Wine's import library, and the link then
+  fails on an undefined `IID_IUnknown`.
 - Wine SDK discovery derives the include directories from the `winebuild` on
   `PATH` (`<prefix>/bin/winebuild` implies `<prefix>/include`), so Wine
   installed outside `/usr` builds without a manual `-DWINE_INCLUDE_DIRS`
@@ -34,6 +71,27 @@ follow [Semantic Versioning](https://semver.org/).
   covering the WineHQ split packages and the `wine-devel` name collision, and
   troubleshooting entries for the missing-package, `wine/debug.h`,
   mismatched-prefix and skipped-Qt6-panel cases.
+- The documented PipeWire requirement drops from 1.6+ to **1.4.2+**, the
+  version Steam Runtime 4 (and Debian 13) ships, so the floor matches the
+  steamrt4 runtime Proton 11+ executes in. The 1.6 claim was never enforced
+  anywhere and its stated reason was wrong: `PW_KEY_NODE_FORCE_QUANTUM` /
+  `PW_KEY_NODE_FORCE_RATE` have existed since PipeWire 0.3.45, and the
+  quantum-selection code is identical between 1.4.2 and 1.6.8. Higher latency
+  on some setups comes from the daemon clamping the forced quantum to
+  `clock.min-quantum` / `clock.max-quantum`, which is version-independent.
+  No backend source change was needed: every PipeWire symbol, macro and
+  interface version the driver uses is unchanged across 1.4.2 and 1.6.8.
+- `CMakeLists.txt` now requires `libpipewire-0.3>=1.4.2` instead of accepting
+  any version. This is the first version floor the build has ever had. Older
+  PipeWire could not build regardless - `src/audio.c` calls
+  `spa_json_str_object_find()`, added in 1.4.0 - but it failed late with
+  `implicit declaration of function` under
+  `-Werror=implicit-function-declaration`; it now fails at configure time
+  naming the version. PipeWire older than 1.4.0 (notably Ubuntu 24.04 LTS,
+  which ships 1.0.5) is therefore rejected up front rather than part-way
+  through the build.
+- `audio_open` traces the PipeWire header and runtime library versions
+  (`PIPEASIO_DEBUG=1`), so a header/runtime split is visible in bug reports.
 
 ## [1.2.3] - 2026-07-21
 
