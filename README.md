@@ -12,6 +12,7 @@
 <p align="center">
   <a href="https://github.com/M0n7y5/pipeasio/releases"><img alt="Release" src="https://img.shields.io/github/v/release/M0n7y5/pipeasio?include_prereleases&amp;label=release&amp;color=ff6a1f"></a>
   <a href="https://aur.archlinux.org/packages/pipeasio"><img alt="AUR version" src="https://img.shields.io/aur/version/pipeasio?label=AUR&amp;color=ff6a1f"></a>
+  <a href="https://fluxer.gg/THKL1aSc"><img alt="Fluxer guild" src="https://img.shields.io/badge/Fluxer-join%20the%20guild-ff6a1f"></a>
   <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-blue">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20x86__64-lightgrey">
   <img alt="PipeWire" src="https://img.shields.io/badge/PipeWire-1.4.2%2B-ff6a1f">
@@ -41,6 +42,29 @@ drivers.
 If PipeASIO is useful to you, you can support its development on Ko-fi:
 
 [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/m0n7y5)
+
+## Contributing
+
+**Issues are open to everyone.** Bug reports, questions and feature requests are
+welcome on the [issue tracker](https://github.com/M0n7y5/pipeasio/issues) - no
+invitation needed, and a good bug report is usually worth more than a patch.
+
+**Pull requests are only reviewed from manually selected contributors.** PipeASIO
+has one maintainer, and the repository was attracting pull-request spam from
+botted accounts; sifting through it was eating the time that goes into the
+driver. GitHub cannot stop anyone opening a pull request on a public repository,
+so the rule is about what gets read: limiting which pull requests are reviewed
+and merged is the cheapest fix that keeps the issue tracker open to everybody.
+
+If you would like to work on PipeASIO, come and say so in the Fluxer guild, with
+a rough outline of what you want to change:
+
+[![Join the Fluxer guild](https://img.shields.io/badge/Fluxer-join%20the%20guild-ff6a1f?style=for-the-badge)](https://fluxer.gg/THKL1aSc)
+
+Once you are on the contributor list the usual rules apply: run `clang-format`
+(the config is in-tree) before submitting, and keep changes x86_64 and C11.
+Pull requests from outside the list are closed without review - open an issue or
+reach out in the guild instead.
 
 ## Quick start
 
@@ -579,10 +603,6 @@ matrix job.
 
 If you package PipeASIO, consider installing the `pipeasio-register` helper script
 as part of the package.
-
-## Contributing
-
-Issues and pull requests are welcome on [GitHub](https://github.com/M0n7y5/pipeasio). Run `clang-format` (the config is in-tree) before submitting, and keep changes x86_64 and C11.
 
 ## Acknowledgements
 
