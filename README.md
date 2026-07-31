@@ -52,9 +52,7 @@ invitation needed, and a good bug report is usually worth more than a patch.
 **Pull requests are only reviewed from manually selected contributors.** PipeASIO
 has one maintainer, and the repository was attracting pull-request spam from
 botted accounts; sifting through it was eating the time that goes into the
-driver. GitHub cannot stop anyone opening a pull request on a public repository,
-so the rule is about what gets read: limiting which pull requests are reviewed
-and merged is the cheapest fix that keeps the issue tracker open to everybody.
+driver. 
 
 If you would like to work on PipeASIO, come and say so in the Fluxer guild, with
 a rough outline of what you want to change:
