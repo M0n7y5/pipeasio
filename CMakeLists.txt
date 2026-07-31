@@ -34,7 +34,8 @@ add_wine_dll(
               src/regsvr.c
     INCLUDES  ${CMAKE_SOURCE_DIR}/include
               ${PIPEWIRE_INCLUDE_DIRS}
-    LIBS      odbc32 ole32 uuid winmm user32 pipewire-0.3
+    LIBS      odbc32 ole32 uuid winmm user32
+    LDFLAGS   ${PIPEWIRE_LINK_LIBRARIES} ${PIPEWIRE_LDFLAGS_OTHER}
 )
 
 # Optional 32-bit WoW64 front end.
@@ -144,7 +145,7 @@ if(BUILD_WOW64_32)
         COMMAND "${WINEGCC}" -shared
                 "${PA32_SPEC}"
                 $<TARGET_OBJECTS:pipeasio32_unix_objs>
-                -lpthread -ldl ${PIPEWIRE_LDFLAGS}
+                -lpthread -ldl ${PIPEWIRE_LINK_LIBRARIES} ${PIPEWIRE_LDFLAGS_OTHER}
                 -o "${PA32_SO}"
         DEPENDS pipeasio32_unix_objs "${PA32_SPEC}"
                 $<TARGET_OBJECTS:pipeasio32_unix_objs>

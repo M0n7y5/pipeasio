@@ -124,7 +124,7 @@ message(STATUS "Wine include dirs: ${WINE_INCLUDE_DIRS}")
 function(add_wine_dll)
     set(_options "")
     set(_one     NAME SPEC)
-    set(_multi   SOURCES INCLUDES LIBS)
+    set(_multi   SOURCES INCLUDES LIBS LDFLAGS)
     cmake_parse_arguments(WDL "${_options}" "${_one}" "${_multi}" ${ARGN})
 
     if(NOT WDL_NAME OR NOT WDL_SPEC OR NOT WDL_SOURCES)
@@ -186,6 +186,13 @@ function(add_wine_dll)
         COMMENT "winebuild ${WDL_NAME}.dll (fake PE module)")
 
     # Step 2: ELF .so via winegcc.
+    # LIBS are bare names (-lfoo) resolved through winegcc's own search path,
+    # which is where the Win32 import libraries live.  LDFLAGS is appended
+    # verbatim and is meant for absolute library paths (pkg-config's
+    # <pkg>_LINK_LIBRARIES) so a PipeWire outside /usr is honoured.  Do NOT
+    # feed raw -L here: a -L/usr/lib ahead of winegcc's own directories makes
+    # -luuid resolve to util-linux's libuuid instead of Wine's import library,
+    # and the link dies on an undefined IID_IUnknown.
     set(_lflags "")
     foreach(_l ${WDL_LIBS})
         list(APPEND _lflags -l${_l})
@@ -197,6 +204,7 @@ function(add_wine_dll)
                 $<TARGET_OBJECTS:${_objlib}>
                 ${_winegcc_extra_flags}
                 ${_lflags}
+                ${WDL_LDFLAGS}
                 -o ${_so}
         DEPENDS ${_objlib} ${WDL_SPEC} $<TARGET_OBJECTS:${_objlib}>
         COMMAND_EXPAND_LISTS
