@@ -62,6 +62,7 @@ class SettingsDialog : public QDialog
     QCheckBox *m_autoConnect       = nullptr;
     QCheckBox *m_fixedBuffer       = nullptr;
     QCheckBox *m_followDeviceClock = nullptr;
+    QCheckBox *m_realtime          = nullptr;
     QLineEdit *m_nodeName          = nullptr;
 
     /* Monitor widgets */

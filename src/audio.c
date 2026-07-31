@@ -21,8 +21,9 @@
 #define _GNU_SOURCE /* SCHED_FIFO and friends */
 
 #include "audio.h"
+#include "pipeasio_config.h"
 #include "pipeasio_offsets.h"
-
+#include "pipeasio_rt_priority.h"
 #ifndef PIPEASIO_AUDIO_UNIXLIB
 #define WIN32_LEAN_AND_MEAN
 #include "windef.h"
@@ -103,18 +104,11 @@ audio_current_thread_id(void)
 #define AUDIO_DEFAULT_SAMPLE_RATE 48000u
 #define AUDIO_DEFAULT_BUFFER_SIZE 1024u
 
-/* SCHED_FIFO range offered to PipeWire's rt handling. */
-#define AUDIO_RT_PRIO_MIN 1
-#define AUDIO_RT_PRIO_MAX 80
-/* Used when PipeWire asks for the module default (-1): we bypass
- * module-rt/RTKit, so pick our own.  The PipeWire daemon's data loop gets
- * its RT priority through RTKit on stock desktops, whose default cap is 20
- * (RR 20 observed on Arch) - NOT the 88 from pipewire.conf.  Our thread runs
- * the ASIO host's entire DSP callback for milliseconds per cycle, so it MUST
- * sit BELOW the graph driver: anything above it preempts the daemon, starves
- * the device, and turns other playing streams into xruns/pops (issue #4).
- * 15 stays under RTKit's 20 while still beating normal desktop threads. */
-#define AUDIO_RT_PRIO_DEFAULT 15
+/* Keep native and WoW64 scheduling values in sync. */
+#define AUDIO_RT_PRIO_MIN PIPEASIO_RT_PRIO_MIN
+#define AUDIO_RT_PRIO_MAX PIPEASIO_RT_PRIO_MAX
+/* The thread-utils bridge bypasses module-rt, so resolve its default request here. */
+#define AUDIO_RT_PRIO_DEFAULT PIPEASIO_RT_PRIO_DEFAULT
 
 #ifndef PIPEASIO_AUDIO_UNIXLIB
 /* Wine RT thread bridge for the PipeWire data loop. */
@@ -125,6 +119,7 @@ struct audio_rt_state
     DWORD       win_tid;
     pthread_t   ptid;            /* captured inside the spawned thread */
     int         rt_priority;     /* current SCHED_FIFO priority, 0 = none */
+    bool        want_realtime;   /* from config.ini; PIPEASIO_RT_PRIORITY wins */
     atomic_bool ready;           /* released once ptid is captured */
     void *(*user_entry)(void *); /* PipeWire-provided entry */
     void *user_arg;
@@ -209,6 +204,25 @@ audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
 {
     struct audio_rt_state *s = data;
     (void)thread;
+
+    bool realtime = s->want_realtime;
+    switch (pipeasio_rt_env_override())
+    {
+    case 0:
+        realtime = false;
+        break;
+    case 1:
+        realtime = true;
+        break;
+    default:
+        break;
+    }
+
+    if (!realtime)
+    {
+        TRACE("rt thread left SCHED_OTHER (realtime disabled)\n");
+        return 0;
+    }
 
     /* SPA contract: priority <= 0 means "apply the configured default".
      * module-rt is bypassed by our thread-utils override, so map it here. */
@@ -469,6 +483,7 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
      * bridge, so the RT thread is CreateThread'd and has a Wine TEB. */
     pw_data_loop_stop(c->data_loop);
 #ifndef PIPEASIO_AUDIO_UNIXLIB
+    c->rt.want_realtime = PIPEASIO_DEFAULT_REALTIME;
     c->rt_iface.iface = SPA_INTERFACE_INIT(SPA_TYPE_INTERFACE_ThreadUtils, SPA_VERSION_THREAD_UTILS,
                                            &audio_rt_methods, &c->rt);
     pw_data_loop_set_thread_utils(c->data_loop, &c->rt_iface);
@@ -871,6 +886,18 @@ audio_set_follow_device(audio_client_t *c, bool follow)
     if (!c)
         return;
     c->follow_device = follow;
+}
+
+void
+audio_set_realtime(audio_client_t *c, bool realtime)
+{
+    if (!c)
+        return;
+#ifndef PIPEASIO_AUDIO_UNIXLIB
+    c->rt.want_realtime = realtime;
+#else
+    (void)realtime;
+#endif
 }
 
 audio_nframes_t

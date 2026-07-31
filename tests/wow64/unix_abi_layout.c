@@ -29,7 +29,7 @@
 #define CHECK(expr, msg) _Static_assert((expr), msg)
 
 CHECK(sizeof(void *) == EXPECTED_POINTER_SIZE, "unexpected compiler bitness");
-CHECK(PIPEASIO_UNIX_ABI_VERSION == 1, "ABI version changed - bump both halves");
+CHECK(PIPEASIO_UNIX_ABI_VERSION == 2, "ABI version changed - bump both halves");
 CHECK(PAU_RT_MAX_PORTS == 256, "RT channel cap changed");
 CHECK(PAU_PORTS_BLOB == 16384, "port blob size changed");
 
@@ -40,7 +40,8 @@ CHECK(PAU_BIND_RT == 23, "call enum drift");
 CHECK(PAU_LOAD_CONFIG == 24, "call enum drift");
 CHECK(PAU_WAIT_CALLBACK == 26, "call enum drift");
 CHECK(PAU_REPLY_CALLBACK == 27, "call enum drift");
-CHECK(PAU_CALL_COUNT == 28, "call count drift - update both unix call tables");
+CHECK(PAU_SET_REALTIME == 28, "call enum drift - PAU_SET_REALTIME must stay appended");
+CHECK(PAU_CALL_COUNT == 29, "call count drift - update both unix call tables");
 CHECK(PAU_CB_BUFFER_SWITCH == 0, "callback kind drift");
 CHECK(PAU_CB_LATENCY == 3, "callback kind drift");
 
@@ -79,6 +80,13 @@ CHECK(sizeof(pa_name_params) == 264, "pa_name_params size");
 CHECK(sizeof(pa_config_params) == 800, "pa_config_params size");
 CHECK(offsetof(pa_config_params, cfg) == 4, "pa_config_params cfg offset");
 CHECK(offsetof(pa_config_params, found) == 796, "pa_config_params found offset");
+/* The struct size is unchanged, so pin the fields added or shifted by ABI 2. */
+CHECK(sizeof(struct pipeasio_config) == 792, "pipeasio_config size");
+CHECK(offsetof(struct pipeasio_config, realtime) == 22, "pipeasio_config realtime offset");
+CHECK(offsetof(struct pipeasio_config, output_device) == 23,
+      "pipeasio_config output_device offset");
+CHECK(offsetof(struct pipeasio_config, input_device) == 279, "pipeasio_config input_device offset");
+CHECK(offsetof(struct pipeasio_config, node_name) == 535, "pipeasio_config node_name offset");
 
 CHECK(sizeof(pa_fingerprint_params) == 12, "pa_fingerprint_params size");
 CHECK(offsetof(pa_fingerprint_params, fp) == 4, "pa_fingerprint_params fp offset");

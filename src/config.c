@@ -78,9 +78,11 @@ copy_str(char *dst, size_t cap, const char *src)
     dst[i] = '\0';
 }
 
-static void
-set_defaults(struct pipeasio_config *c)
+void
+pipeasio_config_defaults(struct pipeasio_config *c)
 {
+    if (!c)
+        return;
     c->inputs              = PIPEASIO_DEFAULT_INPUTS;
     c->outputs             = PIPEASIO_DEFAULT_OUTPUTS;
     c->buffer_size         = PIPEASIO_DEFAULT_BUFFER_SIZE;
@@ -88,6 +90,7 @@ set_defaults(struct pipeasio_config *c)
     c->sample_rate         = PIPEASIO_DEFAULT_SAMPLE_RATE;
     c->auto_connect        = PIPEASIO_DEFAULT_AUTO_CONNECT;
     c->follow_device_clock = PIPEASIO_DEFAULT_FOLLOW_DEVICE_CLOCK;
+    c->realtime            = PIPEASIO_DEFAULT_REALTIME;
     c->output_device[0]    = '\0';
     c->input_device[0]     = '\0';
     c->node_name[0]        = '\0';
@@ -110,6 +113,8 @@ apply_kv(struct pipeasio_config *c, const char *key, const char *val)
         c->auto_connect = parse_bool(val);
     else if (!strcmp(key, PIPEASIO_KEY_FOLLOW_DEVICE_CLOCK))
         c->follow_device_clock = parse_bool(val);
+    else if (!strcmp(key, PIPEASIO_KEY_REALTIME))
+        c->realtime = parse_bool(val);
     else if (!strcmp(key, PIPEASIO_KEY_OUTPUT_DEVICE))
         copy_str(c->output_device, sizeof c->output_device, val);
     else if (!strcmp(key, PIPEASIO_KEY_INPUT_DEVICE))
@@ -139,7 +144,7 @@ validate(struct pipeasio_config *c)
 bool
 pipeasio_config_load(struct pipeasio_config *out)
 {
-    set_defaults(out);
+    pipeasio_config_defaults(out);
 
     char path[1024];
     if (!pipeasio_config_path(path, sizeof path))

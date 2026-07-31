@@ -351,6 +351,12 @@ audio_set_follow_device(audio_client_t *client, bool follow)
     set_u32((proxy_ctx *)client, PAU_SET_FOLLOW_DEVICE, follow ? 1 : 0);
 }
 
+void
+audio_set_realtime(audio_client_t *client, bool realtime)
+{
+    set_u32((proxy_ctx *)client, PAU_SET_REALTIME, realtime ? 1 : 0);
+}
+
 audio_nframes_t
 audio_observed_quantum(audio_client_t *client)
 {
@@ -686,7 +692,10 @@ pipeasio_wow64_load_config(struct pipeasio_config *out)
 {
     pa_config_params p;
 
-    if (!out || !ensure_unixlib())
+    if (!out)
+        return false;
+    pipeasio_config_defaults(out);
+    if (!ensure_unixlib())
         return false;
     memset(&p, 0, sizeof p);
     p.version = PIPEASIO_UNIX_ABI_VERSION;

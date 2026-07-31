@@ -174,6 +174,12 @@ SettingsDialog::buildSettingsTab()
                           "quantum. Required for Bluetooth sinks (their clock can't be "
                           "slaved); raises latency. Leave off for wired low-latency output."));
 
+    m_realtime = new QCheckBox(page);
+    addRow(QStringLiteral("Real-time audio thread"), m_realtime,
+           QStringLiteral("Raise the host callback thread to SCHED_FIFO priority 15. Disable "
+                          "only when testing scheduling-related xruns. Takes effect the next "
+                          "time the host starts the driver."));
+
     m_nodeName = new QLineEdit(page);
     m_nodeName->setPlaceholderText(QStringLiteral("(derive from application name)"));
     addRow(QStringLiteral("Node name"), m_nodeName,
@@ -360,6 +366,7 @@ SettingsDialog::applyConfig(const pipeasio_config &c)
     m_autoConnect->setChecked(c.auto_connect);
     m_fixedBuffer->setChecked(c.fixed_buffer_size);
     m_followDeviceClock->setChecked(c.follow_device_clock);
+    m_realtime->setChecked(c.realtime);
     m_nodeName->setText(QString::fromUtf8(c.node_name));
 
     updateLatencyLabel();
@@ -382,6 +389,7 @@ SettingsDialog::onApply()
     cfg.sample_rate         = currentSampleRate();
     cfg.auto_connect        = m_autoConnect->isChecked();
     cfg.follow_device_clock = m_followDeviceClock->isChecked();
+    cfg.realtime            = m_realtime->isChecked();
 
     const QByteArray out = m_outputDevice->currentData().toString().toUtf8();
     qstrncpy(cfg.output_device, out.constData(), sizeof(cfg.output_device));

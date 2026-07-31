@@ -261,6 +261,7 @@ typedef struct IPipeASIOImpl
     BOOL pipeasio_connect_to_hardware;
     BOOL pipeasio_fixed_buffersize;
     BOOL pipeasio_follow_device_clock;
+    BOOL pipeasio_realtime;
     LONG pipeasio_preferred_buffersize;
     int  pipeasio_sample_rate; /* 0 = follow graph */
     char pipeasio_output_device[PIPEASIO_DEVICE_NAME_MAX];
@@ -554,6 +555,7 @@ config_watch_proc(LPVOID arg)
                                   || newcfg.fixed_buffer_size != last_cfg.fixed_buffer_size
                                   || newcfg.sample_rate != last_cfg.sample_rate
                                   || newcfg.follow_device_clock != last_cfg.follow_device_clock
+                                  || newcfg.realtime != last_cfg.realtime
                                   || newcfg.auto_connect != last_cfg.auto_connect
                                   || strcmp(newcfg.output_device, last_cfg.output_device) != 0
                                   || strcmp(newcfg.input_device, last_cfg.input_device) != 0;
@@ -724,6 +726,7 @@ Init(LPPIPEASIO iface, void *sysRef)
 
     audio_set_forced_rate(This->audio_client, (audio_nframes_t)This->pipeasio_sample_rate);
     audio_set_follow_device(This->audio_client, This->pipeasio_follow_device_clock);
+    audio_set_realtime(This->audio_client, This->pipeasio_realtime);
 
     This->host_sample_rate = audio_get_sample_rate(This->audio_client);
     /* Before CreateBuffers, report the configured preferred size. */
@@ -1159,6 +1162,7 @@ apply_pending_config(IPipeASIOImpl *This)
         This->pipeasio_connect_to_hardware  = cfg.auto_connect ? TRUE : FALSE;
         This->pipeasio_fixed_buffersize     = cfg.fixed_buffer_size ? TRUE : FALSE;
         This->pipeasio_follow_device_clock  = cfg.follow_device_clock ? TRUE : FALSE;
+        This->pipeasio_realtime             = cfg.realtime ? TRUE : FALSE;
         This->pipeasio_preferred_buffersize = cfg.buffer_size; /* loader pow2-validated */
         This->pipeasio_sample_rate          = cfg.sample_rate;
         lstrcpynA(This->pipeasio_output_device, cfg.output_device,
@@ -1168,9 +1172,11 @@ apply_pending_config(IPipeASIOImpl *This)
 
         audio_set_forced_rate(This->audio_client, (audio_nframes_t)This->pipeasio_sample_rate);
         audio_set_follow_device(This->audio_client, This->pipeasio_follow_device_clock);
-        TRACE("config: applied live reload (buffer_size=%d rate=%d follow=%d auto=%d)\n",
+        audio_set_realtime(This->audio_client, This->pipeasio_realtime);
+        TRACE("config: applied live reload (buffer_size=%d rate=%d follow=%d auto=%d rt=%d)\n",
               (int)This->pipeasio_preferred_buffersize, This->pipeasio_sample_rate,
-              (int)This->pipeasio_follow_device_clock, (int)This->pipeasio_connect_to_hardware);
+              (int)This->pipeasio_follow_device_clock, (int)This->pipeasio_connect_to_hardware,
+              (int)This->pipeasio_realtime);
     }
     /* Forced quantum: follow-device uses the observed graph quantum, else the
      * configured preferred size.  Mirrors Init().  Runs every call so a
@@ -1807,6 +1813,8 @@ configure_driver(IPipeASIOImpl *This)
     LONG                   result;
     DWORD                  n;
     struct pipeasio_config cfg;
+    /* Defaults remain valid if the WoW64 config call fails. */
+    pipeasio_config_defaults(&cfg);
 
     /* Initialise most member variables.
      * host_num_samples, host_time, & host_time_stamp are initialized in Start()
@@ -1840,6 +1848,7 @@ configure_driver(IPipeASIOImpl *This)
     This->pipeasio_connect_to_hardware  = cfg.auto_connect ? TRUE : FALSE;
     This->pipeasio_fixed_buffersize     = cfg.fixed_buffer_size ? TRUE : FALSE;
     This->pipeasio_follow_device_clock  = cfg.follow_device_clock ? TRUE : FALSE;
+    This->pipeasio_realtime             = cfg.realtime ? TRUE : FALSE;
     This->pipeasio_preferred_buffersize = cfg.buffer_size;
     This->pipeasio_sample_rate          = cfg.sample_rate;
     lstrcpynA(This->pipeasio_output_device, cfg.output_device, sizeof This->pipeasio_output_device);

@@ -24,7 +24,8 @@
 
 #include "pipeasio_config.h"
 
-#define PIPEASIO_UNIX_ABI_VERSION 1
+/* Version 2 adds `realtime` and shifts later fields without changing the struct size. */
+#define PIPEASIO_UNIX_ABI_VERSION 2
 
 /* Unix-side token handle.  Zero is NULL. */
 typedef uint32_t pa_handle;
@@ -67,6 +68,7 @@ enum pa_call
     PAU_CONFIG_FINGERPRINT,
     PAU_WAIT_CALLBACK,
     PAU_REPLY_CALLBACK,
+    PAU_SET_REALTIME,
     PAU_CALL_COUNT
 };
 
@@ -108,7 +110,8 @@ typedef struct
     uint32_t  result; /* out */
 } pa_simple_params;
 
-/* PAU_SET_BUFFER_SIZE / PAU_SET_FORCED_RATE / PAU_SET_FOLLOW_DEVICE. */
+/* PAU_SET_BUFFER_SIZE / PAU_SET_FORCED_RATE / PAU_SET_FOLLOW_DEVICE /
+ * PAU_SET_REALTIME. */
 typedef struct
 {
     uint32_t  version;

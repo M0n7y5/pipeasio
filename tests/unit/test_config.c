@@ -152,6 +152,53 @@ main(void)
         EXPECT_EQ(c.outputs, 3);
     }
 
+    /* Valid nondefaults expose omitted assignments without invalid _Bool values. */
+    TEST_GROUP("defaults fill every field")
+    {
+        struct pipeasio_config c;
+        c.inputs              = PIPEASIO_DEFAULT_INPUTS + 7;
+        c.outputs             = PIPEASIO_DEFAULT_OUTPUTS + 7;
+        c.buffer_size         = PIPEASIO_DEFAULT_BUFFER_SIZE / 2;
+        c.fixed_buffer_size   = !PIPEASIO_DEFAULT_FIXED_BUFFER_SIZE;
+        c.sample_rate         = PIPEASIO_DEFAULT_SAMPLE_RATE + 44100;
+        c.auto_connect        = !PIPEASIO_DEFAULT_AUTO_CONNECT;
+        c.follow_device_clock = !PIPEASIO_DEFAULT_FOLLOW_DEVICE_CLOCK;
+        c.realtime            = !PIPEASIO_DEFAULT_REALTIME;
+        c.output_device[0]    = 'X';
+        c.input_device[0]     = 'X';
+        c.node_name[0]        = 'X';
+
+        pipeasio_config_defaults(&c);
+
+        EXPECT_EQ(c.inputs, PIPEASIO_DEFAULT_INPUTS);
+        EXPECT_EQ(c.outputs, PIPEASIO_DEFAULT_OUTPUTS);
+        EXPECT_EQ(c.buffer_size, PIPEASIO_DEFAULT_BUFFER_SIZE);
+        EXPECT_EQ(c.fixed_buffer_size, PIPEASIO_DEFAULT_FIXED_BUFFER_SIZE);
+        EXPECT_EQ(c.sample_rate, PIPEASIO_DEFAULT_SAMPLE_RATE);
+        EXPECT_EQ(c.auto_connect, PIPEASIO_DEFAULT_AUTO_CONNECT);
+        EXPECT_EQ(c.follow_device_clock, PIPEASIO_DEFAULT_FOLLOW_DEVICE_CLOCK);
+        EXPECT_EQ(c.realtime, PIPEASIO_DEFAULT_REALTIME);
+        EXPECT_EQ(c.output_device[0], '\0');
+        EXPECT_EQ(c.input_device[0], '\0');
+        EXPECT_EQ(c.node_name[0], '\0');
+    }
+
+    TEST_GROUP("realtime key parses")
+    {
+        write_cfg("[pipeasio]\nrealtime = 0\n");
+        struct pipeasio_config c;
+        pipeasio_config_load(&c);
+        EXPECT_EQ(c.realtime, 0);
+
+        write_cfg("[pipeasio]\nrealtime = on\n");
+        pipeasio_config_load(&c);
+        EXPECT_EQ(c.realtime, 1);
+
+        write_cfg("[pipeasio]\ninputs = 2\n");
+        pipeasio_config_load(&c);
+        EXPECT_EQ(c.realtime, PIPEASIO_DEFAULT_REALTIME);
+    }
+
     remove_cfg();
     return test_report();
 }

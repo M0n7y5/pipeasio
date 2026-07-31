@@ -89,6 +89,9 @@ void audio_set_forced_rate(audio_client_t *client, audio_nframes_t rate);
  * Default off; wired devices keep the forced low-latency quantum. */
 void audio_set_follow_device(audio_client_t *client, bool follow);
 
+/* Select SCHED_FIFO for the next data-loop start. Call while the loop is stopped. */
+void audio_set_realtime(audio_client_t *client, bool realtime);
+
 /* Most recent graph quantum (clock.duration) the process callback observed
  * while following a device, or 0 if none seen yet. Lets the ASIO side settle
  * its buffer size to the device-dictated quantum. */

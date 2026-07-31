@@ -47,6 +47,7 @@
 #define PIPEASIO_KEY_INPUT_DEVICE "input_device"
 #define PIPEASIO_KEY_NODE_NAME "node_name"
 #define PIPEASIO_KEY_FOLLOW_DEVICE_CLOCK "follow_device_clock"
+#define PIPEASIO_KEY_REALTIME "realtime"
 
 /* --- Defaults ------------------------------------------------------------- */
 #define PIPEASIO_DEFAULT_INPUTS 2
@@ -56,6 +57,7 @@
 #define PIPEASIO_DEFAULT_SAMPLE_RATE 0 /* 0 = follow the PipeWire graph */
 #define PIPEASIO_DEFAULT_AUTO_CONNECT true
 #define PIPEASIO_DEFAULT_FOLLOW_DEVICE_CLOCK false
+#define PIPEASIO_DEFAULT_REALTIME true
 
 /* --- Bounds (mirror src/asio.c's PIPEASIO_{MINIMUM,MAXIMUM}_BUFFERSIZE) --- */
 #define PIPEASIO_MIN_BUFFER_SIZE 16
@@ -78,6 +80,7 @@ struct pipeasio_config
     int  sample_rate;                             /* 0 = follow graph, else FORCE_RATE */
     bool auto_connect;                            /* 0 = manual patching           */
     bool follow_device_clock;                     /* follow target device quantum (BT) */
+    bool realtime;                                /* raise the bufferSwitch thread  */
     char output_device[PIPEASIO_DEVICE_NAME_MAX]; /* node.name; "" = default sink   */
     char input_device[PIPEASIO_DEVICE_NAME_MAX];  /* node.name; "" = default source */
     char node_name[PIPEASIO_NODE_NAME_MAX];       /* "" = derive from app name      */
@@ -87,6 +90,9 @@ struct pipeasio_config
 extern "C"
 {
 #endif
+
+    /* Initialize every field with its built-in default. */
+    void pipeasio_config_defaults(struct pipeasio_config *out);
 
     /*
  * Populate `out` with defaults, then overlay any values found in the INI at

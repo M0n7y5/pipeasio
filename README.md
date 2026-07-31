@@ -474,6 +474,17 @@ Overrides the PipeWire client/node name (otherwise derived from the host program
 name).
 Env: `PIPEASIO_CLIENT_NAME`.
 
+### realtime
+Default 1 (on). The thread carrying the host's `bufferSwitch` callback uses
+`SCHED_FIFO` priority 15. Set this to 0 to leave that thread at `SCHED_OTHER`.
+The setting covers both the native PipeWire data loop and the WoW64 PE pump.
+
+This switch is intended for testing scheduling-related xruns reported in
+[#4](https://github.com/M0n7y5/pipeasio/issues/4). It takes effect the next time
+the host starts the driver.
+
+Env: `PIPEASIO_RT_PRIORITY` (`off`/`on`). The environment overrides the file.
+
 ## Performance
 
 A few knobs affect xrun-free, low-latency operation:

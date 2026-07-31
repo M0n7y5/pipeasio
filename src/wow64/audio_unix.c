@@ -39,16 +39,14 @@
 #include "audio.h"
 #include "pipeasio_config.h"
 #include "pipeasio_offsets.h"
+#include "pipeasio_rt_priority.h"
 #include "pipeasio_unix_abi.h"
 
 /* Minimum host-reply wait per RT cycle. */
 #define PAU_RT_DEADLINE_FLOOR_NS 5000000L
 
-/* SCHED_FIFO priority the PE pump self-raises to (see wow64_wait_callback).
- * Must stay BELOW the PipeWire daemon's data loop - RTKit caps it at 20 on
- * stock desktops - or the pump preempts the graph driver and causes
- * system-wide xruns (issue #4). */
-#define PAU_PUMP_RT_PRIORITY 15
+/* Priority shared with the native callback thread. */
+#define PAU_PUMP_RT_PRIORITY PIPEASIO_RT_PRIO_DEFAULT
 
 /* Token table for unix-side pointers. */
 
@@ -124,7 +122,8 @@ typedef struct client_ctx
     pthread_cond_t  ready;
     pthread_cond_t  done;
     bool            sync_init;
-    bool            rt_raised; /* pump SCHED_FIFO self-raise done (one-shot) */
+    bool            rt_raised;     /* pump SCHED_FIFO self-raise done (one-shot) */
+    bool            want_realtime; /* config.ini realtime; env overrides */
     bool            installed;
     bool            pending;
     bool            delivered;
@@ -311,10 +310,10 @@ wow64_rt_process(audio_nframes_t nframes, void *arg)
     for (uint32_t i = 0; i < cc->n_in; i++)
         if (cc->in_active[i] && cc->in_port[i])
         {
-            audio_sample_t *src = audio_port_get_buffer(cc->in_port[i], nframes);
-            audio_sample_t *dst = cc->buffer_base
-                                  + pipeasio_host_input_offset_samples(i, cc->buffer_size)
-                                  + pipeasio_host_half_offset_samples(half, cc->buffer_size);
+            audio_sample_t *src   = audio_port_get_buffer(cc->in_port[i], nframes);
+            audio_sample_t *dst   = cc->buffer_base
+                                    + pipeasio_host_input_offset_samples(i, cc->buffer_size)
+                                    + pipeasio_host_half_offset_samples(half, cc->buffer_size);
             audio_nframes_t avail = audio_port_buffer_avail_frames(cc->in_port[i]);
             audio_nframes_t n     = (src && avail < nframes) ? avail : (src ? nframes : 0);
             if (n)
@@ -531,6 +530,21 @@ wow64_set_follow_device(void *args)
         return STATUS_INVALID_HANDLE;
     audio_set_follow_device(cc->client, p->value != 0);
     p->result = 1;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+wow64_set_realtime(void *args)
+{
+    pa_set_u32_params *p = args;
+    client_ctx        *cc;
+
+    PAU_CHECK(p);
+    cc = cc_get(p->client);
+    if (!cc)
+        return STATUS_INVALID_HANDLE;
+    cc->want_realtime = (p->value != 0);
+    p->result         = 1;
     return STATUS_SUCCESS;
 }
 
@@ -903,9 +917,14 @@ wow64_wait_callback(void *args)
 
     if (!cc->rt_raised)
     {
-        cc->rt_raised = true; /* one attempt per pump-thread lifetime */
-        pthread_setschedparam(pthread_self(), SCHED_FIFO,
-                              &(struct sched_param){ .sched_priority = PAU_PUMP_RT_PRIORITY });
+        cc->rt_raised      = true; /* one attempt per pump-thread lifetime */
+        bool      realtime = cc->want_realtime;
+        const int env      = pipeasio_rt_env_override();
+        if (env != PIPEASIO_RT_ENV_UNSET)
+            realtime = (env != 0);
+        if (realtime)
+            pthread_setschedparam(pthread_self(), SCHED_FIFO,
+                                  &(struct sched_param){ .sched_priority = PAU_PUMP_RT_PRIORITY });
         /* best-effort: EPERM (no RLIMIT_RTPRIO / not in audio group) leaves
          * the pump at SCHED_OTHER, still functional. */
     }
@@ -983,6 +1002,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] = {
     wow64_config_fingerprint,
     wow64_wait_callback,
     wow64_reply_callback,
+    wow64_set_realtime,
 };
 
 #ifdef _WIN64
@@ -1016,6 +1036,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] = {
     wow64_config_fingerprint,
     wow64_wait_callback,
     wow64_reply_callback,
+    wow64_set_realtime,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0])
                        == PAU_CALL_COUNT,
