@@ -8,90 +8,42 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- CI job `build (Steam Runtime 4, PipeWire floor)` builds and tests inside the
-  official Steam Runtime 4 SDK image, pinned by digest rather than a moving
-  tag. That image is the build environment for the steamrt4 runtime Proton 11+
-  executes in, not the runtime itself, but both ship the same
-  `libpipewire-0.3 1.4.2-1+steamrt4.1+bsrt4.2`, so the minimum is proven
-  against the version the driver actually meets there rather than against a
-  distro that happens to ship something similar. The job asserts
-  `pkg-config --modversion libpipewire-0.3` is exactly `1.4.2` before
-  building, so a re-pinned or rebuilt SDK that moves off the floor fails
-  loudly instead of silently testing something newer. `tests/distro/run.sh`
-  gains the matching `steamrt4` leg (`DISTROS=steamrt4`) with the same assert
-  in `tests/distro/flags/steamrt4.sh`.
-- The release workflow verifies the shipped binaries themselves against the
-  floor. Release artifacts are built on Arch against a newer PipeWire, so the
-  Steam Runtime 4 CI job proves nothing about them - it builds a different
-  binary, and a future header-version-guarded call could compile there while
-  the Arch artifact imports a 1.6-only symbol. The new step downloads the
-  exact `libpipewire-0.3` that Proton's steamrt4 runtime loads
-  (`1.4.2-1+steamrt4.1+bsrt4.2`, from `repo.steampowered.com`) and fails the
-  release if any `pw_`/`spa_` symbol imported by `pipeasio64.dll.so` or
-  `pipeasio32.so` is missing from it. Today both import 36 and 35 PipeWire
-  symbols respectively, all present.
+- **Real-time audio thread** setting. The `realtime` key defaults to
+  enabled; disabling it leaves the native callback thread or WoW64 pump at
+  `SCHED_OTHER`. `PIPEASIO_RT_PRIORITY=off|on` overrides the setting for
+  launcher tests. Added for [#4](https://github.com/M0n7y5/pipeasio/issues/4)
+  diagnostics, not as a fix.
+- CI now builds and tests against the pinned Steam Runtime 4 SDK and asserts
+  that its PipeWire version is exactly 1.4.2.
+- The release workflow checks that every `pw_` and `spa_` symbol imported by
+  the shipped 64-bit and WoW64 Unix libraries exists in Steam Runtime 4's
+  PipeWire 1.4.2 library.
 
 ### Fixed
 
-- The 64-bit driver now links the PipeWire that `pkg-config` selected instead
-  of whichever `libpipewire-0.3.so` the linker happened to find first.
-  `add_wine_dll` turned `LIBS` into bare `-lpipewire-0.3` with no search path,
-  so a PipeWire outside `/usr` (`PKG_CONFIG_PATH` at a custom prefix) compiled
-  against its headers but silently linked the system library - verified: a
-  1.4.2 prefix produced a binary linked against the system 1.6.8. `LIBS` now
-  carries only the Win32 import libraries, and a new `LDFLAGS` parameter takes
-  `${PIPEWIRE_LINK_LIBRARIES}`, which is an absolute path. The WoW64 unixlib
-  link uses the same form. Absolute paths rather than `-L`: injecting a raw
-  `-L/usr/lib` ahead of winegcc's own directories makes `-luuid` resolve to
-  util-linux's libuuid instead of Wine's import library, and the link then
-  fails on an undefined `IID_IUnknown`.
-- Wine SDK discovery derives the include directories from the `winebuild` on
-  `PATH` (`<prefix>/bin/winebuild` implies `<prefix>/include`), so Wine
-  installed outside `/usr` builds without a manual `-DWINE_INCLUDE_DIRS`
-  ([#14](https://github.com/M0n7y5/pipeasio/issues/14)). A root is accepted
-  only when it holds `wine/debug.h` and the Win32 headers, and the first
-  complete one wins, so two Wine versions' headers are never mixed.
-- `cmake/WineDLL.cmake` validates the include directories it ends up with,
-  probed or user-supplied. A wrong `-DWINE_INCLUDE_DIRS` (the install root
-  instead of its include directories) configured cleanly and failed later with
-  `wine/debug.h: No such file or directory`; it now fails at configure time
-  naming the missing header. With `BUILD_WOW64_32=ON` the check also requires
-  `unixlib.h`, which the mingw cross compiler cannot reach through
-  `/usr/include`; the option moved above `include(WineDLL)` so the probe sees
-  it.
-- Configure warns when `winebuild` comes from a prefix whose `include/` holds
-  no SDK and another Wine's headers are used instead. The WineHQ repositories
-  ship the branch (`wine-devel`, `bin/` only) separately from its SDK
-  (`wine-devel-devel` on Fedora, `wine-devel-dev` on Debian).
+- WoW64 configuration now starts from defaults before the Unix call. A missing
+  Unix library or ABI mismatch can no longer leave the PE driver reading an
+  uninitialised settings struct.
+- The native and WoW64 links now use the exact PipeWire library selected by
+  `pkg-config`. This prevents headers from a custom prefix being combined with
+  the system PipeWire library.
+- Wine SDK discovery now derives and validates include directories from the
+  `winebuild` prefix. Invalid `WINE_INCLUDE_DIRS` values fail at configure
+  time, and WoW64 builds also require `unixlib.h`.
+- Configure warns when `winebuild` and the selected Wine SDK come from
+  different prefixes.
 
 ### Changed
 
-- README: per-distribution dependency sets (Arch, Fedora, Debian/Ubuntu)
-  instead of one Debian-flavoured mix, a section on Wine outside `/usr`
-  covering the WineHQ split packages and the `wine-devel` name collision, and
-  troubleshooting entries for the missing-package, `wine/debug.h`,
-  mismatched-prefix and skipped-Qt6-panel cases.
-- The documented PipeWire requirement drops from 1.6+ to **1.4.2+**, the
-  version Steam Runtime 4 (and Debian 13) ships, so the floor matches the
-  steamrt4 runtime Proton 11+ executes in. The 1.6 claim was never enforced
-  anywhere and its stated reason was wrong: `PW_KEY_NODE_FORCE_QUANTUM` /
-  `PW_KEY_NODE_FORCE_RATE` have existed since PipeWire 0.3.45, and the
-  quantum-selection code is identical between 1.4.2 and 1.6.8. Higher latency
-  on some setups comes from the daemon clamping the forced quantum to
-  `clock.min-quantum` / `clock.max-quantum`, which is version-independent.
-  No backend source change was needed: every PipeWire symbol, macro and
-  interface version the driver uses is unchanged across 1.4.2 and 1.6.8.
-- `CMakeLists.txt` now requires `libpipewire-0.3>=1.4.2` instead of accepting
-  any version. This is the first version floor the build has ever had. Older
-  PipeWire could not build regardless - `src/audio.c` calls
-  `spa_json_str_object_find()`, added in 1.4.0 - but it failed late with
-  `implicit declaration of function` under
-  `-Werror=implicit-function-declaration`; it now fails at configure time
-  naming the version. PipeWire older than 1.4.0 (notably Ubuntu 24.04 LTS,
-  which ships 1.0.5) is therefore rejected up front rather than part-way
-  through the build.
-- `audio_open` traces the PipeWire header and runtime library versions
-  (`PIPEASIO_DEBUG=1`), so a header/runtime split is visible in bug reports.
+- The WoW64 Unix-call ABI is now version 2. The new `realtime` field shifts
+  later fields without changing the struct size, so layout tests now pin the
+  interior offsets. Mismatched PE and Unix halves are rejected.
+- README build instructions now use per-distribution dependencies and cover
+  Wine SDK layouts outside `/usr`.
+- The documented and enforced PipeWire floor is now 1.4.2. Earlier versions
+  fail during configuration instead of compiling until the first unavailable
+  API. The previous 1.6 requirement was unnecessary.
+- Debug logs now report both the PipeWire header and runtime library versions.
 
 ## [1.2.3] - 2026-07-21
 
@@ -125,15 +77,10 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- RT thread priority no longer preempts the PipeWire graph driver
-  ([#4](https://github.com/M0n7y5/pipeasio/issues/4)): the default
-  `SCHED_FIFO` priority applied to the driver's process thread (and the
-  32-bit WoW64 pump) dropped from 77/80 to 15. On stock desktops (the common
-  case), RTKit caps the daemon's data loop at priority 20, so 77/80 could
-  preempt it and starve the audio server whenever other streams were active,
-  causing system-wide xruns, pops, and DAW CPU meter spikes that persisted
-  until the driver was reloaded; PAM-rtprio setups where the daemon runs at 88
-  had no priority inversion.
+- RT thread priority dropped from 77/80 to 15 for the native callback thread
+  and WoW64 pump. This did not resolve
+  [#4](https://github.com/M0n7y5/pipeasio/issues/4): the reporter's PipeWire
+  threads ran above both priorities, and the xruns persisted.
 
 ## [1.2.1] - 2026-07-02
 
