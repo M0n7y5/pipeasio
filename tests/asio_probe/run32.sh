@@ -2,7 +2,8 @@
 # 32-bit analogue of run.sh.  Requires an installed BUILD_WOW64_32 build.
 #
 # Usage: run32.sh [seconds]
-# Env: FRESH=1, PIPEASIO_PREFIX, PROBE_PREFIX, PROBE_AUTOCONNECT=1
+# Env: FRESH=1, PIPEASIO_PREFIX or PIPEASIO_ROOT, PROBE_PREFIX,
+#      PROBE_AUTOCONNECT=1
 
 set -euo pipefail
 
@@ -11,7 +12,7 @@ probe="${here}/asio_probe32.exe"
 [[ -f "$probe" ]] || { echo "asio_probe32 not built: $probe"; exit 1; }
 
 seconds="${1:-5}"
-: "${PIPEASIO_PREFIX:=$HOME/.local}"
+: "${PIPEASIO_PREFIX:=${PIPEASIO_ROOT:-$HOME/.local}}"
 : "${PROBE_PREFIX:=$HOME/.cache/pipeasio-probe32}"
 : "${WINEDEBUG:=-all,+pipeasio,err+all}"
 

@@ -23,7 +23,7 @@ seconds="${1:-5}"
 # a configuration directory there".  Park the throwaway prefix under
 # $HOME instead.
 : "${PROBE_PREFIX:=$HOME/.cache/pipeasio-probe}"
-: "${PIPEASIO_ROOT:=$HOME/.local}"
+: "${PIPEASIO_ROOT:=${PIPEASIO_PREFIX:-$HOME/.local}}"
 : "${PIPEWIRE_DEBUG:=2}"
 : "${WINEDEBUG:=-all,+pipeasio,err+all}"
 
