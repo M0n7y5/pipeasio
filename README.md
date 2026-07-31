@@ -14,7 +14,7 @@
   <a href="https://aur.archlinux.org/packages/pipeasio"><img alt="AUR version" src="https://img.shields.io/aur/version/pipeasio?label=AUR&amp;color=ff6a1f"></a>
   <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-blue">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20x86__64-lightgrey">
-  <img alt="PipeWire" src="https://img.shields.io/badge/PipeWire-1.6%2B-ff6a1f">
+  <img alt="PipeWire" src="https://img.shields.io/badge/PipeWire-1.4.2%2B-ff6a1f">
 </p>
 
 PipeASIO lets Windows music software running under Wine or Proton use fast,
@@ -370,15 +370,18 @@ and are the usual causes of trouble elsewhere:
   `pipeasio.dll` symlinks the install creates (see [Installing](#installing)).
   The experimental 32-bit front end additionally requires Wine's *new WoW64*.
   Older or split-WoW64 Wine cannot load it.
-- **PipeWire version.** 1.6 or newer is needed for the forced quantum/rate that
-  pins low latency. On older PipeWire the driver still runs but logs a warning
-  and follows the graph's own quantum, so latency is higher.
+- **PipeWire version.** 1.4.2 or newer, the version Steam Runtime 4 and Debian
+  13 ship; configure refuses anything older. The forced quantum/rate that pins
+  low latency is not what sets this floor - those properties have existed since
+  PipeWire 0.3.45. What does raise latency is the daemon clamping the forced
+  quantum to `clock.min-quantum` / `clock.max-quantum`, at any version; the
+  driver logs a warning naming both when that happens.
 - **Real-time priority.** The driver requests `SCHED_FIFO` priority 15 by default.
   See [Performance](#performance) for access requirements.
 
 ## Configuration
 
-PipeASIO talks to PipeWire 1.6+ natively through `libpipewire-0.3`. The graph
+PipeASIO talks to PipeWire 1.4.2+ natively through `libpipewire-0.3`. The graph
 quantum is locked to the ASIO host's negotiated buffer size with
 `PW_KEY_NODE_FORCE_QUANTUM` (unless `follow_device_clock` is set, in which case the
 target device drives the cycle). The sample rate follows the graph unless pinned
@@ -476,6 +479,8 @@ loads the driver into.
 ## Troubleshooting
 
 **Configure fails with `libpipewire-0.3 not found` or `Wine SDK headers not found`.** The development packages are missing or named differently on your distribution - see [Building](#building) for the per-distro sets. Fedora has `pipewire-devel` and `wine-devel`, not `libpipewire-0.3-dev` or `winehq-*-dev`.
+
+**Configure fails with `Package 'libpipewire-0.3' has version 'X', required version is '>= 1.4.2'`.** Your distribution's PipeWire predates the minimum. Ubuntu 24.04 LTS (1.0.5) is the case that actually hits people; Ubuntu 25.10 (1.4.7), Ubuntu 26.04 LTS (1.6.2), Debian 13 (1.4.2), Fedora 43 (1.4.8), Fedora 44 (1.6.2) and Arch are all above the floor. There is no workaround in the driver: `src/audio.c` uses `spa_json_str_object_find()`, added in PipeWire 1.4.0, so an older PipeWire could never build - it only used to fail later with `implicit declaration of function`. Upgrade the distribution, or build PipeWire 1.4.2+ yourself and point `PKG_CONFIG_PATH` at it. The build then links that copy by absolute path rather than by `-l` name, so it cannot silently fall back to the system library - but the runtime loader still has to find it, via `LD_LIBRARY_PATH` or an `ldconfig` entry.
 
 **Build fails with `wine/debug.h` or `unixlib.h`: `No such file or directory`.** Configure picked an SDK that does not hold the headers. For Wine outside `/usr`, install its SDK companion (`wine-devel-devel` on Fedora, `wine-devel-dev` on Debian/Ubuntu, matching your branch) and put that prefix's `bin/` on `PATH`. A manual `-DWINE_INCLUDE_DIRS` must list the include directories, not the install root, and needs all three: `/opt/wine-devel/include;/opt/wine-devel/include/wine;/opt/wine-devel/include/wine/windows`. The `wine/` one carries `unixlib.h`, used only by the 32-bit WoW64 build.
 

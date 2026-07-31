@@ -14,10 +14,13 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 # PipeWire is linked through winegcc, but its headers compile into the OBJECT
-# library first.
+# library first.  The floor is Steam Runtime 4's 1.4.2 - the runtime Proton 11+
+# executes in; src/audio.c calls spa_json_str_object_find(), which needs 1.4.0 or
+# newer, so anything older fails to build anyway - here it fails at configure
+# time with a version, not later on an implicit-declaration error.
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
-message(STATUS "Found libpipewire-0.3 ${PIPEWIRE_VERSION}")
+pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3>=1.4.2)
+message(STATUS "Found libpipewire-0.3 ${PIPEWIRE_VERSION} (minimum 1.4.2)")
 
 # Ahead of WineDLL: the SDK probe requires unixlib.h only when this is on.
 option(BUILD_WOW64_32 "Build the experimental 32-bit WoW64 PE front end + unixlib" OFF)

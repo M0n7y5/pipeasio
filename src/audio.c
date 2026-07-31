@@ -506,8 +506,10 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
     audio_sync(c);
 
     TRACE("audio_open(%s) -> %p [build " PIPEASIO_BUILD_TAG "] "
+          "[pipewire headers %s, library %s] "
           "(registry sync done: %u nodes, %u ports discovered)\n",
-          c->name, c, c->n_nodes, c->n_discovered);
+          c->name, c, pw_get_headers_version(), pw_get_library_version(), c->n_nodes,
+          c->n_discovered);
     return c;
 
 fail_started:
