@@ -22,6 +22,32 @@ message(STATUS "Found libpipewire-0.3 ${PIPEWIRE_VERSION} (minimum 1.4.2)")
 # Ahead of WineDLL: the SDK probe requires unixlib.h only when this is on.
 option(BUILD_WOW64_32 "Build the experimental 32-bit WoW64 PE front end + unixlib" OFF)
 
+# Driver files install into the Wine arch layout under this root. The default
+# follows the install prefix; set an absolute path when the target Wine keeps
+# its libraries elsewhere (Debian/Ubuntu: /usr/lib/x86_64-linux-gnu/wine,
+# WineHQ: /opt/wine-<branch>/lib/wine).
+# STRING, not PATH: CMake would normalize a relative PATH value to absolute
+# against the cwd, hiding the mistake from the IS_ABSOLUTE guard below.
+set(PIPEASIO_WINE_INSTALL_ROOT "" CACHE STRING
+    "absolute install root for driver files (default <prefix>/lib/wine)")
+if(PIPEASIO_WINE_INSTALL_ROOT)
+    # A relative value would split the install: install(FILES) would resolve
+    # it under the prefix while install(CODE) resolved it against the install
+    # process, landing symlinks and manifest entries elsewhere.
+    if(NOT IS_ABSOLUTE "${PIPEASIO_WINE_INSTALL_ROOT}")
+        message(FATAL_ERROR
+            "PIPEASIO_WINE_INSTALL_ROOT must be an absolute path "
+            "(got '${PIPEASIO_WINE_INSTALL_ROOT}'; e.g. "
+            "/usr/lib/x86_64-linux-gnu/wine).")
+    endif()
+    set(PA_WINE_DEST "${PIPEASIO_WINE_INSTALL_ROOT}")
+    set(PA_WINE_DEST_ABS "${PIPEASIO_WINE_INSTALL_ROOT}")
+else()
+    set(PA_WINE_DEST "lib/wine")
+    # Stays a deferred reference: install(CODE) expands it at install time.
+    set(PA_WINE_DEST_ABS "\${CMAKE_INSTALL_PREFIX}/lib/wine")
+endif()
+
 include(WineDLL)
 
 add_wine_dll(
@@ -168,8 +194,8 @@ if(BUILD_WOW64_32)
     add_custom_target(pipeasio32 ALL DEPENDS "${PA32_DLL}")
     add_dependencies(pipeasio32 pipeasio32_unix)
 
-    install(FILES "${PA32_DLL}" DESTINATION lib/wine/i386-windows)
-    install(FILES "${PA32_SO}" DESTINATION lib/wine/x86_64-unix
+    install(FILES "${PA32_DLL}" DESTINATION "${PA_WINE_DEST}/i386-windows")
+    install(FILES "${PA32_SO}" DESTINATION "${PA_WINE_DEST}/x86_64-unix"
             PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
                         GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 endif()
@@ -208,6 +234,25 @@ if(BUILD_TESTS)
     add_subdirectory(tests/unit)
     add_subdirectory(tests/pw_probe)
     add_subdirectory(tests/wow64)
+
+    # pipeasio-register discovery/warning logic; self-contained (stubs wine).
+    find_program(BASH_EXECUTABLE bash REQUIRED)
+    add_test(NAME register_script
+             COMMAND ${BASH_EXECUTABLE}
+                     ${CMAKE_SOURCE_DIR}/tests/register/run.sh)
+    set_tests_properties(register_script PROPERTIES
+        TIMEOUT 30
+        SKIP_RETURN_CODE 77)
+
+    # A relative PIPEASIO_WINE_INSTALL_ROOT must fail at configure time.
+    add_test(NAME wine_install_root_relative
+             COMMAND ${CMAKE_COMMAND}
+                     -S ${CMAKE_SOURCE_DIR}
+                     -B ${CMAKE_BINARY_DIR}/test-wine-root-relative
+                     -DPIPEASIO_WINE_INSTALL_ROOT=lib64/wine)
+    set_tests_properties(wine_install_root_relative PROPERTIES
+        TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "PIPEASIO_WINE_INSTALL_ROOT must be an absolute")
     if(BUILD_SETTINGS_PANEL AND Qt6_FOUND)
         add_subdirectory(tests/gui)
     elseif(BUILD_SETTINGS_PANEL)

@@ -221,9 +221,30 @@ version or an older glibc can fail to load (`regsvr32` `c0000135`). Build it
 
 ### From source
 
-System-wide (matches the distro Wine layout most ASIO hosts use):
+System-wide:
 
 ```sh
+sudo cmake --install build --prefix /usr
+```
+
+That puts the driver under `/usr/lib/wine`, which is where distro Wine reads
+it on Arch and similar layouts. Elsewhere Wine's library dir differs:
+`/usr/lib64/wine` on Fedora, `/usr/lib/x86_64-linux-gnu/wine` on
+Debian/Ubuntu, and `lib/wine` inside the tree for WineHQ builds under
+`/opt/wine-<branch>`. For those, point the driver files at the right root (the
+tools still land under the normal prefix):
+
+```sh
+# Fedora
+cmake -B build -DPIPEASIO_WINE_INSTALL_ROOT=/usr/lib64/wine
+sudo cmake --install build --prefix /usr
+
+# Debian/Ubuntu
+cmake -B build -DPIPEASIO_WINE_INSTALL_ROOT=/usr/lib/x86_64-linux-gnu/wine
+sudo cmake --install build --prefix /usr
+
+# WineHQ (e.g. wine-staging)
+cmake -B build -DPIPEASIO_WINE_INSTALL_ROOT=/opt/wine-staging/lib/wine
 sudo cmake --install build --prefix /usr
 ```
 
@@ -247,8 +268,11 @@ The `pipeasio.dll{,.so}` symlinks satisfy the unified PE name that Wine 10+
 expects. Without them, `regsvr32 pipeasio64.dll` fails with status `c0000135` on
 newer Wine.
 
-Wine library directories vary across distros. Adjust `--prefix` or override
-`CMAKE_INSTALL_LIBDIR` if yours is non-standard.
+By default the driver installs under `<prefix>/lib/wine`, matching Wine's
+upstream layout (`CMAKE_INSTALL_LIBDIR` does not move it);
+`PIPEASIO_WINE_INSTALL_ROOT` overrides that root with an absolute path. Where
+the driver *should* go depends on your Wine; see [Registering](#registering)
+for why it matters at runtime.
 
 ## Registering
 
@@ -267,9 +291,22 @@ env WINEPREFIX="$HOME/asioapp" pipeasio-register
 ```
 
 `pipeasio-register` searches for the install root in this order:
-`$PIPEASIO_PREFIX/lib/wine`, then `$HOME/.local/lib/wine`, then `/usr/lib/wine`,
-then distro variants, then `/opt/wine-{devel,stable,staging}`. Set
-`PIPEASIO_PREFIX` to point it at a non-standard install.
+`$PIPEASIO_PREFIX/lib/wine`, then `$HOME/.local/lib/wine`, then
+`/usr/local/lib/wine`, then `/usr/lib/wine`, then distro variants, then
+`/opt/wine-{devel,stable,staging}/lib{,64}/wine`. Set `PIPEASIO_PREFIX` to
+point it at a non-standard install, or `PIPEASIO_REGISTER_CANDIDATES` to
+replace the built-in list entirely (colon-separated; `PIPEASIO_PREFIX` is
+still searched first).
+
+Registration only makes the driver *visible* to a prefix. At launch, Wine
+resolves the driver's Unix half only in its own library dir and in
+`WINEDLLPATH`, so the install root must be that library dir: `/usr/lib/wine`
+on Arch/Fedora layouts, `/usr/lib/x86_64-linux-gnu/wine` on Debian/Ubuntu, or
+the `lib/wine` inside a WineHQ `/opt/wine-<branch>` tree.
+`pipeasio-register` compares the install root against the `wine` on your
+`PATH` and warns when they mismatch. The fix is to install into the matching
+root (`-DPIPEASIO_WINE_INSTALL_ROOT=...`, see [Installing](#installing)) or to
+set `WINEDLLPATH=<driver-install-root>` in the host's launch environment.
 
 ## 32-bit applications (experimental)
 
@@ -392,9 +429,11 @@ and are the usual causes of trouble elsewhere:
 - **Wine library layout.** Both DLL halves must land under the distro's
   `lib/wine/x86_64-{windows,unix}/` directory: `/usr/lib/wine` on Arch,
   `/usr/lib/x86_64-linux-gnu/wine` on Debian/Ubuntu, `/usr/lib64/wine` on
-  Fedora. Match it with `--prefix` / `CMAKE_INSTALL_LIBDIR` (or `WINE_LIB_ROOT`
-  for the 32-bit build). A user-local `--prefix "$HOME/.local"` install plus
-  `WINEDLLPATH` sidesteps the question entirely.
+  Fedora. Match it with `-DPIPEASIO_WINE_INSTALL_ROOT=...` at configure time
+  (see [Installing](#installing)); `WINE_LIB_ROOT` only locates the 32-bit
+  import libraries at build time and does not affect install locations. A
+  user-local `--prefix "$HOME/.local"` install plus `WINEDLLPATH` sidesteps
+  the question entirely.
 - **Wine version.** The 64-bit driver runs on current Wine. Wine 10+ needs the
   `pipeasio.dll` symlinks the install creates (see [Installing](#installing)).
   The experimental 32-bit front end additionally requires Wine's *new WoW64*.

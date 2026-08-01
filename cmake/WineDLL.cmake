@@ -218,9 +218,9 @@ function(add_wine_dll)
         # Install into the Wine arch layout, plus the unified-name symlinks
         # that Wine 10+ looks up.
         install(FILES ${_pe}
-                DESTINATION lib/wine/x86_64-windows)
+                DESTINATION "${PA_WINE_DEST}/x86_64-windows")
         install(FILES ${_so}
-                DESTINATION lib/wine/x86_64-unix
+                DESTINATION "${PA_WINE_DEST}/x86_64-unix"
                 PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
                             GROUP_READ GROUP_EXECUTE
                             WORLD_READ WORLD_EXECUTE)
@@ -228,10 +228,16 @@ function(add_wine_dll)
         # live prefix; install(CODE) does not apply it like install(FILES).
         install(CODE "
             file(CREATE_LINK ${WDL_NAME}.dll
-                 \$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/lib/wine/x86_64-windows/pipeasio.dll
+                 \$ENV{DESTDIR}${PA_WINE_DEST_ABS}/x86_64-windows/pipeasio.dll
                  SYMBOLIC)
             file(CREATE_LINK ${WDL_NAME}.dll.so
-                 \$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/lib/wine/x86_64-unix/pipeasio.dll.so
-                 SYMBOLIC)")
+                 \$ENV{DESTDIR}${PA_WINE_DEST_ABS}/x86_64-unix/pipeasio.dll.so
+                 SYMBOLIC)
+            # file(CREATE_LINK) does not feed the manifest like file(INSTALL),
+            # so record the links by hand or the documented uninstall leaves
+            # them behind.
+            list(APPEND CMAKE_INSTALL_MANIFEST_FILES
+                 \"${PA_WINE_DEST_ABS}/x86_64-windows/pipeasio.dll\"
+                 \"${PA_WINE_DEST_ABS}/x86_64-unix/pipeasio.dll.so\")")
     endif()
 endfunction()

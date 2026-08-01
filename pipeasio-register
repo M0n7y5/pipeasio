@@ -7,33 +7,102 @@ if [ ! -d "${WINEPREFIX}" ]; then
     wineboot -u || exit $?
 fi
 
-# Candidate install roots, in preference order.
+# Candidate install roots, in preference order. PIPEASIO_REGISTER_CANDIDATES
+# replaces the built-in list (colon-separated); PIPEASIO_PREFIX is always
+# searched first.
 candidates=(
     "${PIPEASIO_PREFIX:+${PIPEASIO_PREFIX}/lib/wine}"
-    "${HOME}/.local/lib/wine"
-    "/usr/lib/wine"
-    "/usr/lib64/wine"
-    "/usr/lib/x86_64-linux-gnu/wine"
-    "/opt/wine-devel/lib64/wine"
-    "/opt/wine-stable/lib64/wine"
-    "/opt/wine-staging/lib64/wine"
 )
+if [ -n "${PIPEASIO_REGISTER_CANDIDATES:-}" ]; then
+    IFS=':' read -r -a extra_candidates <<< "${PIPEASIO_REGISTER_CANDIDATES}"
+    candidates+=("${extra_candidates[@]}")
+else
+    candidates+=(
+        "${HOME}/.local/lib/wine"
+        "/usr/local/lib/wine"
+        "/usr/lib/wine"
+        "/usr/lib64/wine"
+        "/usr/lib/x86_64-linux-gnu/wine"
+        "/opt/wine-devel/lib/wine"
+        "/opt/wine-devel/lib64/wine"
+        "/opt/wine-stable/lib/wine"
+        "/opt/wine-stable/lib64/wine"
+        "/opt/wine-staging/lib/wine"
+        "/opt/wine-staging/lib64/wine"
+    )
+fi
 
-prefix=""
+# Wine resolves a builtin's Unix half only in its own library dir and in
+# WINEDLLPATH; derive that dir from the wine binary so a mismatched install
+# root can be flagged instead of registering a driver that never loads.
+wine_libdir=""
+wine_cmd=$(command -v wine 2>/dev/null || true)
+if [ -n "${wine_cmd}" ]; then
+    wine_root=$(dirname "$(dirname "$(readlink -f "${wine_cmd}")")")
+    # Older WineHQ builds keep 32-bit in lib/wine and 64-bit in lib64/wine, so
+    # only accept a dir that carries the 64-bit layout. A PipeASIO-only
+    # install creates those arch dirs bare, so require a real Wine payload.
+    for d in "${wine_root}/lib/wine" "${wine_root}/lib64/wine" \
+             "${wine_root}/lib/x86_64-linux-gnu/wine"; do
+        if [ -e "${d}/x86_64-unix/ntdll.so" ] || [ -e "${d}/x86_64-windows/ntdll.dll" ]; then
+            wine_libdir=$(readlink -f "${d}")
+            break
+        fi
+    done
+fi
+
+# Scan the derived library dir too: a custom Wine root (Bottles runners,
+# self-built) is in no built-in candidate, yet wine loads from it before any
+# WINEDLLPATH entry, so its PipeASIO copy must not stay invisible.
+if [ -n "${wine_libdir}" ]; then
+    candidates+=("${wine_libdir}")
+fi
+
+# Aliases (lib vs lib64 symlinks, PIPEASIO_PREFIX naming a literal candidate)
+# must not register the same install twice.
+found=()
 for p in "${candidates[@]}"; do
     [ -z "${p}" ] && continue
     if [ -e "${p}/x86_64-unix/pipeasio64.dll.so" ] \
        && [ -e "${p}/x86_64-windows/pipeasio64.dll" ]; then
-        prefix="${p}"
-        break
+        canon=$(readlink -f "${p}")
+        dup=0
+        for q in ${found[@]+"${found[@]}"}; do
+            if [ "${q}" = "${canon}" ]; then
+                dup=1
+                break
+            fi
+        done
+        ((dup)) || found+=("${canon}")
     fi
 done
+prefix=${found[0]:-}
+
+# Wine searches its own library dir before every WINEDLLPATH entry, so when
+# that dir also holds PipeASIO it is the copy that loads, whatever candidate
+# order said. Use it, or the script would register one build while claiming
+# another.
+if [ -n "${wine_libdir}" ] && ((${#found[@]} > 1)); then
+    for i in "${!found[@]}"; do
+        if [ "${found[$i]}" = "${wine_libdir}" ] && ((i > 0)); then
+            found=("${found[$i]}" "${found[@]:0:$i}" "${found[@]:$((i + 1))}")
+            prefix=${found[0]}
+            break
+        fi
+    done
+fi
 
 if [ -z "${prefix}" ]; then
     >&2 echo "[${me}] PipeASIO install not found in any candidate root."
     >&2 echo "[${me}] Searched: ${candidates[*]}"
     >&2 echo "[${me}] Set PIPEASIO_PREFIX=<install-prefix> or run 'cmake --install'."
     exit 1
+fi
+
+if ((${#found[@]} > 1)); then
+    >&2 echo "[${me}] warning: multiple PipeASIO installs found; using ${prefix}."
+    >&2 echo "[${me}] ignored: ${found[*]:1}"
+    >&2 echo "[${me}] remove the stale copies so an old build cannot win registration."
 fi
 
 >&2 echo "[${me}] using PipeASIO install at ${prefix}"
@@ -101,6 +170,12 @@ if [ ${code} -eq 0 ]; then
     >&2 echo "[${me}] registered in ${WINEPREFIX}"
     if [ "${prefix#${HOME}/}" != "${prefix}" ]; then
         >&2 echo "[${me}] for Proton/Faugus, set WINEDLLPATH=${prefix} in the launcher env."
+    elif [ -n "${wine_libdir}" ] && [ "${prefix}" != "${wine_libdir}" ]; then
+        # Registration succeeded, but the host will launch without this
+        # script's WINEDLLPATH and wine will not look here for the Unix half.
+        >&2 echo "[${me}] warning: ${prefix} is outside wine's library dir (${wine_libdir})."
+        >&2 echo "[${me}] hosts will not load the driver unless WINEDLLPATH=${prefix}"
+        >&2 echo "[${me}] is set at launch, or the driver is installed into ${wine_libdir}."
     fi
 else
     >&2 echo "[${me}] regsvr32 failed (status ${code})"

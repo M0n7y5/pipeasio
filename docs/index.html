@@ -411,8 +411,21 @@ cmake --build build</pre>
 <pre><span class="c"># user-local, required for Proton / Faugus / Steam</span>
 cmake --install build --prefix <span class="p">"$HOME/.local"</span>
 
-<span class="c"># ...or system-wide for a normal Wine setup</span>
+<span class="c"># ...or system-wide (lands in /usr/lib/wine, right for Arch and similar)</span>
 sudo cmake --install build --prefix /usr</pre>
+      <p class="note">At launch, Wine looks for the driver's Unix half only in its own library dir (or <code>WINEDLLPATH</code>), so the driver must land there: <code>/usr/lib/wine</code> on Arch, <code>/usr/lib64/wine</code> on Fedora, <code>/usr/lib/x86_64-linux-gnu/wine</code> on Debian/Ubuntu, and <code>lib/wine</code> inside the tree for WineHQ builds under <code>/opt/wine-&lt;branch&gt;</code>. For those, point the driver files at the right root (the tools still land under the normal prefix):</p>
+<pre><span class="c"># Fedora</span>
+cmake -B build -DPIPEASIO_WINE_INSTALL_ROOT=/usr/lib64/wine
+sudo cmake --install build --prefix /usr
+
+<span class="c"># Debian/Ubuntu</span>
+cmake -B build -DPIPEASIO_WINE_INSTALL_ROOT=/usr/lib/x86_64-linux-gnu/wine
+sudo cmake --install build --prefix /usr
+
+<span class="c"># WineHQ (e.g. wine-staging)</span>
+cmake -B build -DPIPEASIO_WINE_INSTALL_ROOT=/opt/wine-staging/lib/wine
+sudo cmake --install build --prefix /usr</pre>
+      <p class="note"><code>pipeasio-register</code> compares the install root against the Wine on your <code>PATH</code> and warns when they mismatch; the alternative to reinstalling is <code>WINEDLLPATH=&lt;driver-install-root&gt;</code> in the host's launch environment.</p>
 
       <div class="step">3 / Register into a wineprefix</div>
 <pre>env WINEPREFIX=<span class="p">"$HOME/Faugus/&lt;game&gt;"</span> pipeasio-register</pre>

@@ -4,6 +4,38 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `PIPEASIO_WINE_INSTALL_ROOT` CMake option installs the driver files into an
+  explicit Wine library dir (Debian/Ubuntu's
+  `/usr/lib/x86_64-linux-gnu/wine`, a WineHQ `/opt/wine-<branch>/lib/wine`)
+  while the tools stay under the normal install prefix. Previously the driver
+  always landed in `<prefix>/lib/wine`, which Debian/Ubuntu Wine never reads.
+
+### Fixed
+
+- `pipeasio-register` now finds installs in `/usr/local/lib/wine` (the default
+  CMake prefix) and in the `lib/wine` layout of current WineHQ packages under
+  `/opt`. It warns when the install root is outside the Wine installation's
+  own library dir, because such installs register successfully but no host can
+  load the driver at launch, and when stale installs in earlier search
+  locations shadow the one being registered. The library dir of the `wine`
+  binary in use is searched too, covering Wine roots outside the built-in
+  list (Bottles runners, self-built installs), and when it is one of several
+  installs that copy wins, matching the load order Wine uses (its own library
+  dir before WINEDLLPATH). Aliased candidates (lib/lib64
+  symlinks, `PIPEASIO_PREFIX` naming a listed root) no longer trigger false
+  stale-install warnings, and the library dir detection requires the 64-bit
+  layout and a real Wine payload, so older WineHQ lib/lib64 splits resolve to
+  the right dir and bare arch dirs left by a PipeASIO-only install are not
+  mistaken for it. The built-in search list can be replaced with
+  `PIPEASIO_REGISTER_CANDIDATES` (colon-separated). The discovery and warning logic is covered by a scripted
+  test with a stubbed `wine`.
+- `install_manifest.txt` now records the `pipeasio.dll` and `pipeasio.dll.so`
+  symlinks, so the documented uninstall removes them.
+
 ## [1.3.0] - 2026-08-01
 
 ### Added
