@@ -4,7 +4,7 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.3.0] - 2026-08-01
 
 ### Added
 
@@ -86,9 +86,10 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- The WoW64 Unix-call ABI is now version 2. The new `realtime` field shifts
-  later fields without changing the struct size, so layout tests now pin the
-  interior offsets. Mismatched PE and Unix halves are rejected.
+- The WoW64 Unix-call ABI is now version 3. Endpoint and callback delivery is
+  transactional, and the new `realtime` field shifts later fields without
+  changing the struct size, so layout tests pin the interior offsets.
+  Mismatched PE and Unix halves are rejected.
 - README build instructions now use per-distribution dependencies and cover
   Wine SDK layouts outside `/usr`.
 - The documented and enforced PipeWire floor is now 1.4.2. Earlier versions
@@ -377,7 +378,8 @@ the driver loads inside the Steam Runtime container that Proton uses.
 - Hardened channel-count limits from both the INI and the environment overrides,
   and tightened COM teardown and several NULL and error paths.
 
-[Unreleased]: https://github.com/M0n7y5/pipeasio/compare/v1.2.3...HEAD
+[Unreleased]: https://github.com/M0n7y5/pipeasio/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.3.0
 [1.2.3]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.2.3
 [1.2.2]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.2.2
 [1.2.1]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.2.1
