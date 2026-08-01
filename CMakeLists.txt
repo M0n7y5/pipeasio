@@ -13,11 +13,8 @@ endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
-# PipeWire is linked through winegcc, but its headers compile into the OBJECT
-# library first.  The floor is Steam Runtime 4's 1.4.2 - the runtime Proton 11+
-# executes in; src/audio.c calls spa_json_str_object_find(), which needs 1.4.0 or
-# newer, so anything older fails to build anyway - here it fails at configure
-# time with a version, not later on an implicit-declaration error.
+# PipeWire headers compile into driver objects before winegcc links them.
+# Steam Runtime 4 ships the supported 1.4.2 floor.
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3>=1.4.2)
 message(STATUS "Found libpipewire-0.3 ${PIPEWIRE_VERSION} (minimum 1.4.2)")
@@ -37,7 +34,7 @@ add_wine_dll(
               src/regsvr.c
     INCLUDES  ${CMAKE_SOURCE_DIR}/include
               ${PIPEWIRE_INCLUDE_DIRS}
-    LIBS      odbc32 ole32 uuid winmm user32
+    LIBS      odbc32 ole32 uuid winmm user32 kernelbase
     LDFLAGS   ${PIPEWIRE_LINK_LIBRARIES} ${PIPEWIRE_LDFLAGS_OTHER}
 )
 
@@ -62,10 +59,13 @@ if(BUILD_WOW64_32)
     set(PA32_SO   "${CMAKE_BINARY_DIR}/pipeasio32.so")
     set(PA32_DEF  "${CMAKE_SOURCE_DIR}/src/wow64/pipeasio32.def")
     set(PA32_SPEC "${CMAKE_SOURCE_DIR}/src/wow64/pipeasio32_unixlib.spec")
+    file(GLOB PA32_SHARED_HEADERS CONFIGURE_DEPENDS
+         "${CMAKE_SOURCE_DIR}/include/*.h"
+         "${CMAKE_SOURCE_DIR}/src/wow64/*.h")
 
     # The i386 Wine import libs must be copied, made writable, and re-indexed
     # with the i686 ranlib before the mingw linker accepts them.
-    set(_pa32_imp_names winecrt0 ntdll ole32 uuid)
+    set(_pa32_imp_names winecrt0 ntdll ole32 uuid kernelbase)
     set(_pa32_imp_libs "")
     set(_pa32_imp_cmds "")
     set(_pa32_imp_deps "")
@@ -110,17 +110,19 @@ if(BUILD_WOW64_32)
                 "${PA32_DEF}"
                 "${CMAKE_BINARY_DIR}/libwinecrt0-i386.a"
                 -DPIPEASIO_WOW64_PE
-                ${_pa32_inc} ${_pa32_cflags}
+                ${_pa32_inc} ${_pa32_cflags} -static -static-libgcc
                 -o "${PA32_DLL}"
                 "${CMAKE_BINARY_DIR}/libntdll-i386.a"
                 "${CMAKE_BINARY_DIR}/libole32-i386.a"
                 "${CMAKE_BINARY_DIR}/libuuid-i386.a"
+                "${CMAKE_BINARY_DIR}/libkernelbase-i386.a"
         COMMAND "${WINEBUILD}" -m32 --builtin "${PA32_DLL}"
         DEPENDS "${CMAKE_SOURCE_DIR}/src/asio.c"
                 "${CMAKE_SOURCE_DIR}/src/main.c"
                 "${CMAKE_SOURCE_DIR}/src/regsvr.c"
                 "${CMAKE_SOURCE_DIR}/src/config.c"
                 "${CMAKE_SOURCE_DIR}/src/wow64/audio_proxy.c"
+                ${PA32_SHARED_HEADERS}
                 "${PA32_DEF}" ${_pa32_imp_libs}
         VERBATIM COMMAND_EXPAND_LISTS
         COMMENT "mingw pipeasio32.dll (32-bit WoW64 PE front end)")
@@ -128,7 +130,7 @@ if(BUILD_WOW64_32)
     # 64-bit unixlib hosting the real PipeWire backend.
     # -fno-lto: same winebuild ld -r / .spec export hazard as add_wine_dll (issue #6).
     add_library(pipeasio32_unix_objs OBJECT
-        src/wow64/audio_unix.c src/audio.c src/config.c)
+        src/wow64/audio_unix.c src/wow64/handle_table.c src/audio.c src/config.c)
     set_target_properties(pipeasio32_unix_objs PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(pipeasio32_unix_objs PRIVATE
         ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src/wow64
@@ -143,12 +145,19 @@ if(BUILD_WOW64_32)
         $<$<CONFIG:RelWithDebInfo>:-DNDEBUG> $<$<CONFIG:RelWithDebInfo>:-fvisibility=hidden>
         $<$<CONFIG:Debug>:-O0> $<$<CONFIG:Debug>:-g3> $<$<CONFIG:Debug>:-DDEBUG>
         $<$<CONFIG:Debug>:-fno-omit-frame-pointer>)
+    set(_pa32_sanitize_libs "")
+    if(PIPEASIO_ASAN)
+        target_compile_options(pipeasio32_unix_objs PRIVATE
+            -fsanitize=address -fsanitize=undefined)
+        list(APPEND _pa32_sanitize_libs -lasan -lubsan)
+    endif()
     add_custom_command(
         OUTPUT  "${PA32_SO}"
         COMMAND "${WINEGCC}" -shared
                 "${PA32_SPEC}"
                 $<TARGET_OBJECTS:pipeasio32_unix_objs>
                 -lpthread -ldl ${PIPEWIRE_LINK_LIBRARIES} ${PIPEWIRE_LDFLAGS_OTHER}
+                ${_pa32_sanitize_libs}
                 -o "${PA32_SO}"
         DEPENDS pipeasio32_unix_objs "${PA32_SPEC}"
                 $<TARGET_OBJECTS:pipeasio32_unix_objs>
@@ -201,5 +210,36 @@ if(BUILD_TESTS)
     add_subdirectory(tests/wow64)
     if(BUILD_SETTINGS_PANEL AND Qt6_FOUND)
         add_subdirectory(tests/gui)
+    elseif(BUILD_SETTINGS_PANEL)
+        add_test(NAME test_panel_prerequisite
+                 COMMAND ${CMAKE_COMMAND} -P
+                         ${CMAKE_SOURCE_DIR}/tests/gui/check_prerequisite.cmake)
+        set_tests_properties(test_panel_prerequisite PROPERTIES
+            TIMEOUT 10
+            SKIP_REGULAR_EXPRESSION "SKIP:")
+    endif()
+    if(PIPEASIO_ASAN)
+        find_program(BASH_EXECUTABLE bash REQUIRED)
+        set(_pipeasio_sanitizer_artifacts
+            ${CMAKE_BINARY_DIR}/pipeasio64.dll.so
+            ${CMAKE_BINARY_DIR}/pipeasio64_stop_test.dll.so)
+        if(BUILD_WOW64_32)
+            list(APPEND _pipeasio_sanitizer_artifacts ${CMAKE_BINARY_DIR}/pipeasio32.so)
+        endif()
+        foreach(_target test_offsets test_config test_admission_gate
+                         test_pw_buffer_region test_handle_table pw_filter_probe
+                         pw_delivery_probe pw_default_probe pipeasio-settings test_panel)
+            if(TARGET ${_target})
+                list(APPEND _pipeasio_sanitizer_artifacts $<TARGET_FILE:${_target}>)
+            endif()
+        endforeach()
+        add_test(NAME sanitizer_artifacts
+                 COMMAND ${BASH_EXECUTABLE}
+                         ${CMAKE_SOURCE_DIR}/tests/check_sanitizer_artifacts.sh
+                         ${_pipeasio_sanitizer_artifacts})
+        set_tests_properties(sanitizer_artifacts PROPERTIES
+            TIMEOUT 10
+            LABELS "pipeasio-sanitize"
+            FIXTURES_SETUP sanitizer_artifacts)
     endif()
 endif()

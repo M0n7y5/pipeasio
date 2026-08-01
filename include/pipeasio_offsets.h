@@ -24,7 +24,7 @@
  *
  * Why a header: the math is small, but tests need to call it WITHOUT
  * compiling audio.c (which drags in pipewire/Wine headers).  Putting it
- * here as static-inline keeps a single source of truth - if the formula
+ * here as static-inline keeps a single source of truth. If the formula
  * ever changes, both audio.c and the tests pick it up.
  *
  * Memfd layout (audio.c side):

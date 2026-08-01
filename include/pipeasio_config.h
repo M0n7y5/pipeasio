@@ -3,7 +3,7 @@
  * (src/config.c, src/asio.c) and the Qt settings panel (gui/).
  *
  * The driver reads $XDG_CONFIG_HOME/pipeasio/config.ini directly (it is a
- * native ELF, so it does not need the Windows registry); the panel writes the
+ * native ELF, so it does not need the Windows registry). The panel writes the
  * same file. Keeping the key names and defaults in one header is what keeps the
  * two sides from drifting.
  *
@@ -57,7 +57,7 @@
 #define PIPEASIO_DEFAULT_SAMPLE_RATE 0 /* 0 = follow the PipeWire graph */
 #define PIPEASIO_DEFAULT_AUTO_CONNECT true
 #define PIPEASIO_DEFAULT_FOLLOW_DEVICE_CLOCK false
-#define PIPEASIO_DEFAULT_REALTIME true
+#define PIPEASIO_DEFAULT_REALTIME false
 
 /* --- Bounds (mirror src/asio.c's PIPEASIO_{MINIMUM,MAXIMUM}_BUFFERSIZE) --- */
 #define PIPEASIO_MIN_BUFFER_SIZE 16
@@ -80,9 +80,9 @@ struct pipeasio_config
     int  sample_rate;                             /* 0 = follow graph, else FORCE_RATE */
     bool auto_connect;                            /* 0 = manual patching           */
     bool follow_device_clock;                     /* follow target device quantum (BT) */
-    bool realtime;                                /* raise the bufferSwitch thread  */
-    char output_device[PIPEASIO_DEVICE_NAME_MAX]; /* node.name; "" = default sink   */
-    char input_device[PIPEASIO_DEVICE_NAME_MAX];  /* node.name; "" = default source */
+    bool realtime;                                /* experimental, off: FIFO bufferSwitch */
+    char output_device[PIPEASIO_DEVICE_NAME_MAX]; /* node.name, "" = default sink   */
+    char input_device[PIPEASIO_DEVICE_NAME_MAX];  /* node.name, "" = default source */
     char node_name[PIPEASIO_NODE_NAME_MAX];       /* "" = derive from app name      */
 };
 
@@ -99,7 +99,7 @@ extern "C"
  * $XDG_CONFIG_HOME/pipeasio/config.ini (fallback $HOME/.config/pipeasio/...).
  * Returns true if a config file was found and parsed, false if none existed
  * (in which case `out` is still fully populated with defaults). Malformed
- * lines and unknown keys are skipped; out-of-range numeric values fall back to
+ * lines and unknown keys are skipped. Out-of-range numeric values fall back to
  * their default.
  */
     bool pipeasio_config_load(struct pipeasio_config *out);

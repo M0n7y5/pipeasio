@@ -29,9 +29,9 @@
 #define CHECK(expr, msg) _Static_assert((expr), msg)
 
 CHECK(sizeof(void *) == EXPECTED_POINTER_SIZE, "unexpected compiler bitness");
-CHECK(PIPEASIO_UNIX_ABI_VERSION == 2, "ABI version changed - bump both halves");
+CHECK(PIPEASIO_UNIX_ABI_VERSION == 3, "ABI version changed - bump both halves");
 CHECK(PAU_RT_MAX_PORTS == 256, "RT channel cap changed");
-CHECK(PAU_PORTS_BLOB == 16384, "port blob size changed");
+CHECK(PAU_ENDPOINT_MAX == 256, "endpoint cap changed");
 
 /* Call-code order indexes __wine_unix_call_funcs[]. */
 CHECK(PAU_OPEN == 0, "call enum drift");
@@ -43,7 +43,7 @@ CHECK(PAU_REPLY_CALLBACK == 27, "call enum drift");
 CHECK(PAU_SET_REALTIME == 28, "call enum drift - PAU_SET_REALTIME must stay appended");
 CHECK(PAU_CALL_COUNT == 29, "call count drift - update both unix call tables");
 CHECK(PAU_CB_BUFFER_SWITCH == 0, "callback kind drift");
-CHECK(PAU_CB_LATENCY == 3, "callback kind drift");
+CHECK(PAU_CB_RESERVED_3 == 3, "callback kind drift");
 
 CHECK(sizeof(pa_i64) == 8, "pa_i64 size");
 CHECK(offsetof(pa_i64, lo) == 0, "pa_i64 lo offset");
@@ -63,19 +63,20 @@ CHECK(sizeof(pa_set_u32_params) == 16, "pa_set_u32_params size");
 CHECK(sizeof(pa_time_params) == 16, "pa_time_params size");
 CHECK(offsetof(pa_time_params, nsec) == 8, "pa_time_params nsec offset");
 
-CHECK(sizeof(pa_port_register_params) == 116, "pa_port_register_params size");
-CHECK(offsetof(pa_port_register_params, port) == 112, "pa_port_register_params port offset");
+CHECK(sizeof(pa_port_register_params) == 52, "pa_port_register_params size");
+CHECK(offsetof(pa_port_register_params, port) == 48, "pa_port_register_params port offset");
 
-CHECK(sizeof(pa_port_params) == 280, "pa_port_params size");
+CHECK(sizeof(pa_port_params) == 28, "pa_port_params size");
 CHECK(offsetof(pa_port_params, lat_min) == 16, "pa_port_params lat_min offset");
-CHECK(offsetof(pa_port_params, name) == 24, "pa_port_params name offset");
+CHECK(offsetof(pa_port_params, result) == 24, "pa_port_params result offset");
 
-CHECK(sizeof(pa_ports_params) == 17168, "pa_ports_params size");
-CHECK(offsetof(pa_ports_params, count) == 780, "pa_ports_params count offset");
-CHECK(offsetof(pa_ports_params, names) == 784, "pa_ports_params names offset");
+CHECK(sizeof(pa_endpoint_record) == 784, "pa_endpoint_record size");
+CHECK(offsetof(pa_endpoint_record, node_id) == 768, "endpoint identity offset");
+CHECK(sizeof(pa_ports_params) == 200992, "pa_ports_params size");
+CHECK(offsetof(pa_ports_params, count) == 280, "pa_ports_params count offset");
+CHECK(offsetof(pa_ports_params, endpoints) == 288, "pa_ports_params endpoints offset");
 
 CHECK(sizeof(pa_connect_params) == 524, "pa_connect_params size");
-CHECK(sizeof(pa_name_params) == 264, "pa_name_params size");
 
 CHECK(sizeof(pa_config_params) == 800, "pa_config_params size");
 CHECK(offsetof(pa_config_params, cfg) == 4, "pa_config_params cfg offset");
@@ -91,19 +92,21 @@ CHECK(offsetof(struct pipeasio_config, node_name) == 535, "pipeasio_config node_
 CHECK(sizeof(pa_fingerprint_params) == 12, "pa_fingerprint_params size");
 CHECK(offsetof(pa_fingerprint_params, fp) == 4, "pa_fingerprint_params fp offset");
 
-CHECK(sizeof(pa_bind_params) == 536, "pa_bind_params size");
+CHECK(sizeof(pa_bind_params) == 540, "pa_bind_params size");
 CHECK(offsetof(pa_bind_params, in_active) == 24, "pa_bind_params in_active offset");
 CHECK(offsetof(pa_bind_params, out_active) == 280, "pa_bind_params out_active offset");
+CHECK(offsetof(pa_bind_params, result) == 536, "pa_bind_params result offset");
 
-CHECK(sizeof(pa_wait_params) == 40, "pa_wait_params size");
+CHECK(sizeof(pa_wait_params) == 56, "pa_wait_params size");
 CHECK(offsetof(pa_wait_params, seq) == 8, "pa_wait_params seq offset");
 CHECK(offsetof(pa_wait_params, time_nsec) == 24, "pa_wait_params time_nsec offset");
-CHECK(offsetof(pa_wait_params, shutdown) == 36, "pa_wait_params shutdown offset");
+CHECK(offsetof(pa_wait_params, admitted) == 40, "pa_wait_params admitted offset");
+CHECK(offsetof(pa_wait_params, shutdown) == 52, "pa_wait_params shutdown offset");
 
-CHECK(sizeof(pa_reply_params) == 20, "pa_reply_params size");
+CHECK(sizeof(pa_reply_params) == 32, "pa_reply_params size");
 CHECK(offsetof(pa_reply_params, seq) == 8, "pa_reply_params seq offset");
-CHECK(offsetof(pa_reply_params, produced) == 12, "pa_reply_params produced offset");
-CHECK(offsetof(pa_reply_params, result) == 16, "pa_reply_params result offset");
+CHECK(offsetof(pa_reply_params, admitted) == 12, "pa_reply_params admitted offset");
+CHECK(offsetof(pa_reply_params, result) == 28, "pa_reply_params result offset");
 
 /* The embedded config struct must itself be pointer-free / arch-stable. */
 CHECK(sizeof(struct pipeasio_config) == 792, "pipeasio_config layout changed");

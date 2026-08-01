@@ -61,29 +61,30 @@ ensure_unixlib(void)
 
 typedef struct proxy_ctx
 {
-    pa_handle unix_client; /* token returned by PAU_OPEN */
-    void     *This;        /* IPipeASIOImpl*, from audio_set_process_callback */
-
-    audio_buffer_size_cb buf_cb;
-    void                *buf_arg;
+    pa_handle            unix_client;
+    void                *This;
+    char                 client_name[PAU_NAME_MAX];
     audio_sample_rate_cb rate_cb;
     void                *rate_arg;
-    audio_latency_cb     lat_cb;
-    void                *lat_arg;
-
-    HANDLE pump;
-    DWORD  pump_tid;
+    uint32_t             input_ports;
+    uint32_t             output_ports;
+    audio_port_t        *ports[PAU_RT_MAX_PORTS * 2];
+    uint32_t             port_count;
+    HANDLE               pump;
+    DWORD                pump_tid;
 } proxy_ctx;
 
-/* Stable return buffers for const char* audio API results. */
-static char g_client_name[PAU_PORTNAME_MAX];
-static char g_port_name[PAU_PORTNAME_MAX];
-static char g_port_type[PAU_PORTNAME_MAX];
+typedef struct proxy_port
+{
+    pa_handle unix_token;
+    char      local_name[PAU_NAME_MAX];
+    uint32_t  flags;
+} proxy_port;
 
 static pa_handle
 port_tok(const audio_port_t *port)
 {
-    return (pa_handle)(uintptr_t)port;
+    return port ? ((const proxy_port *)port)->unix_token : 0;
 }
 
 /* PE pump thread. */
@@ -99,48 +100,45 @@ pump_proc(void *arg)
 
     for (;;)
     {
-        pa_wait_params  w;
-        pa_reply_params r;
-
-        memset(&w, 0, sizeof w);
-        w.version = PIPEASIO_UNIX_ABI_VERSION;
-        w.client  = ctx->unix_client;
-        if (UCALL(PAU_WAIT_CALLBACK, &w) != 0 || w.shutdown)
+        pa_wait_params           wait_params   = { 0 };
+        pa_reply_params          reply         = { 0 };
+        pipeasio_host_call_token process_token = { 0 };
+        bool                     process_event = false;
+        wait_params.version                    = PIPEASIO_UNIX_ABI_VERSION;
+        wait_params.client                     = ctx->unix_client;
+        if (UCALL(PAU_WAIT_CALLBACK, &wait_params) != 0 || wait_params.shutdown)
             break;
-
-        memset(&r, 0, sizeof r);
-        r.version = PIPEASIO_UNIX_ABI_VERSION;
-        r.client  = ctx->unix_client;
-        r.seq     = w.seq;
-
-        switch (w.kind)
+        if (!wait_params.delivered)
+            continue;
+        reply.version = PIPEASIO_UNIX_ABI_VERSION;
+        reply.client  = ctx->unix_client;
+        reply.seq     = wait_params.seq;
+        reply.reply   = 1;
+        switch (wait_params.kind)
         {
         case PAU_CB_BUFFER_SWITCH:
-            /* Start() primes directly; process-time switches require Running. */
-            if (pipeasio_host_is_running(ctx->This))
+            process_event = true;
+            if (pipeasio_host_call_begin(ctx->This, PIPEASIO_HOST_PROCESS, &process_token))
             {
-                pipeasio_host_buffer_switch(ctx->This, (int32_t)w.index, w.nframes,
-                                            pa_i64_to(w.time_nsec));
-                r.produced = 1;
+                reply.admitted = 1;
+                pipeasio_host_call_process(&process_token, (int32_t)wait_params.index,
+                                           wait_params.nframes, pa_i64_to(wait_params.time_nsec));
+                reply.produced = 1;
             }
-            break;
-        case PAU_CB_BUFFER_SIZE:
-            if (ctx->buf_cb)
-                r.result = ctx->buf_cb((audio_nframes_t)w.value, ctx->buf_arg);
             break;
         case PAU_CB_SAMPLE_RATE:
             if (ctx->rate_cb)
-                r.result = ctx->rate_cb((audio_nframes_t)w.value, ctx->rate_arg);
-            break;
-        case PAU_CB_LATENCY:
-            if (ctx->lat_cb)
-                ctx->lat_cb((audio_latency_mode_t)w.value, ctx->lat_arg);
+            {
+                reply.admitted = 1;
+                reply.result   = ctx->rate_cb((audio_nframes_t)wait_params.value, ctx->rate_arg);
+            }
             break;
         default:
             break;
         }
-
-        UCALL(PAU_REPLY_CALLBACK, &r);
+        UCALL(PAU_REPLY_CALLBACK, &reply);
+        if (process_event)
+            pipeasio_host_call_end(&process_token);
     }
     return 0;
 }
@@ -149,10 +147,8 @@ static void
 pump_join(proxy_ctx *ctx)
 {
     /* Deactivate may run on the pump thread (a host that stops from inside a
-     * buffer switch); skip the self-join then and let audio_close join later.
-     * That leaves ctx->pump set, so a restart without an intervening off-thread
-     * deactivate would not respawn the pump - not reached in practice, as hosts
-     * do not dispose buffers from a callback. */
+     * buffer switch). Avoid the self-join then: the handle stays set and a
+     * later off-thread deactivate or audio_close joins and closes it. */
     if (ctx->pump && GetCurrentThreadId() != ctx->pump_tid)
     {
         WaitForSingleObject(ctx->pump, INFINITE);
@@ -199,97 +195,83 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
             *status = p.status ? p.status : 1;
         return NULL;
     }
+    memcpy(ctx->client_name, p.name, strlen(p.name) + 1);
     ctx->unix_client = p.client;
     if (status)
         *status = p.status;
     return (audio_client_t *)ctx;
 }
 
+static bool
+proxy_deactivate(proxy_ctx *ctx)
+{
+    pa_simple_params params = { 0 };
+    NTSTATUS         status;
+    params.version = PIPEASIO_UNIX_ABI_VERSION;
+    params.client  = ctx->unix_client;
+    status         = UCALL(PAU_DEACTIVATE, &params);
+    pump_join(ctx);
+    return status == 0 && params.result != 0;
+}
+
 bool
 audio_close(audio_client_t *client)
 {
-    proxy_ctx       *ctx = (proxy_ctx *)client;
-    pa_simple_params p;
-
+    proxy_ctx       *ctx    = (proxy_ctx *)client;
+    pa_simple_params params = { 0 };
+    bool             ok;
     if (!ctx)
         return false;
     if (ctx->pump)
-    {
-        /* Close without deactivate: unblock and join the pump before free. */
-        pa_simple_params d;
-        memset(&d, 0, sizeof d);
-        d.version = PIPEASIO_UNIX_ABI_VERSION;
-        d.client  = ctx->unix_client;
-        UCALL(PAU_DEACTIVATE, &d);
-        pump_join(ctx);
-    }
-    memset(&p, 0, sizeof p);
-    p.version = PIPEASIO_UNIX_ABI_VERSION;
-    p.client  = ctx->unix_client;
-    UCALL(PAU_CLOSE, &p);
+        proxy_deactivate(ctx);
+    params.version = PIPEASIO_UNIX_ABI_VERSION;
+    params.client  = ctx->unix_client;
+    ok             = UCALL(PAU_CLOSE, &params) == 0 && params.result != 0;
+    for (uint32_t i = 0; i < ctx->port_count; ++i)
+        free(ctx->ports[i]);
     free(ctx);
-    return true;
+    return ok;
 }
 
 bool
 audio_activate(audio_client_t *client)
 {
-    proxy_ctx       *ctx = (proxy_ctx *)client;
-    pa_simple_params p;
-
+    proxy_ctx       *ctx    = (proxy_ctx *)client;
+    pa_simple_params params = { 0 };
     if (!ctx)
         return false;
-
-    memset(&p, 0, sizeof p);
-    p.version = PIPEASIO_UNIX_ABI_VERSION;
-    p.client  = ctx->unix_client;
-    UCALL(PAU_INSTALL_CALLBACKS, &p);
-
+    params.version = PIPEASIO_UNIX_ABI_VERSION;
+    params.client  = ctx->unix_client;
+    if (UCALL(PAU_INSTALL_CALLBACKS, &params) != 0 || !params.result)
+        return false;
+    ctx->pump = CreateThread(NULL, 8 * 1024 * 1024, pump_proc, ctx,
+                             STACK_SIZE_PARAM_IS_A_RESERVATION, &ctx->pump_tid);
     if (!ctx->pump)
-        ctx->pump = CreateThread(NULL, 8 * 1024 * 1024, pump_proc, ctx,
-                                 STACK_SIZE_PARAM_IS_A_RESERVATION, &ctx->pump_tid);
-
-    memset(&p, 0, sizeof p);
-    p.version = PIPEASIO_UNIX_ABI_VERSION;
-    p.client  = ctx->unix_client;
-    UCALL(PAU_ACTIVATE, &p);
-    return p.result != 0;
+    {
+        proxy_deactivate(ctx);
+        return false;
+    }
+    memset(&params, 0, sizeof(params));
+    params.version = PIPEASIO_UNIX_ABI_VERSION;
+    params.client  = ctx->unix_client;
+    if (UCALL(PAU_ACTIVATE, &params) != 0 || !params.result)
+    {
+        proxy_deactivate(ctx);
+        return false;
+    }
+    return true;
 }
 
 bool
 audio_deactivate(audio_client_t *client)
 {
-    proxy_ctx       *ctx = (proxy_ctx *)client;
-    pa_simple_params p;
-
-    if (!ctx)
-        return false;
-    memset(&p, 0, sizeof p);
-    p.version = PIPEASIO_UNIX_ABI_VERSION;
-    p.client  = ctx->unix_client;
-    UCALL(PAU_DEACTIVATE, &p); /* unix side also sets bridge shutdown */
-    pump_join(ctx);
-    return p.result != 0;
+    return client ? proxy_deactivate((proxy_ctx *)client) : false;
 }
-
 const char *
 audio_get_client_name(audio_client_t *client)
 {
-    proxy_ctx     *ctx = (proxy_ctx *)client;
-    pa_name_params p;
-
-    g_client_name[0] = '\0';
-    if (!ctx)
-        return g_client_name;
-    memset(&p, 0, sizeof p);
-    p.version = PIPEASIO_UNIX_ABI_VERSION;
-    p.client  = ctx->unix_client;
-    if (UCALL(PAU_GET_CLIENT_NAME, &p) == 0)
-    {
-        memcpy(g_client_name, p.name, sizeof g_client_name);
-        g_client_name[sizeof g_client_name - 1] = '\0';
-    }
-    return g_client_name;
+    proxy_ctx *ctx = (proxy_ctx *)client;
+    return ctx ? ctx->client_name : "";
 }
 
 static uint32_t
@@ -386,54 +368,74 @@ audio_default_changed(audio_client_t *client)
 }
 
 audio_port_t *
-audio_port_register(audio_client_t *client, const char *port_name, const char *port_type,
-                    uint64_t flags, uint64_t buffer_size)
+audio_port_register(audio_client_t *client, const char *port_name, uint64_t flags, uint32_t channel)
 {
-    proxy_ctx              *ctx = (proxy_ctx *)client;
-    pa_port_register_params p;
-
-    if (!ctx)
+    proxy_ctx              *ctx    = (proxy_ctx *)client;
+    pa_port_register_params params = { 0 };
+    proxy_port             *port;
+    size_t                  length;
+    if (!ctx || !port_name || ctx->port_count >= PAU_RT_MAX_PORTS * 2)
         return NULL;
-    memset(&p, 0, sizeof p);
-    p.version = PIPEASIO_UNIX_ABI_VERSION;
-    p.client  = ctx->unix_client;
-    p.flags   = (uint32_t)flags;
-    p.channel = (uint32_t)buffer_size; /* asio.c passes the channel index here */
-    if (port_name)
-    {
-        strncpy(p.name, port_name, sizeof p.name - 1);
-        p.name[sizeof p.name - 1] = '\0';
-    }
-    if (port_type)
-    {
-        strncpy(p.type, port_type, sizeof p.type - 1);
-        p.type[sizeof p.type - 1] = '\0';
-    }
-    if (UCALL(PAU_PORT_REGISTER, &p) != 0 || p.port == 0)
+    length = strlen(port_name);
+    if (!length || length >= sizeof(params.name))
         return NULL;
-    return (audio_port_t *)(uintptr_t)p.port;
+    port = calloc(1, sizeof(*port));
+    if (!port)
+        return NULL;
+    params.version = PIPEASIO_UNIX_ABI_VERSION;
+    params.client  = ctx->unix_client;
+    params.flags   = (uint32_t)flags;
+    params.channel = channel;
+    memcpy(params.name, port_name, length + 1);
+    if (UCALL(PAU_PORT_REGISTER, &params) != 0 || !params.port)
+    {
+        free(port);
+        return NULL;
+    }
+    port->unix_token = params.port;
+    port->flags      = (uint32_t)flags;
+    memcpy(port->local_name, port_name, length + 1);
+    ctx->ports[ctx->port_count++] = (audio_port_t *)port;
+    if (flags & AUDIO_PORT_IS_INPUT)
+        ++ctx->input_ports;
+    else
+        ++ctx->output_ports;
+    return (audio_port_t *)port;
 }
 
 bool
-audio_port_unregister(audio_client_t *client, audio_port_t *port)
+audio_port_unregister(audio_client_t *client, audio_port_t *opaque)
 {
-    proxy_ctx     *ctx = (proxy_ctx *)client;
-    pa_port_params p;
-
+    proxy_ctx     *ctx    = (proxy_ctx *)client;
+    proxy_port    *port   = (proxy_port *)opaque;
+    pa_port_params params = { 0 };
+    uint32_t       index;
     if (!ctx || !port)
         return false;
-    memset(&p, 0, sizeof p);
-    p.version = PIPEASIO_UNIX_ABI_VERSION;
-    p.client  = ctx->unix_client;
-    p.port    = port_tok(port);
-    UCALL(PAU_PORT_UNREGISTER, &p);
+    for (index = 0; index < ctx->port_count; ++index)
+        if (ctx->ports[index] == opaque)
+            break;
+    if (index == ctx->port_count)
+        return false;
+    params.version = PIPEASIO_UNIX_ABI_VERSION;
+    params.client  = ctx->unix_client;
+    params.port    = port->unix_token;
+    if (UCALL(PAU_PORT_UNREGISTER, &params) != 0)
+        return false;
+    if (port->flags & AUDIO_PORT_IS_INPUT)
+        --ctx->input_ports;
+    else
+        --ctx->output_ports;
+    memmove(&ctx->ports[index], &ctx->ports[index + 1],
+            (ctx->port_count - index - 1) * sizeof(ctx->ports[0]));
+    --ctx->port_count;
+    free(port);
     return true;
 }
 
 void *
 audio_port_get_buffer(audio_port_t *port, audio_nframes_t nframes)
 {
-    /* Process callbacks run in the unixlib. */
     (void)port;
     (void)nframes;
     return NULL;
@@ -442,65 +444,33 @@ audio_port_get_buffer(audio_port_t *port, audio_nframes_t nframes)
 audio_nframes_t
 audio_port_buffer_avail_frames(const audio_port_t *port)
 {
-    /* Process callbacks run in the unixlib. */
     (void)port;
     return 0;
 }
 
-const char *
-audio_port_name(const audio_port_t *port)
+bool
+audio_port_get_name(const audio_port_t *opaque, char *out, size_t size)
 {
-    pa_port_params p;
-
-    g_port_name[0] = '\0';
-    if (!port)
-        return g_port_name;
-    memset(&p, 0, sizeof p);
-    p.version = PIPEASIO_UNIX_ABI_VERSION;
-    p.port    = port_tok(port);
-    if (UCALL(PAU_PORT_NAME, &p) == 0)
-    {
-        memcpy(g_port_name, p.name, sizeof g_port_name);
-        g_port_name[sizeof g_port_name - 1] = '\0';
-    }
-    return g_port_name;
+    const proxy_port *port = (const proxy_port *)opaque;
+    if (!out || !size)
+        return false;
+    out[0] = '\0';
+    if (!port || strlen(port->local_name) >= size)
+        return false;
+    memcpy(out, port->local_name, strlen(port->local_name) + 1);
+    return true;
 }
 
-const char *
-audio_port_type(const audio_port_t *port)
+bool
+audio_port_publish_output(audio_port_t *port, const audio_sample_t *source, audio_nframes_t frames,
+                          bool admitted, bool active)
 {
-    pa_port_params p;
-
-    g_port_type[0] = '\0';
-    if (!port)
-        return g_port_type;
-    memset(&p, 0, sizeof p);
-    p.version = PIPEASIO_UNIX_ABI_VERSION;
-    p.port    = port_tok(port);
-    if (UCALL(PAU_PORT_TYPE, &p) == 0)
-    {
-        memcpy(g_port_type, p.name, sizeof g_port_type);
-        g_port_type[sizeof g_port_type - 1] = '\0';
-    }
-    return g_port_type;
-}
-
-audio_port_t *
-audio_port_by_name(audio_client_t *client, const char *port_name)
-{
-    proxy_ctx     *ctx = (proxy_ctx *)client;
-    pa_port_params p;
-
-    if (!ctx || !port_name)
-        return NULL;
-    memset(&p, 0, sizeof p);
-    p.version = PIPEASIO_UNIX_ABI_VERSION;
-    p.client  = ctx->unix_client;
-    strncpy(p.name, port_name, sizeof p.name - 1);
-    p.name[sizeof p.name - 1] = '\0';
-    if (UCALL(PAU_PORT_BY_NAME, &p) != 0 || p.port == 0)
-        return NULL;
-    return (audio_port_t *)(uintptr_t)p.port;
+    (void)port;
+    (void)source;
+    (void)frames;
+    (void)admitted;
+    (void)active;
+    return false;
 }
 
 void
@@ -526,82 +496,66 @@ audio_port_get_latency_range(audio_port_t *port, uint32_t mode, audio_latency_ra
     }
 }
 
-/* Decode a packed NUL-separated port list. */
-static const char **
-build_port_array(const char *blob, uint32_t count)
-{
-    const char **arr;
-    size_t       off = 0;
-
-    arr = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (count + 1) * sizeof(char *));
-    if (!arr)
-        return NULL;
-    for (uint32_t i = 0; i < count; i++)
-    {
-        size_t len = strlen(blob + off) + 1;
-        char  *dup = HeapAlloc(GetProcessHeap(), 0, len);
-        if (!dup)
-            break;
-        memcpy(dup, blob + off, len);
-        arr[i] = dup;
-        off += len;
-    }
-    return arr;
-}
-
-static const char **
-get_ports_common(proxy_ctx *ctx, unsigned int code, const char *a, const char *b, const char *node,
-                 uint64_t flags)
-{
-    pa_ports_params *p;
-    const char     **arr;
-
-    if (!ctx)
-        return NULL;
-    p = calloc(1, sizeof *p);
-    if (!p)
-        return NULL;
-    p->version = PIPEASIO_UNIX_ABI_VERSION;
-    p->client  = ctx->unix_client;
-    p->flags   = (uint32_t)flags;
-    if (a)
-    {
-        strncpy(p->pattern, a, sizeof p->pattern - 1);
-        p->pattern[sizeof p->pattern - 1] = '\0';
-    }
-    if (b)
-    {
-        strncpy(p->type, b, sizeof p->type - 1);
-        p->type[sizeof p->type - 1] = '\0';
-    }
-    if (node)
-    {
-        strncpy(p->node, node, sizeof p->node - 1);
-        p->node[sizeof p->node - 1] = '\0';
-    }
-    if (UCALL(code, p) != 0)
-    {
-        free(p);
-        return NULL;
-    }
-    arr = build_port_array(p->names, p->count);
-    free(p);
-    return arr;
-}
-
-const char **
-audio_get_ports(audio_client_t *client, const char *port_name_pattern,
-                const char *type_name_pattern, uint64_t flags)
-{
-    return get_ports_common((proxy_ctx *)client, PAU_GET_PORTS, port_name_pattern,
-                            type_name_pattern, NULL, flags);
-}
-
 const char **
 audio_get_device_ports(audio_client_t *client, const char *node_name, uint64_t flags)
 {
-    return get_ports_common((proxy_ctx *)client, PAU_GET_DEVICE_PORTS, NULL, NULL, node_name,
-                            flags);
+    proxy_ctx       *ctx = (proxy_ctx *)client;
+    pa_ports_params *params;
+    const char     **ports   = NULL;
+    uint32_t         decoded = 0;
+    uint32_t         bytes   = 0;
+    if (!ctx)
+        return NULL;
+    params = calloc(1, sizeof(*params));
+    if (!params)
+        return NULL;
+    params->version   = PIPEASIO_UNIX_ABI_VERSION;
+    params->client    = ctx->unix_client;
+    params->flags     = (uint32_t)flags;
+    params->requested = flags & AUDIO_PORT_IS_OUTPUT ? ctx->input_ports : ctx->output_ports;
+    if (params->requested > PAU_ENDPOINT_MAX)
+        goto fail;
+    if (node_name)
+    {
+        size_t length = strlen(node_name);
+        if (length >= sizeof(params->node))
+            goto fail;
+        memcpy(params->node, node_name, length + 1);
+    }
+    if (UCALL(PAU_GET_DEVICE_PORTS, params) != 0 || !params->result || !params->complete
+        || params->count > params->requested || params->count > PAU_ENDPOINT_MAX)
+        goto fail;
+    ports = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                      ((size_t)params->count + 1) * sizeof(*ports));
+    if (!ports)
+        goto fail;
+    for (; decoded < params->count; ++decoded)
+    {
+        const char *end = memchr(params->endpoints[decoded].key, '\0',
+                                 sizeof(params->endpoints[decoded].key));
+        if (!end || end == params->endpoints[decoded].key)
+            goto fail;
+        size_t length = (size_t)(end - params->endpoints[decoded].key) + 1;
+        char  *copy   = HeapAlloc(GetProcessHeap(), 0, length);
+        if (!copy)
+            goto fail;
+        memcpy(copy, params->endpoints[decoded].key, length);
+        ports[decoded] = copy;
+        bytes += (uint32_t)length;
+    }
+    if (bytes != params->bytes)
+        goto fail;
+    free(params);
+    return ports;
+fail:
+    if (ports)
+    {
+        for (uint32_t i = 0; i < decoded; ++i)
+            HeapFree(GetProcessHeap(), 0, (void *)ports[i]);
+        HeapFree(GetProcessHeap(), 0, (void *)ports);
+    }
+    free(params);
+    return NULL;
 }
 
 bool
@@ -612,17 +566,6 @@ audio_set_process_callback(audio_client_t *client, audio_process_cb cb, void *ar
     if (!ctx)
         return false;
     ctx->This = arg;
-    return true;
-}
-
-bool
-audio_set_buffer_size_callback(audio_client_t *client, audio_buffer_size_cb cb, void *arg)
-{
-    proxy_ctx *ctx = (proxy_ctx *)client;
-    if (!ctx)
-        return false;
-    ctx->buf_cb  = cb;
-    ctx->buf_arg = arg;
     return true;
 }
 
@@ -638,31 +581,18 @@ audio_set_sample_rate_callback(audio_client_t *client, audio_sample_rate_cb cb, 
 }
 
 bool
-audio_set_latency_callback(audio_client_t *client, audio_latency_cb cb, void *arg)
-{
-    proxy_ctx *ctx = (proxy_ctx *)client;
-    if (!ctx)
-        return false;
-    ctx->lat_cb  = cb;
-    ctx->lat_arg = arg;
-    return true;
-}
-
-bool
 audio_connect(audio_client_t *client, const char *src, const char *dst)
 {
     proxy_ctx        *ctx = (proxy_ctx *)client;
     pa_connect_params p;
 
-    if (!ctx || !src || !dst)
+    if (!ctx || !src || !dst || strlen(src) >= sizeof(p.src) || strlen(dst) >= sizeof(p.dst))
         return false;
     memset(&p, 0, sizeof p);
     p.version = PIPEASIO_UNIX_ABI_VERSION;
     p.client  = ctx->unix_client;
-    strncpy(p.src, src, sizeof p.src - 1);
-    p.src[sizeof p.src - 1] = '\0';
-    strncpy(p.dst, dst, sizeof p.dst - 1);
-    p.dst[sizeof p.dst - 1] = '\0';
+    memcpy(p.src, src, strlen(src) + 1);
+    memcpy(p.dst, dst, strlen(dst) + 1);
     if (UCALL(PAU_CONNECT, &p) != 0)
         return false;
     return p.ok != 0;
@@ -719,29 +649,24 @@ pipeasio_wow64_config_fingerprint(void)
     return pa_i64_to(p.fp);
 }
 
-void
+bool
 pipeasio_wow64_bind_rt(audio_client_t *client, float *buffer_base, int buffer_size, int n_in,
                        int n_out, const bool *in_active, const bool *out_active)
 {
-    proxy_ctx     *ctx = (proxy_ctx *)client;
-    pa_bind_params p;
-
-    if (!ctx)
-        return;
-    memset(&p, 0, sizeof p);
-    p.version     = PIPEASIO_UNIX_ABI_VERSION;
-    p.client      = ctx->unix_client;
-    p.buffer_base = (uint32_t)(uintptr_t)buffer_base;
-    p.buffer_size = (uint32_t)buffer_size;
-    p.n_in        = n_in > 0 ? (uint32_t)n_in : 0;
-    p.n_out       = n_out > 0 ? (uint32_t)n_out : 0;
-    if (p.n_in > PAU_RT_MAX_PORTS)
-        p.n_in = PAU_RT_MAX_PORTS;
-    if (p.n_out > PAU_RT_MAX_PORTS)
-        p.n_out = PAU_RT_MAX_PORTS;
-    for (uint32_t i = 0; i < p.n_in; i++)
-        p.in_active[i] = (in_active && in_active[i]) ? 1 : 0;
-    for (uint32_t i = 0; i < p.n_out; i++)
-        p.out_active[i] = (out_active && out_active[i]) ? 1 : 0;
-    UCALL(PAU_BIND_RT, &p);
+    proxy_ctx     *ctx    = (proxy_ctx *)client;
+    pa_bind_params params = { 0 };
+    if (!ctx || !buffer_base || buffer_size <= 0 || n_in < 0 || n_out < 0 || n_in > PAU_RT_MAX_PORTS
+        || n_out > PAU_RT_MAX_PORTS)
+        return false;
+    params.version     = PIPEASIO_UNIX_ABI_VERSION;
+    params.client      = ctx->unix_client;
+    params.buffer_base = (uint32_t)(uintptr_t)buffer_base;
+    params.buffer_size = (uint32_t)buffer_size;
+    params.n_in        = (uint32_t)n_in;
+    params.n_out       = (uint32_t)n_out;
+    for (uint32_t i = 0; i < params.n_in; ++i)
+        params.in_active[i] = in_active && in_active[i];
+    for (uint32_t i = 0; i < params.n_out; ++i)
+        params.out_active[i] = out_active && out_active[i];
+    return UCALL(PAU_BIND_RT, &params) == 0 && params.result != 0;
 }

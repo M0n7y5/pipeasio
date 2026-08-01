@@ -40,21 +40,39 @@ typedef struct
     const IClassFactoryVtbl *lpVtbl;
     LONG                     ref;
 } IClassFactoryImpl;
+static LONG driver_objects;
+static LONG server_locks;
+
+void
+pipeasio_object_created(void)
+{
+    InterlockedIncrement(&driver_objects);
+}
+
+void
+pipeasio_object_destroyed(void)
+{
+    InterlockedDecrement(&driver_objects);
+}
 
 extern HRESULT WINAPI PipeASIOCreateInstance(REFIID riid, LPVOID *ppobj);
 
 /*******************************************************************************
  * ClassFactory
  */
+static ULONG WINAPI CF_AddRef(LPCLASSFACTORY iface);
 
 static HRESULT WINAPI
 CF_QueryInterface(LPCLASSFACTORY iface, REFIID riid, LPVOID *ppobj)
 {
-    (void)iface;
-    (void)riid;
-    if (ppobj == NULL)
+    if (!ppobj)
         return E_POINTER;
-    return E_NOINTERFACE;
+    *ppobj = NULL;
+    if (!IsEqualIID(riid, &IID_IUnknown) && !IsEqualIID(riid, &IID_IClassFactory))
+        return E_NOINTERFACE;
+    CF_AddRef(iface);
+    *ppobj = iface;
+    return S_OK;
 }
 
 static ULONG WINAPI
@@ -69,9 +87,15 @@ static ULONG WINAPI
 CF_Release(LPCLASSFACTORY iface)
 {
     IClassFactoryImpl *This = (IClassFactoryImpl *)iface;
-    ULONG              ref  = InterlockedDecrement(&(This->ref));
-    /* static class, won't be freed */
-    return ref;
+    LONG               ref  = InterlockedCompareExchange(&This->ref, 0, 0);
+    while (ref > 1)
+    {
+        LONG prior = InterlockedCompareExchange(&This->ref, ref - 1, ref);
+        if (prior == ref)
+            return (ULONG)(ref - 1);
+        ref = prior;
+    }
+    return 1;
 }
 
 static HRESULT WINAPI
@@ -82,10 +106,8 @@ CF_CreateInstance(LPCLASSFACTORY iface, LPUNKNOWN pOuter, REFIID riid, LPVOID *p
     if (pOuter)
         return CLASS_E_NOAGGREGATION;
 
-    if (ppobj == NULL)
-    {
-        return E_INVALIDARG;
-    }
+    if (!ppobj)
+        return E_POINTER;
 
     *ppobj = NULL;
     return PipeASIOCreateInstance(riid, ppobj);
@@ -95,7 +117,19 @@ static HRESULT WINAPI
 CF_LockServer(LPCLASSFACTORY iface, BOOL dolock)
 {
     (void)iface;
-    (void)dolock;
+    if (dolock)
+        InterlockedIncrement(&server_locks);
+    else
+    {
+        LONG locks = InterlockedCompareExchange(&server_locks, 0, 0);
+        while (locks > 0)
+        {
+            LONG prior = InterlockedCompareExchange(&server_locks, locks - 1, locks);
+            if (prior == locks)
+                break;
+            locks = prior;
+        }
+    }
     return S_OK;
 }
 
@@ -116,10 +150,8 @@ static IClassFactoryImpl PIPEASIO_CF = { &CF_Vtbl, 1 };
 HRESULT WINAPI
 DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID *ppv)
 {
-    if (ppv == NULL)
-    {
-        return E_INVALIDARG;
-    }
+    if (!ppv)
+        return E_POINTER;
 
     *ppv = NULL;
 
@@ -149,7 +181,10 @@ DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID *ppv)
 HRESULT WINAPI
 DllCanUnloadNow(void)
 {
-    return S_FALSE;
+    LONG factory_refs = InterlockedCompareExchange(&PIPEASIO_CF.ref, 0, 0);
+    LONG objects      = InterlockedCompareExchange(&driver_objects, 0, 0);
+    LONG locks        = InterlockedCompareExchange(&server_locks, 0, 0);
+    return objects == 0 && locks == 0 && factory_refs == 1 ? S_OK : S_FALSE;
 }
 
 /***********************************************************************

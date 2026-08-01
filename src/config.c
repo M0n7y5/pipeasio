@@ -23,29 +23,36 @@
  * this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 #include "pipeasio_config.h"
+#include "pipeasio_parse.h"
 
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h> /* strcasecmp */
 
 bool
 pipeasio_config_path(char *buf, size_t n)
 {
-    const char *xdg = getenv("XDG_CONFIG_HOME");
-    if (xdg && xdg[0])
+    const char *base   = getenv("XDG_CONFIG_HOME");
+    const char *suffix = "";
+    int         length;
+    if (!buf || !n)
+        return false;
+    if (!base || !base[0])
     {
-        snprintf(buf, n, "%s/%s/%s", xdg, PIPEASIO_CONFIG_DIR, PIPEASIO_CONFIG_FILE);
-        return true;
+        base   = getenv("HOME");
+        suffix = "/.config";
     }
-    const char *home = getenv("HOME");
-    if (home && home[0])
+    if (!base || !base[0])
+        return false;
+    length = snprintf(buf, n, "%s%s/%s/%s", base, suffix, PIPEASIO_CONFIG_DIR,
+                      PIPEASIO_CONFIG_FILE);
+    if (length < 0 || (size_t)length >= n)
     {
-        snprintf(buf, n, "%s/.config/%s/%s", home, PIPEASIO_CONFIG_DIR, PIPEASIO_CONFIG_FILE);
-        return true;
+        buf[0] = '\0';
+        return false;
     }
-    return false;
+    return true;
 }
 
 static char *
@@ -59,23 +66,6 @@ trim(char *s)
     while (end > s && isspace((unsigned char)*end))
         *end-- = '\0';
     return s;
-}
-
-static bool
-parse_bool(const char *v)
-{
-    return v[0] == '1' || !strcasecmp(v, "true") || !strcasecmp(v, "on") || !strcasecmp(v, "yes");
-}
-
-static void
-copy_str(char *dst, size_t cap, const char *src)
-{
-    if (cap == 0)
-        return;
-    size_t i = 0;
-    for (; src[i] && i < cap - 1; i++)
-        dst[i] = src[i];
-    dst[i] = '\0';
 }
 
 void
@@ -96,92 +86,116 @@ pipeasio_config_defaults(struct pipeasio_config *c)
     c->node_name[0]        = '\0';
 }
 
-static void
-apply_kv(struct pipeasio_config *c, const char *key, const char *val)
+static bool
+copy_str(char *destination, size_t capacity, const char *source)
 {
-    if (!strcmp(key, PIPEASIO_KEY_INPUTS))
-        c->inputs = atoi(val);
-    else if (!strcmp(key, PIPEASIO_KEY_OUTPUTS))
-        c->outputs = atoi(val);
-    else if (!strcmp(key, PIPEASIO_KEY_BUFFER_SIZE))
-        c->buffer_size = atoi(val);
-    else if (!strcmp(key, PIPEASIO_KEY_FIXED_BUFFER_SIZE))
-        c->fixed_buffer_size = parse_bool(val);
-    else if (!strcmp(key, PIPEASIO_KEY_SAMPLE_RATE))
-        c->sample_rate = atoi(val);
-    else if (!strcmp(key, PIPEASIO_KEY_AUTO_CONNECT))
-        c->auto_connect = parse_bool(val);
-    else if (!strcmp(key, PIPEASIO_KEY_FOLLOW_DEVICE_CLOCK))
-        c->follow_device_clock = parse_bool(val);
-    else if (!strcmp(key, PIPEASIO_KEY_REALTIME))
-        c->realtime = parse_bool(val);
-    else if (!strcmp(key, PIPEASIO_KEY_OUTPUT_DEVICE))
-        copy_str(c->output_device, sizeof c->output_device, val);
-    else if (!strcmp(key, PIPEASIO_KEY_INPUT_DEVICE))
-        copy_str(c->input_device, sizeof c->input_device, val);
-    else if (!strcmp(key, PIPEASIO_KEY_NODE_NAME))
-        copy_str(c->node_name, sizeof c->node_name, val);
-    /* unknown keys are ignored */
+    size_t length = strlen(source);
+    if (!capacity || length >= capacity)
+        return false;
+    memcpy(destination, source, length + 1);
+    return true;
 }
 
 static void
-validate(struct pipeasio_config *c)
+apply_kv(struct pipeasio_config *config, const char *key, const char *value)
 {
-    if (c->inputs < 0 || c->inputs > PIPEASIO_MAX_CHANNELS)
-        c->inputs = PIPEASIO_DEFAULT_INPUTS;
-    if (c->outputs < 0 || c->outputs > PIPEASIO_MAX_CHANNELS)
-        c->outputs = PIPEASIO_DEFAULT_OUTPUTS;
-
-    const int b = c->buffer_size;
-    if (!(b > 0 && (b & (b - 1)) == 0 && b >= PIPEASIO_MIN_BUFFER_SIZE
-          && b <= PIPEASIO_MAX_BUFFER_SIZE))
-        c->buffer_size = PIPEASIO_DEFAULT_BUFFER_SIZE;
-
-    if (c->sample_rate < 0)
-        c->sample_rate = 0;
+    int  parsed;
+    bool flag;
+    if (!strcmp(key, PIPEASIO_KEY_INPUTS))
+    {
+        if (pipeasio_parse_int(value, 0, PIPEASIO_MAX_CHANNELS, &parsed))
+            config->inputs = parsed;
+    }
+    else if (!strcmp(key, PIPEASIO_KEY_OUTPUTS))
+    {
+        if (pipeasio_parse_int(value, 0, PIPEASIO_MAX_CHANNELS, &parsed))
+            config->outputs = parsed;
+    }
+    else if (!strcmp(key, PIPEASIO_KEY_BUFFER_SIZE))
+    {
+        if (pipeasio_parse_int(value, PIPEASIO_MIN_BUFFER_SIZE, PIPEASIO_MAX_BUFFER_SIZE, &parsed)
+            && !(parsed & (parsed - 1)))
+            config->buffer_size = parsed;
+    }
+    else if (!strcmp(key, PIPEASIO_KEY_FIXED_BUFFER_SIZE))
+    {
+        if (pipeasio_parse_bool(value, &flag))
+            config->fixed_buffer_size = flag;
+    }
+    else if (!strcmp(key, PIPEASIO_KEY_SAMPLE_RATE))
+    {
+        if (pipeasio_parse_int(value, 0, INT_MAX, &parsed))
+            config->sample_rate = parsed;
+    }
+    else if (!strcmp(key, PIPEASIO_KEY_AUTO_CONNECT))
+    {
+        if (pipeasio_parse_bool(value, &flag))
+            config->auto_connect = flag;
+    }
+    else if (!strcmp(key, PIPEASIO_KEY_FOLLOW_DEVICE_CLOCK))
+    {
+        if (pipeasio_parse_bool(value, &flag))
+            config->follow_device_clock = flag;
+    }
+    else if (!strcmp(key, PIPEASIO_KEY_REALTIME))
+    {
+        if (pipeasio_parse_bool(value, &flag))
+            config->realtime = flag;
+    }
+    else if (!strcmp(key, PIPEASIO_KEY_OUTPUT_DEVICE))
+        copy_str(config->output_device, sizeof(config->output_device), value);
+    else if (!strcmp(key, PIPEASIO_KEY_INPUT_DEVICE))
+        copy_str(config->input_device, sizeof(config->input_device), value);
+    else if (!strcmp(key, PIPEASIO_KEY_NODE_NAME))
+        copy_str(config->node_name, sizeof(config->node_name), value);
 }
 
 bool
 pipeasio_config_load(struct pipeasio_config *out)
 {
+    char path[PIPEASIO_CONFIG_LINE_MAX];
+    char line[PIPEASIO_CONFIG_LINE_MAX];
+    bool in_section = true;
+    if (!out)
+        return false;
     pipeasio_config_defaults(out);
-
-    char path[1024];
-    if (!pipeasio_config_path(path, sizeof path))
+    if (!pipeasio_config_path(path, sizeof(path)))
         return false;
-
-    FILE *f = fopen(path, "r");
-    if (!f)
+    FILE *file = fopen(path, "r");
+    if (!file)
         return false;
-
-    char line[1024];
-    bool in_section = true; /* tolerate keys before any [section] header */
-    while (fgets(line, sizeof line, f))
+    while (fgets(line, sizeof(line), file))
     {
-        char *s = trim(line);
-        if (!*s || *s == '#' || *s == ';')
-            continue;
-        if (*s == '[')
+        size_t length  = strlen(line);
+        bool   newline = length && line[length - 1] == '\n';
+        if (!newline && length == sizeof(line) - 1)
         {
-            char *close = strchr(s, ']');
+            int ch;
+            while ((ch = fgetc(file)) != '\n' && ch != EOF)
+                ;
+            continue;
+        }
+        char *text = trim(line);
+        if (!*text || *text == '#' || *text == ';')
+            continue;
+        if (*text == '[')
+        {
+            char *close = strchr(text, ']');
             if (close)
             {
                 *close     = '\0';
-                in_section = (strcmp(s + 1, PIPEASIO_CONFIG_SECTION) == 0);
+                in_section = !strcmp(text + 1, PIPEASIO_CONFIG_SECTION);
             }
             continue;
         }
         if (!in_section)
             continue;
-
-        char *eq = strchr(s, '=');
-        if (!eq)
+        char *equals = strchr(text, '=');
+        if (!equals)
             continue;
-        *eq = '\0';
-        apply_kv(out, trim(s), trim(eq + 1));
+        *equals = '\0';
+        apply_kv(out, trim(text), trim(equals + 1));
     }
-
-    fclose(f);
-    validate(out);
+    fclose(file);
     return true;
 }

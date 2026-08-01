@@ -7,14 +7,14 @@
  *   2. it publishes default.audio.sink / default.audio.source as the JSON
  *      object {"name":"<node.name>"} (parsed with spa_json_str_object_find),
  *   3. that node appears in the registry and carries ports in the direction
- *      the driver needs - a sink we WRITE to has "in" (playback) ports, a
+ *      the driver needs: a sink we WRITE to has "in" (playback) ports, a
  *      source we READ from has "out" (capture) ports.
  *
- * audio_preferred_default_node() encodes exactly this; here we replicate it
+ * audio_preferred_default_node() encodes exactly this. Here we replicate it
  * against the live daemon so a PipeWire change (renamed key, reshaped JSON)
  * that would silently break "Follow default" fails the suite instead.
  *
- * Needs a running PipeWire daemon; exits 77 (CTest SKIP) when none is
+ * Needs a running PipeWire daemon. Exits 77 (CTest SKIP) when none is
  * reachable, or when the session reports no default sink AND no default
  * source (nothing to verify).
  *
@@ -140,7 +140,7 @@ static const struct pw_core_events core_events = {
 };
 
 /* Returns 1 if the named node is in the registry with >= 1 port in the wanted
- * direction ("in" for a sink, "out" for a source); 0 otherwise. */
+ * direction ("in" for a sink, "out" for a source). 0 otherwise. */
 static int
 node_has_port(const struct data *x, const char *name, int want_in)
 {

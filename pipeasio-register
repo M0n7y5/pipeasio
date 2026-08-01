@@ -44,8 +44,32 @@ cp -v --no-preserve mode "${prefix}/x86_64-windows/pipeasio64.dll" \
 
 # Let Wine find the ELF half next to the PE half.
 export WINEDLLPATH="${prefix}${WINEDLLPATH:+:${WINEDLLPATH}}"
-wine regsvr32 pipeasio64.dll
-code=$?
+if [ "${PIPEASIO_REGISTER_WITHOUT_LOADING:-0}" = 1 ]; then
+    wine reg add \
+        'HKCR\CLSID\{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}' \
+        /ve /t REG_SZ /d 'PipeASIO Object' /f /reg:64 &&
+    wine reg add \
+        'HKCR\CLSID\{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}\InprocServer32' \
+        /ve /t REG_SZ /d 'pipeasio64.dll' /f /reg:64 &&
+    wine reg add \
+        'HKCR\CLSID\{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}\InprocServer32' \
+        /v ThreadingModel /t REG_SZ /d Apartment /f /reg:64 &&
+    wine reg add \
+        'HKCU\Software\Wine\DllOverrides' \
+        /v pipeasio64 /t REG_SZ /d builtin /f /reg:64 &&
+    wine reg add \
+        'HKLM\Software\ASIO\PipeASIO' \
+        /v CLSID /t REG_SZ /d '{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}' /f /reg:64 &&
+    wine reg add \
+        'HKLM\Software\ASIO\PipeASIO' \
+        /v Description /t REG_SZ /d 'PipeASIO Driver' /f /reg:64
+    code=$?
+else
+    # /s: no modal success dialog - an undismissed box would block unattended
+    # runs (fresh test prefixes, AFK registrations) forever.
+    wine regsvr32 /s pipeasio64.dll
+    code=$?
+fi
 
 # Optional 32-bit WoW64 registration.
 if [ ${code} -eq 0 ] \

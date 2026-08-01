@@ -7,6 +7,7 @@
  */
 #define _GNU_SOURCE
 #include "pipeasio_config.h"
+#include "pipeasio_parse.h"
 #include "test_helpers.h"
 
 #include <stdio.h>
@@ -74,6 +75,9 @@ main(void)
         EXPECT_EQ(c.sample_rate, 0);
         EXPECT_EQ(c.auto_connect, 1);
         EXPECT_EQ(c.follow_device_clock, 0);
+        /* Literal, not the macro: a future flip of the shipped default must
+         * fail here rather than follow silently. */
+        EXPECT_EQ(c.realtime, 0);
         EXPECT_TRUE(c.output_device[0] == '\0');
         EXPECT_TRUE(c.input_device[0] == '\0');
         EXPECT_TRUE(c.node_name[0] == '\0');
@@ -197,6 +201,55 @@ main(void)
         write_cfg("[pipeasio]\ninputs = 2\n");
         pipeasio_config_load(&c);
         EXPECT_EQ(c.realtime, PIPEASIO_DEFAULT_REALTIME);
+    }
+
+    TEST_GROUP("numeric junk overflow duplicates and directions")
+    {
+        write_cfg("[pipeasio]\n"
+                  "inputs = 4junk\n"
+                  "outputs = 999999999999999999999999\n"
+                  "buffer_size = 256 trailing\n");
+        struct pipeasio_config c;
+        pipeasio_config_load(&c);
+        EXPECT_EQ(c.inputs, PIPEASIO_DEFAULT_INPUTS);
+        EXPECT_EQ(c.outputs, PIPEASIO_DEFAULT_OUTPUTS);
+        EXPECT_EQ(c.buffer_size, PIPEASIO_DEFAULT_BUFFER_SIZE);
+
+        write_cfg("[pipeasio]\ninputs = 1\ninputs = 3\noutputs = 0\n");
+        pipeasio_config_load(&c);
+        EXPECT_EQ(c.inputs, 3);
+        EXPECT_EQ(c.outputs, 0);
+
+        write_cfg("[pipeasio]\ninputs = 0\noutputs = 2\n");
+        pipeasio_config_load(&c);
+        EXPECT_EQ(c.inputs, 0);
+        EXPECT_EQ(c.outputs, 2);
+
+        write_cfg("[pipeasio]\ninputs = 0\noutputs = 0\n");
+        EXPECT_TRUE(pipeasio_config_load(&c));
+        EXPECT_EQ(c.inputs, 0);
+        EXPECT_EQ(c.outputs, 0);
+    }
+
+    TEST_GROUP("line and destination boundaries")
+    {
+        char                   value[PIPEASIO_DEVICE_NAME_MAX];
+        char                   config[PIPEASIO_CONFIG_LINE_MAX + 128];
+        struct pipeasio_config c;
+        memset(value, 'a', sizeof(value));
+        value[sizeof(value) - 1] = '\0';
+        snprintf(config, sizeof(config), "[pipeasio]\noutput_device = %s\n", value);
+        write_cfg(config);
+        pipeasio_config_load(&c);
+        EXPECT_TRUE(strcmp(c.output_device, value) == 0);
+
+        memset(config, 'x', sizeof(config));
+        memcpy(config, "[pipeasio]\noutput_device = ", 27);
+        config[sizeof(config) - 2] = '\n';
+        config[sizeof(config) - 1] = '\0';
+        write_cfg(config);
+        pipeasio_config_load(&c);
+        EXPECT_EQ(c.output_device[0], '\0');
     }
 
     remove_cfg();

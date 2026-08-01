@@ -31,14 +31,14 @@ extern "C"
 {
 #endif
 
-    /* Config is read by the unixlib; native builds use src/config.c directly. */
+    /* Config is read by the unixlib. Native builds use src/config.c directly. */
     bool pipeasio_wow64_load_config(struct pipeasio_config *out);
 
     /* Live-reload fingerprint.  Zero means no config file. */
     uint64_t pipeasio_wow64_config_fingerprint(void);
 
     /* Bind the shared callback buffer and channel masks to the unix RT loop. */
-    void pipeasio_wow64_bind_rt(audio_client_t *client, float *buffer_base, int buffer_size,
+    bool pipeasio_wow64_bind_rt(audio_client_t *client, float *buffer_base, int buffer_size,
                                 int n_in, int n_out, const bool *in_active, const bool *out_active);
 
 #ifdef __cplusplus

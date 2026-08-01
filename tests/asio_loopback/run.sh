@@ -28,7 +28,14 @@ probe="${here}/asio_loopback.exe.so"
 
 seconds="${1:-6}"
 : "${PROBE_PREFIX:=$HOME/.cache/pipeasio-probe}"
-: "${PIPEASIO_ROOT:=$HOME/.local}"
+if [[ -n "${PIPEASIO_ROOT:-}" && -n "${PIPEASIO_PREFIX:-}"
+      && "$PIPEASIO_ROOT" != "$PIPEASIO_PREFIX" ]]; then
+    echo "[loop] PIPEASIO_ROOT and PIPEASIO_PREFIX must name the same install" >&2
+    exit 1
+fi
+: "${PIPEASIO_ROOT:=${PIPEASIO_PREFIX:-$HOME/.local}}"
+PIPEASIO_PREFIX="$PIPEASIO_ROOT"
+export PIPEASIO_ROOT PIPEASIO_PREFIX
 : "${WINEDEBUG:=-all,err+all}"
 : "${SIZES:=0}"
 : "${RATES:=0}"
@@ -45,7 +52,7 @@ for tool in pw-cli pw-link wine; do
     command -v "$tool" >/dev/null || { echo "[loop] SKIP: $tool not found"; exit 77; }
 done
 pw-cli info 0 >/dev/null 2>&1 || { echo "[loop] SKIP: no PipeWire daemon"; exit 77; }
-[[ -f "${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio.dll.so" ]] \
+[[ -f "${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio64.dll.so" ]] \
     || { echo "[loop] SKIP: driver not installed under $PIPEASIO_ROOT (cmake --install)"; exit 77; }
 
 if [[ -n "${FRESH:-}" ]]; then
@@ -57,6 +64,25 @@ mkdir -p "$PROBE_PREFIX"
 export WINEPREFIX="$PROBE_PREFIX"
 export WINEDLLPATH="${PIPEASIO_ROOT}/lib/wine"
 export WINEDEBUG
+_installed_so="${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio64.dll.so"
+_sanitized=0
+_imports="$(nm -D --undefined-only "$_installed_so" 2>/dev/null || true)"
+if grep -q '__asan_init' <<<"$_imports"; then
+    _sanitized=1
+    _asan="$(gcc -print-file-name=libasan.so)"
+    _ubsan="$(gcc -print-file-name=libubsan.so)"
+    if [[ ! -f "$_asan" || ! -f "$_ubsan" ]]; then
+        echo "[loop] instrumented driver requires libasan and libubsan" >&2
+        exit 1
+    fi
+    echo "[loop] ASan build detected; enabling fail-fast sanitizer options"
+    _sanitize_asan_options="abort_on_error=1:halt_on_error=1:print_stacktrace=1:detect_leaks=0:symbolize=1:verify_asan_link_order=0"
+    _sanitize_ubsan_options="halt_on_error=1:print_stacktrace=1"
+fi
+if [[ "@PIPEASIO_ASAN@" == "ON" && "$_sanitized" != 1 ]]; then
+    echo "[loop] sanitizer build expected an instrumented installed driver" >&2
+    exit 1
+fi
 
 if [[ ! -d "$PROBE_PREFIX/drive_c" ]]; then
     echo "[loop] creating wineprefix at $PROBE_PREFIX"
@@ -64,8 +90,14 @@ if [[ ! -d "$PROBE_PREFIX/drive_c" ]]; then
 fi
 if ! wine reg query 'HKLM\Software\ASIO\PipeASIO' >/dev/null 2>&1; then
     echo "[loop] registering PipeASIO in $PROBE_PREFIX"
-    "${PIPEASIO_ROOT}/bin/pipeasio-register" \
-        || { echo "[loop] pipeasio-register failed"; exit 1; }
+    if [[ "$_sanitized" == 1 ]]; then
+        PIPEASIO_REGISTER_WITHOUT_LOADING=1 \
+            "${PIPEASIO_ROOT}/bin/pipeasio-register" \
+            || { echo "[loop] pipeasio-register failed"; exit 1; }
+    else
+        "${PIPEASIO_ROOT}/bin/pipeasio-register" \
+            || { echo "[loop] pipeasio-register failed"; exit 1; }
+    fi
 fi
 
 # Hermetic config: env overrides shield the run from the user's
@@ -94,7 +126,7 @@ pw-cli -m create-node adapter \
 sink_pid=$!
 
 # Linker watch-loop: the driver's ports (re)appear per phase as buffers are
-# re-created, so just keep trying; pw-link is idempotent ("File exists").
+# re-created, so just keep trying. pw-link is idempotent ("File exists").
 (
     while :; do
         pw-link "$node:out_1" "$sink:playback_FL" 2>/dev/null || true
@@ -107,6 +139,12 @@ sink_pid=$!
 linker_pid=$!
 
 # --- run ----------------------------------------------------------------------
+if [[ "$_sanitized" == 1 ]]; then
+    unset LD_PRELOAD
+    export ASAN_OPTIONS="$_sanitize_asan_options"
+    export UBSAN_OPTIONS="$_sanitize_ubsan_options"
+fi
+
 overall=0
 for rate in $RATES; do
     export PIPEASIO_SAMPLE_RATE="$rate"

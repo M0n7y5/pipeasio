@@ -122,9 +122,9 @@ endif()
 message(STATUS "Wine include dirs: ${WINE_INCLUDE_DIRS}")
 
 function(add_wine_dll)
-    set(_options "")
+    set(_options NO_INSTALL)
     set(_one     NAME SPEC)
-    set(_multi   SOURCES INCLUDES LIBS LDFLAGS)
+    set(_multi   SOURCES INCLUDES LIBS LDFLAGS DEFINES)
     cmake_parse_arguments(WDL "${_options}" "${_one}" "${_multi}" ${ARGN})
 
     if(NOT WDL_NAME OR NOT WDL_SPEC OR NOT WDL_SOURCES)
@@ -144,6 +144,7 @@ function(add_wine_dll)
     target_include_directories(${_objlib} PRIVATE
         ${WDL_INCLUDES}
         ${WINE_INCLUDE_DIRS})
+    target_compile_definitions(${_objlib} PRIVATE ${WDL_DEFINES})
     target_compile_options(${_objlib} PRIVATE
         -D_REENTRANT
         -Wall -pipe
@@ -213,23 +214,24 @@ function(add_wine_dll)
 
     add_custom_target(${WDL_NAME} ALL DEPENDS ${_pe} ${_so})
 
-    # Install into the Wine arch layout, plus the unified-name symlinks that
-    # Wine 10+ looks up.
-    install(FILES ${_pe}
-            DESTINATION lib/wine/x86_64-windows)
-    install(FILES ${_so}
-            DESTINATION lib/wine/x86_64-unix
-            PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
-                        GROUP_READ GROUP_EXECUTE
-                        WORLD_READ WORLD_EXECUTE)
-    # $ENV{DESTDIR} keeps staged installs (DESTDIR=pkg cmake --install) from
-    # writing symlinks into the live prefix; install(CODE) does not apply
-    # DESTDIR automatically the way install(FILES) does.
-    install(CODE "
-        file(CREATE_LINK ${WDL_NAME}.dll
-             \$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/lib/wine/x86_64-windows/pipeasio.dll
-             SYMBOLIC)
-        file(CREATE_LINK ${WDL_NAME}.dll.so
-             \$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/lib/wine/x86_64-unix/pipeasio.dll.so
-             SYMBOLIC)")
+    if(NOT WDL_NO_INSTALL)
+        # Install into the Wine arch layout, plus the unified-name symlinks
+        # that Wine 10+ looks up.
+        install(FILES ${_pe}
+                DESTINATION lib/wine/x86_64-windows)
+        install(FILES ${_so}
+                DESTINATION lib/wine/x86_64-unix
+                PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                            GROUP_READ GROUP_EXECUTE
+                            WORLD_READ WORLD_EXECUTE)
+        # $ENV{DESTDIR} keeps staged installs from writing symlinks into the
+        # live prefix; install(CODE) does not apply it like install(FILES).
+        install(CODE "
+            file(CREATE_LINK ${WDL_NAME}.dll
+                 \$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/lib/wine/x86_64-windows/pipeasio.dll
+                 SYMBOLIC)
+            file(CREATE_LINK ${WDL_NAME}.dll.so
+                 \$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/lib/wine/x86_64-unix/pipeasio.dll.so
+                 SYMBOLIC)")
+    endif()
 endfunction()

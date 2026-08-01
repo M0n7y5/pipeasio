@@ -37,3 +37,7 @@ set_tests_properties(asio_loopback PROPERTIES
     TIMEOUT 300
     RESOURCE_LOCK wineprefix
     LABELS "integration;wine;pipewire")
+if(PIPEASIO_ASAN)
+    set_property(TEST asio_loopback APPEND PROPERTY LABELS pipeasio-sanitize)
+    set_tests_properties(asio_loopback PROPERTIES FIXTURES_REQUIRED sanitizer_artifacts)
+endif()

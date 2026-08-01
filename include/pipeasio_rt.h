@@ -21,6 +21,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #include "audio.h"
 
@@ -29,12 +30,37 @@ extern "C"
 {
 #endif
 
-    /* Does not gather/scatter ports, toggle host_buffer_index, or check Running. */
-    void pipeasio_host_buffer_switch(void *This, int32_t buffer_index, audio_nframes_t add_samples,
-                                     uint64_t time_nsec);
+    typedef enum pipeasio_host_call_kind
+    {
+        PIPEASIO_HOST_PROCESS,
+        PIPEASIO_HOST_SAMPLE_RATE,
+        PIPEASIO_HOST_CONFIG_RESET,
+        PIPEASIO_HOST_TIME_INFO
+    } pipeasio_host_call_kind;
 
-    /* Nonzero when host callbacks are valid for process-time buffer switches. */
-    int pipeasio_host_is_running(void *This);
+    typedef struct pipeasio_host_call_token
+    {
+        void                            *owner;
+        void                            *callbacks;
+        void                            *gate;
+        void                            *idle_event;
+        pipeasio_host_call_kind          kind;
+        bool                             counted;
+        bool                             admitted;
+        struct pipeasio_host_call_token *previous;
+    } pipeasio_host_call_token;
+
+    bool pipeasio_host_call_begin(void *owner, pipeasio_host_call_kind kind,
+                                  pipeasio_host_call_token *token);
+    void pipeasio_host_call_end(pipeasio_host_call_token *token);
+    bool pipeasio_host_call_is_reentrant(void *owner);
+
+    void    pipeasio_host_call_process(pipeasio_host_call_token *token, int32_t buffer_index,
+                                       audio_nframes_t add_samples, uint64_t time_nsec);
+    int32_t pipeasio_host_call_notify(pipeasio_host_call_token *token, int32_t selector,
+                                      int32_t value, void *message, double *opt);
+    void    pipeasio_host_call_sample_rate(pipeasio_host_call_token *token,
+                                           audio_nframes_t           sample_rate);
 
 #ifdef __cplusplus
 }

@@ -23,6 +23,7 @@
 #include "audio.h"
 #include "pipeasio_config.h"
 #include "pipeasio_offsets.h"
+#include "pipeasio_pw_buffer.h"
 #include "pipeasio_rt_priority.h"
 #ifndef PIPEASIO_AUDIO_UNIXLIB
 #define WIN32_LEAN_AND_MEAN
@@ -33,7 +34,7 @@
 
 #include <stdlib.h> /* getenv for PIPEASIO_DEBUG */
 
-/* Raw stderr logging; TRACE is gated by PIPEASIO_DEBUG. */
+/* Raw stderr logging. TRACE is gated by PIPEASIO_DEBUG. */
 #undef TRACE
 #undef WARN
 #undef ERR
@@ -119,7 +120,7 @@ struct audio_rt_state
     DWORD       win_tid;
     pthread_t   ptid;            /* captured inside the spawned thread */
     int         rt_priority;     /* current SCHED_FIFO priority, 0 = none */
-    bool        want_realtime;   /* from config.ini; PIPEASIO_RT_PRIORITY wins */
+    bool        want_realtime;   /* from config.ini, PIPEASIO_RT_PRIORITY wins */
     atomic_bool ready;           /* released once ptid is captured */
     void *(*user_entry)(void *); /* PipeWire-provided entry */
     void *user_arg;
@@ -235,7 +236,7 @@ audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
                                     &(struct sched_param){ .sched_priority = priority });
     if (err == EPERM)
     {
-        /* RLIMIT_RTPRIO may cap us below the default; retry at the cap. */
+        /* RLIMIT_RTPRIO may cap us below the default. Retry at the cap. */
         struct rlimit rl;
         if (getrlimit(RLIMIT_RTPRIO, &rl) == 0 && rl.rlim_cur > 0 && rl.rlim_cur != RLIM_INFINITY
             && rl.rlim_cur < (rlim_t)priority)
@@ -285,12 +286,12 @@ static const struct spa_thread_utils_methods audio_rt_methods = {
 
 struct audio_client
 {
-    char            *name;
-    audio_nframes_t  sample_rate;
-    audio_nframes_t  buffer_size;
-    audio_nframes_t  forced_rate;      /* 0 = follow graph, else FORCE_RATE */
-    bool             follow_device;    /* skip FORCE_QUANTUM: follow target clock */
-    _Atomic uint32_t observed_quantum; /* last graph quantum seen while following */
+    char                   *name;
+    _Atomic audio_nframes_t sample_rate;
+    audio_nframes_t         buffer_size;
+    audio_nframes_t         forced_rate;      /* 0 = follow graph, else FORCE_RATE */
+    bool                    follow_device;    /* skip FORCE_QUANTUM: follow target clock */
+    _Atomic uint32_t        observed_quantum; /* last graph quantum seen while following */
 
     struct pw_thread_loop *loop;
     struct pw_context     *ctx;
@@ -304,12 +305,8 @@ struct audio_client
 
     audio_process_cb     process_cb;
     void                *process_cb_arg;
-    audio_buffer_size_cb buffer_size_cb;
-    void                *buffer_size_cb_arg;
     audio_sample_rate_cb sample_rate_cb;
     void                *sample_rate_cb_arg;
-    audio_latency_cb     latency_cb;
-    void                *latency_cb_arg;
 
     bool active;
 
@@ -325,7 +322,18 @@ struct audio_client
     uint32_t       cap_ports;
 
     /* Last spa_io_position.clock.nsec - feeds audio_get_time_nsec. */
-    uint64_t last_clock_nsec;
+    _Atomic uint64_t   last_clock_nsec;
+    bool               debug_enabled;
+    bool               quantum_warned;
+    uint64_t           cycle_count;
+    struct spa_source *diagnostic_event;
+    _Atomic uint32_t   diagnostic_kind;
+    _Atomic uint32_t   diagnostic_quantum;
+    _Atomic uint32_t   diagnostic_buffer_size;
+    _Atomic uint32_t   diagnostic_rate_num;
+    _Atomic uint32_t   diagnostic_rate_denom;
+    _Atomic uint64_t   diagnostic_cycle;
+    _Atomic uint64_t   diagnostic_thread;
 
     /* Registry walker */
 
@@ -343,6 +351,12 @@ struct audio_client
     char                default_source_name[256];
     _Atomic bool        default_changed; /* metadata cb set this on a real switch */
 
+    uint32_t default_metadata_id;
+    bool     defaults_baselined;
+    uint64_t default_sink_fingerprint;
+    uint64_t default_source_fingerprint;
+    bool     default_sink_resolved;
+    bool     default_source_resolved;
     /* Discovered remote nodes (hardware + apps) - cached for assembling
      * full port names ("node:port") and for audio_connect lookups. */
     struct audio_node_info **nodes;
@@ -350,11 +364,14 @@ struct audio_client
     uint32_t                 cap_nodes;
 
     /* Discovered remote ports.  Each entry is a heap audio_port_t with
-     * pw_node_id / pw_port_id / name / type / flags filled in; the
+     * pw_node_id / pw_port_id / name / type / flags filled in. The
      * filter-side fields stay zero. */
-    audio_port_t **discovered;
-    uint32_t       n_discovered;
-    uint32_t       cap_discovered;
+    audio_port_t    **discovered;
+    uint32_t          n_discovered;
+    uint32_t          cap_discovered;
+    struct pw_proxy **links;
+    uint32_t          n_links;
+    uint32_t          cap_links;
 };
 
 struct audio_node_info
@@ -369,16 +386,17 @@ struct audio_port
 {
     audio_client_t       *client;
     char                 *name;
-    char                 *type;
+    char                 *port_name;
+    char                 *node_name;
+    uint32_t              port_id;
     uint64_t              flags;
     audio_latency_range_t latency[2]; /* [CAPTURE, PLAYBACK] */
 
     /* PipeWire port handle */
 
-    enum pw_direction direction;
-    void             *pw_filter_port; /* returned by pw_filter_add_port */
-    struct pw_buffer
-            *cycle_buffer; /* this cycle's dequeued buffer; datas[0].data is the live mmap */
+    enum pw_direction           direction;
+    void                       *pw_filter_port; /* returned by pw_filter_add_port */
+    _Atomic(struct pw_buffer *) cycle_buffer;
 
     /* --- PipeWire registry IDs (for audio_connect link-factory) -- */
 
@@ -429,29 +447,42 @@ static const struct pw_registry_events audio_registry_events = {
 static void audio_teardown_filter(audio_client_t *c);
 static void audio_sync(audio_client_t *c);
 static void audio_adopt_own_ports(audio_client_t *c);
+static void audio_refresh_defaults(audio_client_t *c);
+static void audio_diagnostic_event(void *data, uint64_t count);
 
 /* Lifecycle. */
 
 audio_client_t *
 audio_open(const char *client_name, uint32_t options, uint32_t *status)
 {
-    (void)options; /* legacy option flags do not map onto PipeWire */
+    (void)options;
     if (status)
         *status = 0;
-
     audio_client_t *c = calloc(1, sizeof(*c));
     if (!c)
     {
-        ERR("out of memory allocating audio_client\n");
         if (status)
             *status = 1;
         return NULL;
     }
-
-    c->name        = strdup(client_name ? client_name : "PipeASIO");
-    c->sample_rate = AUDIO_DEFAULT_SAMPLE_RATE;
-    c->buffer_size = AUDIO_DEFAULT_BUFFER_SIZE;
-    c->our_node_id = SPA_ID_INVALID;
+    c->name = strdup(client_name ? client_name : "PipeASIO");
+    if (!c->name)
+        goto fail_alloc;
+    atomic_init(&c->sample_rate, AUDIO_DEFAULT_SAMPLE_RATE);
+    atomic_init(&c->last_clock_nsec, 0);
+    atomic_init(&c->observed_quantum, 0);
+    atomic_init(&c->default_changed, false);
+    atomic_init(&c->diagnostic_kind, 0);
+    atomic_init(&c->diagnostic_quantum, 0);
+    atomic_init(&c->diagnostic_buffer_size, 0);
+    atomic_init(&c->diagnostic_rate_num, 0);
+    atomic_init(&c->diagnostic_rate_denom, 0);
+    atomic_init(&c->diagnostic_cycle, 0);
+    atomic_init(&c->diagnostic_thread, 0);
+    c->debug_enabled       = getenv("PIPEASIO_DEBUG") != NULL;
+    c->buffer_size         = AUDIO_DEFAULT_BUFFER_SIZE;
+    c->our_node_id         = SPA_ID_INVALID;
+    c->default_metadata_id = SPA_ID_INVALID;
 #ifndef PIPEASIO_AUDIO_UNIXLIB
     atomic_init(&c->rt.ready, false);
 #endif
@@ -478,7 +509,7 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
 
     /* The context's acquire started the data loop with default pthread utils.
      * Stop (and join) it through those SAME utils before installing the Wine
-     * bridge; joining through the bridge would see win_handle == NULL and leak
+     * bridge. Joining through the bridge would see win_handle == NULL and leak
      * the original thread.  audio_activate restarts the loop through the
      * bridge, so the RT thread is CreateThread'd and has a Wine TEB. */
     pw_data_loop_stop(c->data_loop);
@@ -503,6 +534,8 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
         ERR("pw_context_connect failed (is the PipeWire daemon running?)\n");
         goto fail_started;
     }
+    c->diagnostic_event
+            = pw_loop_add_event(pw_thread_loop_get_loop(c->loop), audio_diagnostic_event, c);
 
     /* Bind the registry and add listeners so we can walk the graph for
      * audio_get_ports / audio_port_by_name / audio_connect.  Then sync
@@ -519,6 +552,9 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
      * the object is bound during the first sync's global emission, so its
      * default.audio.sink/source values only land on the next round-trip. */
     audio_sync(c);
+    audio_refresh_defaults(c);
+    c->defaults_baselined = true;
+    atomic_store_explicit(&c->default_changed, false, memory_order_release);
 
     TRACE("audio_open(%s) -> %p [build " PIPEASIO_BUILD_TAG "] "
           "[pipewire headers %s, library %s] "
@@ -555,6 +591,11 @@ audio_close(audio_client_t *c)
     if (c->loop)
     {
         pw_thread_loop_lock(c->loop);
+        if (c->diagnostic_event)
+        {
+            pw_loop_destroy_source(pw_thread_loop_get_loop(c->loop), c->diagnostic_event);
+            c->diagnostic_event = NULL;
+        }
         if (c->default_metadata)
         {
             spa_hook_remove(&c->default_metadata_listener);
@@ -592,22 +633,19 @@ audio_close(audio_client_t *c)
     for (uint32_t i = 0; i < c->n_discovered; i++)
     {
         free(c->discovered[i]->name);
-        free(c->discovered[i]->type);
+        free(c->discovered[i]->port_name);
+        free(c->discovered[i]->node_name);
         free(c->discovered[i]);
     }
     free(c->discovered);
-
-    /* Free port array and any still-registered audio_port_t.  asio.c is
-     * supposed to call audio_port_unregister for each port before closing,
-     * but defend against leaks. */
     for (uint32_t i = 0; i < c->n_ports; i++)
     {
         audio_port_t *p = c->ports[i];
         free(p->name);
-        free(p->type);
         free(p);
     }
     free(c->ports);
+    free(c->links);
 
     free(c->name);
     free(c);
@@ -615,18 +653,21 @@ audio_close(audio_client_t *c)
 }
 
 /* Helper - tear down the pw_filter and per-port resources.
- * Safe to call multiple times; clears all state to "not active". */
+ * Safe to call multiple times. Clears all state to "not active". */
 static void
 audio_teardown_filter(audio_client_t *c)
 {
-    /* Stop the RT data loop before destroying the filter it processes.
-     * Paired with the pw_data_loop_start in audio_activate so re-activation
-     * (DisposeBuffers -> CreateBuffers) starts from a stopped loop, exactly
-     * like the first activation. */
     if (c->data_loop && c->loop)
     {
         pw_thread_loop_lock(c->loop);
         pw_data_loop_stop(c->data_loop);
+        pw_thread_loop_unlock(c->loop);
+    }
+    if (c->n_links)
+    {
+        pw_thread_loop_lock(c->loop);
+        while (c->n_links)
+            pw_proxy_destroy(c->links[--c->n_links]);
         pw_thread_loop_unlock(c->loop);
     }
     if (c->filter)
@@ -636,11 +677,11 @@ audio_teardown_filter(audio_client_t *c)
         c->filter = NULL;
         pw_thread_loop_unlock(c->loop);
     }
-    for (uint32_t i = 0; i < c->n_ports; i++)
+    for (uint32_t i = 0; i < c->n_ports; ++i)
     {
-        audio_port_t *p   = c->ports[i];
-        p->pw_filter_port = NULL;
-        p->cycle_buffer   = NULL;
+        audio_port_t *port   = c->ports[i];
+        port->pw_filter_port = NULL;
+        atomic_store_explicit(&port->cycle_buffer, NULL, memory_order_release);
     }
 }
 
@@ -656,6 +697,9 @@ audio_activate(audio_client_t *c)
         ERR("audio_activate called with no ports registered\n");
         return false;
     }
+    c->quantum_warned = false;
+    c->cycle_count    = 0;
+    atomic_store_explicit(&c->diagnostic_kind, 0, memory_order_release);
 
     const size_t bsize_samples = c->buffer_size;
     const size_t bsize_bytes   = bsize_samples * sizeof(audio_sample_t);
@@ -674,12 +718,13 @@ audio_activate(audio_client_t *c)
         pw_properties_setf(filter_props, PW_KEY_NODE_FORCE_QUANTUM, "%u", (unsigned)bsize_samples);
     if (c->forced_rate)
         pw_properties_setf(filter_props, PW_KEY_NODE_FORCE_RATE, "%u", (unsigned)c->forced_rate);
+    audio_nframes_t sample_rate = atomic_load_explicit(&c->sample_rate, memory_order_acquire);
     pw_properties_setf(filter_props, PW_KEY_NODE_LATENCY, "%u/%u", (unsigned)bsize_samples,
-                       (unsigned)c->sample_rate);
+                       (unsigned)sample_rate);
     TRACE("audio_activate: follow_device=%d quantum=%u forced_rate=%u (0=follow graph) "
           "latency=%u/%u\n",
           (int)c->follow_device, (unsigned)bsize_samples, (unsigned)c->forced_rate,
-          (unsigned)bsize_samples, (unsigned)c->sample_rate);
+          (unsigned)bsize_samples, (unsigned)sample_rate);
 
     pw_thread_loop_lock(c->loop);
 
@@ -693,7 +738,7 @@ audio_activate(audio_client_t *c)
     }
 
     /* Add every registered port to the filter.  The FORMAT_DSP property locks
-     * each port to F32 DSP mono; the buffers param requests 2 buffers of one
+     * each port to F32 DSP mono. The buffers param requests 2 buffers of one
      * ASIO period.  PW_FILTER_PORT_FLAG_MAP_BUFFERS makes pw_filter mmap the
      * daemon's shared buffer memory into datas[0].data, so the ASIO host
      * reads/writes the live buffer directly (see audio_on_process). */
@@ -818,7 +863,7 @@ audio_activate(audio_client_t *c)
 
     c->active = true;
     TRACE("audio_activate: %u ports, %u-sample buffers, %u Hz\n", c->n_ports, c->buffer_size,
-          c->sample_rate);
+          atomic_load_explicit(&c->sample_rate, memory_order_acquire));
     return true;
 
 fail:
@@ -849,7 +894,7 @@ audio_get_client_name(audio_client_t *c)
 audio_nframes_t
 audio_get_sample_rate(audio_client_t *c)
 {
-    return c ? c->sample_rate : 0;
+    return c ? atomic_load_explicit(&c->sample_rate, memory_order_acquire) : 0;
 }
 
 audio_nframes_t
@@ -864,8 +909,6 @@ audio_set_buffer_size(audio_client_t *c, audio_nframes_t nframes)
     if (!c || !nframes)
         return false;
     c->buffer_size = nframes;
-    if (c->buffer_size_cb)
-        c->buffer_size_cb(nframes, c->buffer_size_cb_arg);
     /* Applied by the next audio_activate. */
     return true;
 }
@@ -877,7 +920,7 @@ audio_set_forced_rate(audio_client_t *c, audio_nframes_t rate)
         return;
     c->forced_rate = rate;
     if (rate)
-        c->sample_rate = rate; /* report the pinned rate immediately */
+        atomic_store_explicit(&c->sample_rate, rate, memory_order_release);
 }
 
 void
@@ -909,310 +952,268 @@ audio_observed_quantum(audio_client_t *c)
 uint64_t
 audio_get_time_nsec(audio_client_t *c)
 {
-    return c ? c->last_clock_nsec : 0;
+    return c ? atomic_load_explicit(&c->last_clock_nsec, memory_order_acquire) : 0;
 }
 
 /* Ports. */
 
 audio_port_t *
-audio_port_register(audio_client_t *c, const char *port_name, const char *port_type, uint64_t flags,
-                    uint64_t buffer_size)
+audio_port_register(audio_client_t *c, const char *port_name, uint64_t flags, uint32_t channel)
 {
-    (void)buffer_size; /* asio.c passes the channel index here, not a size */
-    if (!c || !port_name)
+    audio_port_t *port;
+    char         *owned_name;
+    (void)channel;
+    if (!c || !port_name || !port_name[0] || strlen(port_name) >= 32
+        || (!(flags & AUDIO_PORT_IS_INPUT) == !(flags & AUDIO_PORT_IS_OUTPUT)))
         return NULL;
-
-    audio_port_t *p = calloc(1, sizeof(*p));
-    if (!p)
+    owned_name = strdup(port_name);
+    if (!owned_name)
         return NULL;
-
-    p->client = c;
-    p->name   = strdup(port_name);
-    p->type   = strdup(port_type ? port_type : AUDIO_DEFAULT_TYPE);
-    if (!p->name || !p->type)
+    port = calloc(1, sizeof(*port));
+    if (!port)
     {
-        free(p->name);
-        free(p->type);
-        free(p);
+        free(owned_name);
         return NULL;
     }
-    p->flags     = flags;
-    p->direction = (flags & AUDIO_PORT_IS_INPUT) ? PW_DIRECTION_INPUT : PW_DIRECTION_OUTPUT;
-
     if (c->n_ports == c->cap_ports)
     {
-        uint32_t       new_cap = c->cap_ports ? c->cap_ports * 2 : 16;
-        audio_port_t **grown   = realloc(c->ports, new_cap * sizeof(*grown));
-        if (!grown)
+        uint32_t       capacity = c->cap_ports ? c->cap_ports * 2u : 16u;
+        audio_port_t **ports    = realloc(c->ports, (size_t)capacity * sizeof(*ports));
+        if (!ports)
         {
-            free(p->name);
-            free(p->type);
-            free(p);
+            free(port);
+            free(owned_name);
             return NULL;
         }
-        c->ports     = grown;
-        c->cap_ports = new_cap;
+        c->ports     = ports;
+        c->cap_ports = capacity;
     }
-    c->ports[c->n_ports++] = p;
-    return p;
+    port->client    = c;
+    port->name      = owned_name;
+    port->flags     = flags;
+    port->direction = (flags & AUDIO_PORT_IS_INPUT) ? PW_DIRECTION_INPUT : PW_DIRECTION_OUTPUT;
+    atomic_init(&port->cycle_buffer, NULL);
+    c->ports[c->n_ports++] = port;
+    return port;
 }
 
 bool
-audio_port_unregister(audio_client_t *c, audio_port_t *p)
+audio_port_unregister(audio_client_t *c, audio_port_t *port)
 {
-    if (!c || !p)
+    if (!c || !port)
         return false;
-    for (uint32_t i = 0; i < c->n_ports; i++)
-    {
-        if (c->ports[i] == p)
-        {
-            memmove(&c->ports[i], &c->ports[i + 1], (c->n_ports - i - 1) * sizeof(*c->ports));
-            c->n_ports--;
+    uint32_t index;
+    for (index = 0; index < c->n_ports; ++index)
+        if (c->ports[index] == port)
             break;
-        }
-    }
-    /* Precondition: the caller (asio.c Release/DisposeBuffers) has already run
-     * audio_deactivate -> audio_teardown_filter, which NULLs every
-     * p->pw_filter_port, so no live filter port is orphaned by freeing p here. */
-    free(p->name);
-    free(p->type);
-    free(p);
+    if (index == c->n_ports)
+        return false;
+    memmove(&c->ports[index], &c->ports[index + 1],
+            (size_t)(c->n_ports - index - 1) * sizeof(*c->ports));
+    --c->n_ports;
+    free(port->name);
+    free(port);
     return true;
 }
 
 void *
-audio_port_get_buffer(audio_port_t *p, audio_nframes_t nframes)
+audio_port_get_buffer(audio_port_t *port, audio_nframes_t frames)
 {
-    (void)nframes; /* the filter always runs at client->buffer_size */
-    if (!p || !p->cycle_buffer)
+    struct pw_buffer *buffer;
+    void             *region = NULL;
+    if (!port)
         return NULL;
-    return p->cycle_buffer->buffer->datas[0].data;
+    buffer = atomic_load_explicit(&port->cycle_buffer, memory_order_acquire);
+    return pipeasio_pw_validate_region(buffer, frames, &region, NULL) ? region : NULL;
 }
 
 audio_nframes_t
-audio_port_buffer_avail_frames(const audio_port_t *p)
+audio_port_buffer_avail_frames(const audio_port_t *port)
 {
-    if (!p || !p->cycle_buffer)
+    struct pw_buffer *buffer;
+    struct spa_data  *data;
+    if (!port || !(buffer = atomic_load_explicit(&port->cycle_buffer, memory_order_acquire))
+        || !buffer->buffer || buffer->buffer->n_datas < 1)
         return 0;
-    return (audio_nframes_t)(p->cycle_buffer->buffer->datas[0].maxsize / sizeof(audio_sample_t));
+    data = &buffer->buffer->datas[0];
+    if (!data->chunk || data->maxsize % sizeof(audio_sample_t)
+        || data->chunk->offset > data->maxsize)
+        return 0;
+    return (data->maxsize - data->chunk->offset) / sizeof(audio_sample_t);
 }
 
-const char *
-audio_port_name(const audio_port_t *p)
+bool
+audio_port_get_name(const audio_port_t *port, char *out, size_t size)
 {
-    return p ? p->name : NULL;
-}
-const char *
-audio_port_type(const audio_port_t *p)
-{
-    return p ? p->type : NULL;
-}
-
-audio_port_t *
-audio_port_by_name(audio_client_t *c, const char *port_name)
-{
-    if (!c || !port_name)
-        return NULL;
-    pw_thread_loop_lock(c->loop);
-    for (uint32_t i = 0; i < c->n_discovered; i++)
-    {
-        audio_port_t *p = c->discovered[i];
-        if (p->name && !strcmp(p->name, port_name))
-        {
-            pw_thread_loop_unlock(c->loop);
-            return p;
-        }
-    }
-    /* Also check our own (filter) ports, since asio.c does pass our own
-     * names through audio_port_by_name in some legacy paths. */
-    for (uint32_t i = 0; i < c->n_ports; i++)
-    {
-        audio_port_t *p = c->ports[i];
-        if (p->name && !strcmp(p->name, port_name))
-        {
-            pw_thread_loop_unlock(c->loop);
-            return p;
-        }
-    }
-    pw_thread_loop_unlock(c->loop);
-    return NULL;
+    if (!out || !size)
+        return false;
+    out[0] = '\0';
+    if (!port || !port->name || strlen(port->name) >= size)
+        return false;
+    memcpy(out, port->name, strlen(port->name) + 1);
+    return true;
 }
 
-/* Resolve the PipeWire default node only when it has a matching port. */
+static int
+audio_queue_output(void *context, struct pw_buffer *buffer)
+{
+    audio_port_t *port = context;
+    return port->pw_filter_port ? pw_filter_queue_buffer(port->pw_filter_port, buffer) : -1;
+}
+
+bool
+audio_port_publish_output(audio_port_t *port, const audio_sample_t *source, audio_nframes_t frames,
+                          bool admitted, bool active)
+{
+    if (!port || port->direction != PW_DIRECTION_OUTPUT)
+        return false;
+    return pipeasio_pw_finish_output(&port->cycle_buffer, source, frames, admitted, active,
+                                     audio_queue_output, port);
+}
+static bool
+audio_endpoint_key(const audio_port_t *port, char *out, size_t size)
+{
+    int written;
+    if (!port || !out || !size)
+        return false;
+    written = snprintf(out, size, "pw:%u:%u", port->pw_node_id, port->pw_port_id);
+    return written > 0 && (size_t)written < size;
+}
+static int
+audio_compare_port_identity(const void *left, const void *right)
+{
+    const audio_port_t *a = *(audio_port_t *const *)left;
+    const audio_port_t *b = *(audio_port_t *const *)right;
+    if (a->port_id != b->port_id)
+        return a->port_id < b->port_id ? -1 : 1;
+    if (a->pw_port_id != b->pw_port_id)
+        return a->pw_port_id < b->pw_port_id ? -1 : 1;
+    return 0;
+}
+
 static uint32_t
-audio_preferred_default_node(audio_client_t *c, uint64_t flags)
+audio_find_node_id(audio_client_t *client, const char *node_name)
 {
-    const char *want = NULL;
-    if (flags & AUDIO_PORT_IS_INPUT)
-        want = c->default_sink_name[0] ? c->default_sink_name : NULL;
-    else if (flags & AUDIO_PORT_IS_OUTPUT)
-        want = c->default_source_name[0] ? c->default_source_name : NULL;
-    if (!want)
-        return SPA_ID_INVALID;
-
-    uint32_t id = SPA_ID_INVALID;
-    for (uint32_t i = 0; i < c->n_nodes; i++)
-        if (c->nodes[i]->node_name && !strcmp(c->nodes[i]->node_name, want))
-        {
-            id = c->nodes[i]->id;
-            break;
-        }
-    if (id == SPA_ID_INVALID)
-        return SPA_ID_INVALID;
-
-    /* Only honor the default if it has a port matching the request; otherwise
-     * fall back so we never return an empty port set for a usable device. */
-    for (uint32_t i = 0; i < c->n_discovered; i++)
-    {
-        audio_port_t *p = c->discovered[i];
-        if (p->pw_node_id == id && (p->flags & flags) == flags)
-            return id;
-    }
+    for (uint32_t i = 0; i < client->n_nodes; ++i)
+        if (client->nodes[i]->node_name && !strcmp(client->nodes[i]->node_name, node_name))
+            return client->nodes[i]->id;
     return SPA_ID_INVALID;
 }
 
-const char **
-audio_get_ports(audio_client_t *c, const char *port_name_pattern, const char *type_name_pattern,
-                uint64_t flags)
+static audio_port_t **
+audio_collect_device_port_objects(audio_client_t *client, const char *node_name, uint64_t flags,
+                                  uint32_t *count_out)
 {
-    if (!c)
+    audio_port_t **ports  = NULL;
+    uint32_t       count  = 0;
+    uint32_t       target = SPA_ID_INVALID;
+    *count_out            = 0;
+    if (node_name && node_name[0])
+        target = audio_find_node_id(client, node_name);
+    else
+    {
+        const char *default_name = flags & AUDIO_PORT_IS_INPUT ? client->default_sink_name
+                                                               : client->default_source_name;
+        if (default_name[0])
+            target = audio_find_node_id(client, default_name);
+        else
+            for (uint32_t i = 0; i < client->n_discovered; ++i)
+                if ((client->discovered[i]->flags & flags) == flags
+                    && (target == SPA_ID_INVALID || client->discovered[i]->pw_node_id < target))
+                    target = client->discovered[i]->pw_node_id;
+    }
+    if (target == SPA_ID_INVALID)
         return NULL;
-    (void)port_name_pattern; /* asio.c always passes NULL */
-    (void)type_name_pattern; /* same */
-
-    pw_thread_loop_lock(c->loop);
-
-    /* Matching hardware ports in the direction requested by asio.c. */
-    uint32_t *match_idx = NULL;
-    uint32_t  n_match   = 0;
-    uint32_t  cap       = 0;
-
-    /* Use one hardware node per direction to avoid async links across devices. */
-    uint32_t target_node = audio_preferred_default_node(c, flags);
-    for (uint32_t i = 0; i < c->n_discovered; i++)
-    {
-        audio_port_t *p = c->discovered[i];
-        if ((p->flags & flags) != flags)
-            continue;
-        if (target_node == SPA_ID_INVALID)
-            target_node = p->pw_node_id;
-        else if (p->pw_node_id != target_node)
-            continue;
-
-        if (n_match == cap)
-        {
-            cap             = cap ? cap * 2 : 16;
-            uint32_t *grown = realloc(match_idx, cap * sizeof(*grown));
-            if (!grown)
-            {
-                free(match_idx);
-                pw_thread_loop_unlock(c->loop);
-                return NULL;
-            }
-            match_idx = grown;
-        }
-        match_idx[n_match++] = i;
-    }
-
-    /* Allocate the NULL-terminated array.  We strdup each name so the caller
-     * does not hold pointers into the discovered cache (the registry
-     * callbacks free/realloc it on hotplug); free with audio_free_ports. */
-    const char **result = calloc(n_match + 1, sizeof(*result));
-    if (!result)
-    {
-        free(match_idx);
-        pw_thread_loop_unlock(c->loop);
+    for (uint32_t i = 0; i < client->n_discovered; ++i)
+        if (client->discovered[i]->pw_node_id == target
+            && (client->discovered[i]->flags & flags) == flags)
+            ++count;
+    if (!count)
         return NULL;
-    }
-    for (uint32_t i = 0; i < n_match; i++)
-    {
-        result[i] = strdup(c->discovered[match_idx[i]]->name);
-        if (!result[i])
-        {
-            audio_free_ports(result);
-            free(match_idx);
-            pw_thread_loop_unlock(c->loop);
-            return NULL;
-        }
-    }
-    result[n_match] = NULL;
-
-    free(match_idx);
-    pw_thread_loop_unlock(c->loop);
-    return result;
+    ports = malloc((size_t)count * sizeof(*ports));
+    if (!ports)
+        return NULL;
+    uint32_t out = 0;
+    for (uint32_t i = 0; i < client->n_discovered; ++i)
+        if (client->discovered[i]->pw_node_id == target
+            && (client->discovered[i]->flags & flags) == flags)
+            ports[out++] = client->discovered[i];
+    qsort(ports, count, sizeof(*ports), audio_compare_port_identity);
+    *count_out = count;
+    return ports;
 }
 
 const char **
-audio_get_device_ports(audio_client_t *c, const char *node_name, uint64_t flags)
+audio_get_device_ports(audio_client_t *client, const char *node_name, uint64_t flags)
 {
-    if (!c)
+    audio_port_t **objects;
+    const char   **result = NULL;
+    uint32_t       count  = 0;
+    if (!client)
         return NULL;
-    if (!node_name || !node_name[0])
-        return audio_get_ports(c, NULL, NULL, flags);
-
-    pw_thread_loop_lock(c->loop);
-
-    uint32_t target = SPA_ID_INVALID;
-    for (uint32_t i = 0; i < c->n_nodes; i++)
-        if (c->nodes[i]->node_name && !strcmp(c->nodes[i]->node_name, node_name))
+    pw_thread_loop_lock(client->loop);
+    objects = audio_collect_device_port_objects(client, node_name, flags, &count);
+    result  = calloc((size_t)count + 1, sizeof(*result));
+    if (result)
+        for (uint32_t i = 0; i < count; ++i)
         {
-            target = c->nodes[i]->id;
-            break;
-        }
-    if (target == SPA_ID_INVALID)
-    {
-        pw_thread_loop_unlock(c->loop);
-        WARN("audio_get_device_ports: node '%s' not in discovery; "
-             "falling back to first available\n",
-             node_name);
-        return audio_get_ports(c, NULL, NULL, flags);
-    }
-
-    uint32_t *idx = NULL, n = 0, cap = 0;
-    for (uint32_t i = 0; i < c->n_discovered; i++)
-    {
-        audio_port_t *p = c->discovered[i];
-        if (p->pw_node_id != target)
-            continue;
-        if ((p->flags & flags) != flags)
-            continue;
-        if (n == cap)
-        {
-            cap             = cap ? cap * 2 : 16;
-            uint32_t *grown = realloc(idx, cap * sizeof(*grown));
-            if (!grown)
+            char key[256];
+            if (!audio_endpoint_key(objects[i], key, sizeof(key)))
             {
-                free(idx);
-                pw_thread_loop_unlock(c->loop);
-                return NULL;
+                audio_free_ports(result);
+                result = NULL;
+                break;
             }
-            idx = grown;
+            result[i] = strdup(key);
+            if (!result[i])
+            {
+                audio_free_ports(result);
+                result = NULL;
+                break;
+            }
         }
-        idx[n++] = i;
-    }
-
-    const char **result = calloc(n + 1, sizeof(*result));
-    if (!result)
-    {
-        free(idx);
-        pw_thread_loop_unlock(c->loop);
-        return NULL;
-    }
-    for (uint32_t i = 0; i < n; i++)
-    {
-        result[i] = strdup(c->discovered[idx[i]]->name);
-        if (!result[i])
-        {
-            audio_free_ports(result);
-            free(idx);
-            pw_thread_loop_unlock(c->loop);
-            return NULL;
-        }
-    }
-    result[n] = NULL;
-    free(idx);
-    pw_thread_loop_unlock(c->loop);
+    free(objects);
+    pw_thread_loop_unlock(client->loop);
     return result;
+}
+
+bool
+audio_get_device_endpoints(audio_client_t *client, const char *node_name, uint64_t flags,
+                           audio_endpoint_t *endpoints, uint32_t capacity, uint32_t *count)
+{
+    audio_port_t **objects;
+    uint32_t       found = 0;
+    bool           valid = true;
+    if (!client || !endpoints || !count)
+        return false;
+    *count = 0;
+    pw_thread_loop_lock(client->loop);
+    objects = audio_collect_device_port_objects(client, node_name, flags, &found);
+    if (found > capacity)
+        found = capacity;
+    for (uint32_t i = 0; valid && i < found; ++i)
+        valid = objects[i]->node_name && objects[i]->port_name
+                && strlen(objects[i]->node_name) < sizeof(endpoints[i].node_name)
+                && strlen(objects[i]->port_name) < sizeof(endpoints[i].port_name);
+    if (valid)
+        for (uint32_t i = 0; i < found; ++i)
+        {
+            memset(&endpoints[i], 0, sizeof(endpoints[i]));
+            memcpy(endpoints[i].node_name, objects[i]->node_name,
+                   strlen(objects[i]->node_name) + 1);
+            memcpy(endpoints[i].port_name, objects[i]->port_name,
+                   strlen(objects[i]->port_name) + 1);
+            audio_endpoint_key(objects[i], endpoints[i].key, sizeof(endpoints[i].key));
+            endpoints[i].node_id        = objects[i]->pw_node_id;
+            endpoints[i].port_id        = objects[i]->port_id;
+            endpoints[i].direction      = objects[i]->direction;
+            endpoints[i].global_port_id = objects[i]->pw_port_id;
+        }
+    if (valid)
+        *count = found;
+    free(objects);
+    pw_thread_loop_unlock(client->loop);
+    return valid;
 }
 
 void
@@ -1241,16 +1242,6 @@ audio_set_process_callback(audio_client_t *c, audio_process_cb cb, void *arg)
 }
 
 bool
-audio_set_buffer_size_callback(audio_client_t *c, audio_buffer_size_cb cb, void *arg)
-{
-    if (!c)
-        return false;
-    c->buffer_size_cb     = cb;
-    c->buffer_size_cb_arg = arg;
-    return true;
-}
-
-bool
 audio_set_sample_rate_callback(audio_client_t *c, audio_sample_rate_cb cb, void *arg)
 {
     if (!c)
@@ -1260,93 +1251,72 @@ audio_set_sample_rate_callback(audio_client_t *c, audio_sample_rate_cb cb, void 
     return true;
 }
 
-bool
-audio_set_latency_callback(audio_client_t *c, audio_latency_cb cb, void *arg)
-{
-    if (!c)
-        return false;
-    c->latency_cb     = cb;
-    c->latency_cb_arg = arg;
-    return true;
-}
-
 /* Connections, transport, and memory. */
 
-/* Look up a port by full name.  Returns the matching audio_port_t* and
- * fills *node_id_out.  Searches the discovered cache and our own ports. */
 static audio_port_t *
-audio_lookup_port(audio_client_t *c, const char *name, uint32_t *node_id_out)
+audio_lookup_port(audio_client_t *client, const char *name, uint32_t *node_id)
 {
-    for (uint32_t i = 0; i < c->n_discovered; i++)
-    {
-        audio_port_t *p = c->discovered[i];
-        if (p->name && !strcmp(p->name, name))
+    char key[256];
+    for (uint32_t i = 0; i < client->n_discovered; ++i)
+        if ((!audio_endpoint_key(client->discovered[i], key, sizeof(key)) ? false
+                                                                          : !strcmp(key, name))
+            || !strcmp(client->discovered[i]->name, name))
         {
-            if (node_id_out)
-                *node_id_out = p->pw_node_id;
-            return p;
+            *node_id = client->discovered[i]->pw_node_id;
+            return client->discovered[i];
         }
-    }
-    for (uint32_t i = 0; i < c->n_ports; i++)
-    {
-        audio_port_t *p = c->ports[i];
-        if (p->name && !strcmp(p->name, name))
+    for (uint32_t i = 0; i < client->n_ports; ++i)
+        if (!strcmp(client->ports[i]->name, name))
         {
-            if (node_id_out)
-                *node_id_out = c->our_node_id;
-            return p;
+            *node_id = client->our_node_id;
+            return client->ports[i];
         }
-    }
     return NULL;
 }
 
 bool
-audio_connect(audio_client_t *c, const char *src, const char *dst)
+audio_connect(audio_client_t *client, const char *source, const char *destination)
 {
-    if (!c || !c->core || !src || !dst)
+    struct pw_proxy *link;
+    uint32_t         source_node      = SPA_ID_INVALID;
+    uint32_t         destination_node = SPA_ID_INVALID;
+    if (!client || !client->core || !source || !destination)
         return false;
-
-    pw_thread_loop_lock(c->loop);
-
-    uint32_t      src_node = SPA_ID_INVALID, dst_node = SPA_ID_INVALID;
-    audio_port_t *sp = audio_lookup_port(c, src, &src_node);
-    audio_port_t *dp = audio_lookup_port(c, dst, &dst_node);
-
-    if (!sp || !dp || sp->pw_port_id == 0 || dp->pw_port_id == 0 || src_node == SPA_ID_INVALID
-        || dst_node == SPA_ID_INVALID)
+    pw_thread_loop_lock(client->loop);
+    audio_port_t *source_port      = audio_lookup_port(client, source, &source_node);
+    audio_port_t *destination_port = audio_lookup_port(client, destination, &destination_node);
+    if (!source_port || !destination_port || !source_port->pw_port_id
+        || !destination_port->pw_port_id || source_node == SPA_ID_INVALID
+        || destination_node == SPA_ID_INVALID)
+        goto fail;
+    if (client->n_links == client->cap_links)
     {
-        WARN("audio_connect: cannot resolve PipeWire IDs for %s -> %s "
-             "(sp=%p sp.pw_port_id=%u src_node=%u | dp=%p dp.pw_port_id=%u dst_node=%u | %u nodes, "
-             "%u ext-ports in cache)\n",
-             src, dst, sp, sp ? sp->pw_port_id : 0, src_node, dp, dp ? dp->pw_port_id : 0, dst_node,
-             c->n_nodes, c->n_discovered);
-        pw_thread_loop_unlock(c->loop);
-        return false;
+        uint32_t          capacity = client->cap_links ? client->cap_links * 2u : 16u;
+        struct pw_proxy **links    = realloc(client->links, (size_t)capacity * sizeof(*links));
+        if (!links)
+            goto fail;
+        client->links     = links;
+        client->cap_links = capacity;
     }
-
-    struct pw_properties *props = pw_properties_new(PW_KEY_OBJECT_LINGER, "false", NULL);
-    if (!props)
-    {
-        pw_thread_loop_unlock(c->loop);
-        return false;
-    }
-    pw_properties_setf(props, PW_KEY_LINK_OUTPUT_NODE, "%u", src_node);
-    pw_properties_setf(props, PW_KEY_LINK_OUTPUT_PORT, "%u", sp->pw_port_id);
-    pw_properties_setf(props, PW_KEY_LINK_INPUT_NODE, "%u", dst_node);
-    pw_properties_setf(props, PW_KEY_LINK_INPUT_PORT, "%u", dp->pw_port_id);
-
-    struct pw_proxy *link = pw_core_create_object(c->core, "link-factory", PW_TYPE_INTERFACE_Link,
-                                                  PW_VERSION_LINK, &props->dict, 0);
-    pw_thread_loop_unlock(c->loop);
-    pw_properties_free(props);
-
+    struct pw_properties *properties = pw_properties_new(PW_KEY_OBJECT_LINGER, "false", NULL);
+    if (!properties)
+        goto fail;
+    pw_properties_setf(properties, PW_KEY_LINK_OUTPUT_NODE, "%u", source_node);
+    pw_properties_setf(properties, PW_KEY_LINK_OUTPUT_PORT, "%u", source_port->pw_port_id);
+    pw_properties_setf(properties, PW_KEY_LINK_INPUT_NODE, "%u", destination_node);
+    pw_properties_setf(properties, PW_KEY_LINK_INPUT_PORT, "%u", destination_port->pw_port_id);
+    link = pw_core_create_object(client->core, "link-factory", PW_TYPE_INTERFACE_Link,
+                                 PW_VERSION_LINK, &properties->dict, 0);
+    pw_properties_free(properties);
     if (!link)
-    {
-        WARN("audio_connect: pw_core_create_object(link-factory) failed for %s -> %s\n", src, dst);
-        return false;
-    }
-    TRACE("audio_connect: %s -> %s (link proxy %p)\n", src, dst, link);
+        goto fail;
+    client->links[client->n_links++] = link;
+    pw_thread_loop_unlock(client->loop);
     return true;
+fail:
+    pw_thread_loop_unlock(client->loop);
+    WARN("audio_connect: cannot connect %s -> %s\n", source, destination);
+    return false;
 }
 
 void
@@ -1400,14 +1370,61 @@ audio_on_io_changed(void *userdata, void *port_data, uint32_t id, void *area, ui
         const struct spa_io_position *pos = area;
         /* spa_fraction (num, denom): for an audio graph num=1 and denom is
          * the sample rate in Hz, so we just take denom. */
-        audio_nframes_t new_rate = pos->clock.rate.denom ? pos->clock.rate.denom : c->sample_rate;
-        if (new_rate && new_rate != c->sample_rate)
+        audio_nframes_t old_rate = atomic_load_explicit(&c->sample_rate, memory_order_relaxed);
+        audio_nframes_t new_rate = pos->clock.rate.denom ? pos->clock.rate.denom : old_rate;
+        if (new_rate && new_rate != old_rate)
         {
-            c->sample_rate = new_rate;
+            atomic_store_explicit(&c->sample_rate, new_rate, memory_order_release);
             if (c->sample_rate_cb)
                 c->sample_rate_cb(new_rate, c->sample_rate_cb_arg);
         }
     }
+}
+
+enum
+{
+    AUDIO_DIAGNOSTIC_QUANTUM = 1u,
+    AUDIO_DIAGNOSTIC_TRACE   = 2u
+};
+
+static void
+audio_diagnostic_event(void *data, uint64_t count)
+{
+    audio_client_t *client = data;
+    uint32_t kind    = atomic_exchange_explicit(&client->diagnostic_kind, 0, memory_order_acq_rel);
+    uint32_t quantum = atomic_load_explicit(&client->diagnostic_quantum, memory_order_acquire);
+    uint32_t buffer_size
+            = atomic_load_explicit(&client->diagnostic_buffer_size, memory_order_acquire);
+    (void)count;
+    if (kind & AUDIO_DIAGNOSTIC_QUANTUM)
+        WARN("PipeWire quantum %u differs from host buffer size %u\n", quantum, buffer_size);
+    if (kind & AUDIO_DIAGNOSTIC_TRACE)
+        TRACE("process: cycle=%lu tid=%lx buffer_size=%u quantum=%u rate=%u/%u\n",
+              (unsigned long)atomic_load_explicit(&client->diagnostic_cycle, memory_order_acquire),
+              (unsigned long)atomic_load_explicit(&client->diagnostic_thread, memory_order_acquire),
+              buffer_size, quantum,
+              atomic_load_explicit(&client->diagnostic_rate_num, memory_order_acquire),
+              atomic_load_explicit(&client->diagnostic_rate_denom, memory_order_acquire));
+}
+
+static void
+audio_signal_diagnostic(audio_client_t *client, uint32_t kind, uint32_t quantum,
+                        const struct spa_io_position *position)
+{
+    if (!client->diagnostic_event)
+        return;
+    atomic_store_explicit(&client->diagnostic_quantum, quantum, memory_order_relaxed);
+    atomic_store_explicit(&client->diagnostic_buffer_size, client->buffer_size,
+                          memory_order_relaxed);
+    atomic_store_explicit(&client->diagnostic_rate_num, position ? position->clock.rate.num : 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&client->diagnostic_rate_denom, position ? position->clock.rate.denom : 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&client->diagnostic_cycle, client->cycle_count, memory_order_relaxed);
+    atomic_store_explicit(&client->diagnostic_thread, audio_current_thread_id(),
+                          memory_order_relaxed);
+    atomic_fetch_or_explicit(&client->diagnostic_kind, kind, memory_order_release);
+    pw_loop_signal_event(pw_thread_loop_get_loop(client->loop), client->diagnostic_event);
 }
 
 static void
@@ -1416,15 +1433,13 @@ audio_on_process(void *userdata, struct spa_io_position *position)
     audio_client_t *c = userdata;
 
     if (position)
+        atomic_store_explicit(&c->last_clock_nsec, position->clock.nsec, memory_order_release);
+    for (uint32_t i = 0; i < c->n_ports; ++i)
     {
-        c->last_clock_nsec = position->clock.nsec;
-    }
-
-    /* audio_port_get_buffer exposes the live MAP_BUFFERS memory for this cycle. */
-    for (uint32_t i = 0; i < c->n_ports; i++)
-    {
-        audio_port_t *p = c->ports[i];
-        p->cycle_buffer = p->pw_filter_port ? pw_filter_dequeue_buffer(p->pw_filter_port) : NULL;
+        audio_port_t     *port = c->ports[i];
+        struct pw_buffer *buffer
+                = port->pw_filter_port ? pw_filter_dequeue_buffer(port->pw_filter_port) : NULL;
+        atomic_store_explicit(&port->cycle_buffer, buffer, memory_order_release);
     }
 
     const uint32_t quantum = position ? (uint32_t)position->clock.duration : 0;
@@ -1434,61 +1449,33 @@ audio_on_process(void *userdata, struct spa_io_position *position)
     if (c->follow_device && quantum)
         atomic_store(&c->observed_quantum, quantum);
 
-    /* bufferSwitch and PipeWire must run at the same quantum. */
-    if (quantum && quantum != c->buffer_size)
+    if (quantum && quantum != c->buffer_size && !c->quantum_warned)
     {
-        static bool quantum_warned;
-        if (!quantum_warned)
-        {
-            quantum_warned = true;
-            WARN("PipeWire quantum %u != host buffer_size %u: graph clamped our "
-                 "forced quantum, playback runs at %u/%u speed. Raise the host "
-                 "buffer size or relax clock.min-quantum/clock.max-quantum "
-                 "(pw-metadata -n settings).\n",
-                 (unsigned)quantum, (unsigned)c->buffer_size, (unsigned)c->buffer_size,
-                 (unsigned)quantum);
-        }
+        c->quantum_warned = true;
+        audio_signal_diagnostic(c, AUDIO_DIAGNOSTIC_QUANTUM, quantum, position);
+    }
+    if (c->debug_enabled)
+    {
+        ++c->cycle_count;
+        if (c->cycle_count <= 8 || (c->cycle_count < 100 && c->cycle_count % 10 == 0)
+            || (c->cycle_count >= 100 && c->cycle_count % 100 == 0))
+            audio_signal_diagnostic(c, AUDIO_DIAGNOSTIC_TRACE, quantum, position);
     }
 
-    if (pipeasio_log_on())
-    {
-        static uint64_t cycle_count;
-        if (++cycle_count <= 8 || (cycle_count < 100 && cycle_count % 10 == 0)
-            || (cycle_count >= 100 && cycle_count % 100 == 0))
-            TRACE("process: cycle=%lu tid=%lx buffer_size=%u quantum=%u rate=%u/%u\n",
-                  (unsigned long)cycle_count, audio_current_thread_id(), (unsigned)c->buffer_size,
-                  (unsigned)quantum, position ? (unsigned)position->clock.rate.num : 0u,
-                  position ? (unsigned)position->clock.rate.denom : 0u);
-    }
-
-    /* Run the ASIO host's process callback; audio_port_get_buffer returns
-     * each port's dequeued-buffer data pointer. */
     if (c->process_cb)
         c->process_cb(c->buffer_size, c->process_cb_arg);
-
-    /* Queue every dequeued buffer back to the daemon. */
-    for (uint32_t i = 0; i < c->n_ports; i++)
+    for (uint32_t i = 0; i < c->n_ports; ++i)
     {
-        audio_port_t     *p = c->ports[i];
-        struct pw_buffer *b = p->cycle_buffer;
-        if (!b || !p->pw_filter_port)
-            continue;
-        if (p->direction == PW_DIRECTION_OUTPUT)
+        audio_port_t *port = c->ports[i];
+        if (port->direction == PW_DIRECTION_OUTPUT)
+            audio_port_publish_output(port, NULL, c->buffer_size, false, false);
+        else
         {
-            struct spa_data *d = &b->buffer->datas[0];
-            /* The host always produced exactly buffer_size frames; never publish
-             * more than the daemon's negotiated mapping (the graph quantum can
-             * exceed buffer_size in follow-device / clamped-quantum modes). */
-            uint32_t out_bytes = (uint32_t)c->buffer_size * (uint32_t)sizeof(audio_sample_t);
-            if (out_bytes > d->maxsize)
-                out_bytes = d->maxsize;
-            d->chunk->offset = 0;
-            d->chunk->size   = out_bytes;
-            d->chunk->stride = sizeof(audio_sample_t);
-            d->chunk->flags  = 0;
+            struct pw_buffer *buffer
+                    = atomic_exchange_explicit(&port->cycle_buffer, NULL, memory_order_acq_rel);
+            if (buffer && port->pw_filter_port)
+                pw_filter_queue_buffer(port->pw_filter_port, buffer);
         }
-        pw_filter_queue_buffer(p->pw_filter_port, b);
-        p->cycle_buffer = NULL;
     }
 }
 
@@ -1539,23 +1526,20 @@ audio_adopt_own_ports(audio_client_t *c)
             continue;
         }
 
-        /* Port belongs to our filter.  Match by port_name (after the
-         * "node:" prefix) against c->ports[] and backfill IDs. */
-        const char *colon     = strrchr(d->name, ':');
-        const char *port_name = colon ? colon + 1 : d->name;
         for (uint32_t j = 0; j < c->n_ports; j++)
         {
-            if (c->ports[j]->name && !strcmp(c->ports[j]->name, port_name))
+            if (c->ports[j]->name && !strcmp(c->ports[j]->name, d->port_name))
             {
                 c->ports[j]->pw_node_id = c->our_node_id;
                 c->ports[j]->pw_port_id = d->pw_port_id;
+                c->ports[j]->port_id    = d->port_id;
                 adopted++;
                 break;
             }
         }
-
         free(d->name);
-        free(d->type);
+        free(d->port_name);
+        free(d->node_name);
         free(d);
     }
     c->n_discovered = kept;
@@ -1616,6 +1600,14 @@ audio_cache_node(audio_client_t *c, uint32_t id, const struct spa_dict *props)
     n->node_name    = strdup(node_name);
     n->media_class  = audio_dup_or_null(media_class);
     n->display_name = strdup(description ? description : (nick ? nick : node_name));
+    if (!n->node_name || !n->display_name || (media_class && !n->media_class))
+    {
+        free(n->node_name);
+        free(n->display_name);
+        free(n->media_class);
+        free(n);
+        return;
+    }
 
     if (c->n_nodes == c->cap_nodes)
     {
@@ -1633,129 +1625,182 @@ audio_cache_node(audio_client_t *c, uint32_t id, const struct spa_dict *props)
         c->cap_nodes = new_cap;
     }
     c->nodes[c->n_nodes++] = n;
+    audio_refresh_defaults(c);
     TRACE("registry: +node id=%u name=\"%s\" class=\"%s\" desc=\"%s\"\n", id, n->node_name,
           n->media_class ? n->media_class : "", n->display_name);
 }
 
-static void
-audio_cache_port(audio_client_t *c, uint32_t id, const struct spa_dict *props)
+static bool
+audio_parse_id(const char *value, uint32_t *result)
 {
-    const char *node_id_s = spa_dict_lookup(props, PW_KEY_NODE_ID);
-    const char *port_name = spa_dict_lookup(props, PW_KEY_PORT_NAME);
-    const char *direction = spa_dict_lookup(props, PW_KEY_PORT_DIRECTION);
-    const char *monitor   = spa_dict_lookup(props, PW_KEY_PORT_MONITOR);
-    if (!node_id_s || !port_name || !direction)
-        return;
-
-    uint32_t node_id = (uint32_t)strtoul(node_id_s, NULL, 10);
-
-    /* If this port belongs to our own filter node, backfill the matching
-     * c->ports[i]->pw_port_id and don't add it to the discovered list. */
-    if (c->our_node_id != SPA_ID_INVALID && node_id == c->our_node_id)
-    {
-        for (uint32_t i = 0; i < c->n_ports; i++)
-        {
-            if (!strcmp(c->ports[i]->name, port_name))
-            {
-                c->ports[i]->pw_node_id = node_id;
-                c->ports[i]->pw_port_id = id;
-                TRACE("registry: backfill local port \"%s\" -> node=%u port=%u\n", port_name,
-                      node_id, id);
-                return;
-            }
-        }
-        TRACE("registry: own-node port \"%s\" (id=%u) not in c->ports[]\n", port_name, id);
-        return;
-    }
-
-    /* External port.  Skip monitor-of-sink (avoid feedback loops). */
-    if (monitor && !strcmp(monitor, "true"))
-        return;
-
-    /* Look up the node to confirm it's audio, and to build the full name. */
-    struct audio_node_info *n = audio_find_node(c, node_id);
-    if (!n)
-    {
-        TRACE("registry: skip orphan port id=%u node_id=%u (node not cached)\n", id, node_id);
-        return;
-    }
-
-    enum pw_direction dir = (!strcmp(direction, "in")) ? PW_DIRECTION_INPUT : PW_DIRECTION_OUTPUT;
-
-    audio_port_t *p = calloc(1, sizeof(*p));
-    if (!p)
-        return;
-
-    size_t namelen = strlen(n->display_name) + 1 + strlen(port_name) + 1;
-    p->name        = malloc(namelen);
-    if (!p->name)
-    {
-        free(p);
-        return;
-    }
-    snprintf(p->name, namelen, "%s:%s", n->display_name, port_name);
-    p->type       = strdup("32 bit float mono audio");
-    p->direction  = dir;
-    p->pw_node_id = node_id;
-    p->pw_port_id = id;
-
-    /* asio.c asks for PHYSICAL|OUTPUT to list capture sources and
-     * PHYSICAL|INPUT to list playback sinks.  Map PW "out" -> OUTPUT,
-     * "in" -> INPUT. */
-    p->flags = AUDIO_PORT_IS_PHYSICAL
-               | ((dir == PW_DIRECTION_OUTPUT) ? AUDIO_PORT_IS_OUTPUT : AUDIO_PORT_IS_INPUT);
-
-    if (c->n_discovered == c->cap_discovered)
-    {
-        uint32_t       new_cap = c->cap_discovered ? c->cap_discovered * 2 : 32;
-        audio_port_t **grown   = realloc(c->discovered, new_cap * sizeof(*grown));
-        if (!grown)
-        {
-            free(p->name);
-            free(p->type);
-            free(p);
-            return;
-        }
-        c->discovered     = grown;
-        c->cap_discovered = new_cap;
-    }
-    c->discovered[c->n_discovered++] = p;
-    TRACE("registry: +port id=%u node_id=%u name=\"%s\" dir=%s\n", id, node_id, p->name,
-          dir == PW_DIRECTION_INPUT ? "in" : "out");
+    char         *end;
+    unsigned long parsed;
+    if (!value || !value[0])
+        return false;
+    errno  = 0;
+    parsed = strtoul(value, &end, 10);
+    if (errno || *end || parsed > UINT32_MAX)
+        return false;
+    *result = (uint32_t)parsed;
+    return true;
 }
 
-/* The "default" metadata object publishes the session's effective default
- * sink/source as default.audio.sink / default.audio.source, each a small JSON
- * object {"name":"<node.name>"}.  We cache those names so audio_get_ports can
- * honor the panel's "Follow default" choice. */
+static uint64_t
+audio_mix_identity(uint64_t hash, uint32_t node_id, uint32_t port_id)
+{
+    hash ^= ((uint64_t)node_id << 32) | port_id;
+    hash *= UINT64_C(1099511628211);
+    return hash;
+}
+
+static uint64_t
+audio_default_fingerprint(audio_client_t *client, uint64_t flags, const char *name, bool *resolved)
+{
+    uint32_t target = name[0] ? audio_find_node_id(client, name) : SPA_ID_INVALID;
+    uint32_t count  = 0;
+    uint64_t sum    = 0;
+    uint64_t mixed  = 0;
+    if (!name[0])
+        for (uint32_t i = 0; i < client->n_discovered; ++i)
+            if ((client->discovered[i]->flags & flags) == flags
+                && (target == SPA_ID_INVALID || client->discovered[i]->pw_node_id < target))
+                target = client->discovered[i]->pw_node_id;
+    *resolved = target != SPA_ID_INVALID;
+    if (!*resolved)
+        return 0;
+    for (uint32_t i = 0; i < client->n_discovered; ++i)
+    {
+        audio_port_t *port = client->discovered[i];
+        if (port->pw_node_id != target || (port->flags & flags) != flags)
+            continue;
+        uint64_t identity = ((uint64_t)port->port_id << 32) | port->pw_port_id;
+        sum += identity;
+        mixed ^= audio_mix_identity(UINT64_C(1469598103934665603), port->port_id, port->pw_port_id);
+        ++count;
+    }
+    *resolved = count != 0;
+    return *resolved ? audio_mix_identity(sum ^ mixed, target, count) : 0;
+}
+
+static void
+audio_refresh_defaults(audio_client_t *client)
+{
+    bool     sink_resolved;
+    bool     source_resolved;
+    uint64_t sink    = audio_default_fingerprint(client, AUDIO_PORT_IS_INPUT,
+                                                 client->default_sink_name, &sink_resolved);
+    uint64_t source  = audio_default_fingerprint(client, AUDIO_PORT_IS_OUTPUT,
+                                                 client->default_source_name, &source_resolved);
+    bool     changed = sink != client->default_sink_fingerprint
+                       || source != client->default_source_fingerprint
+                       || sink_resolved != client->default_sink_resolved
+                       || source_resolved != client->default_source_resolved;
+    client->default_sink_fingerprint   = sink;
+    client->default_source_fingerprint = source;
+    client->default_sink_resolved      = sink_resolved;
+    client->default_source_resolved    = source_resolved;
+    if (client->defaults_baselined && changed)
+        atomic_store_explicit(&client->default_changed, true, memory_order_release);
+}
+
+static void
+audio_free_discovered_port(audio_port_t *port)
+{
+    free(port->name);
+    free(port->port_name);
+    free(port->node_name);
+    free(port);
+}
+
+static void
+audio_cache_port(audio_client_t *client, uint32_t id, const struct spa_dict *props)
+{
+    const char *node_id_value = spa_dict_lookup(props, PW_KEY_NODE_ID);
+    const char *port_id_value = spa_dict_lookup(props, PW_KEY_PORT_ID);
+    const char *port_name     = spa_dict_lookup(props, PW_KEY_PORT_NAME);
+    const char *direction     = spa_dict_lookup(props, PW_KEY_PORT_DIRECTION);
+    const char *monitor       = spa_dict_lookup(props, PW_KEY_PORT_MONITOR);
+    uint32_t    node_id;
+    uint32_t    port_id;
+    if (!audio_parse_id(node_id_value, &node_id) || !audio_parse_id(port_id_value, &port_id)
+        || !port_name || !direction)
+        return;
+    if (client->our_node_id != SPA_ID_INVALID && node_id == client->our_node_id)
+    {
+        for (uint32_t i = 0; i < client->n_ports; ++i)
+            if (!strcmp(client->ports[i]->name, port_name))
+            {
+                client->ports[i]->pw_node_id = node_id;
+                client->ports[i]->pw_port_id = id;
+                client->ports[i]->port_id    = port_id;
+                return;
+            }
+        return;
+    }
+    if ((monitor && !strcmp(monitor, "true"))
+        || (strcmp(direction, "in") && strcmp(direction, "out")))
+        return;
+    struct audio_node_info *node = audio_find_node(client, node_id);
+    if (!node)
+        return;
+    audio_port_t *port = calloc(1, sizeof(*port));
+    if (!port)
+        return;
+    char identity[64];
+    int  length     = snprintf(identity, sizeof(identity), "pw:%u:%u", node_id, id);
+    port->name      = length > 0 && (size_t)length < sizeof(identity) ? strdup(identity) : NULL;
+    port->port_name = strdup(port_name);
+    port->node_name = strdup(node->node_name);
+    if (!port->name || !port->port_name || !port->node_name)
+    {
+        audio_free_discovered_port(port);
+        return;
+    }
+    port->direction  = !strcmp(direction, "in") ? PW_DIRECTION_INPUT : PW_DIRECTION_OUTPUT;
+    port->pw_node_id = node_id;
+    port->pw_port_id = id;
+    port->port_id    = port_id;
+    port->flags      = AUDIO_PORT_IS_PHYSICAL
+                       | (port->direction == PW_DIRECTION_OUTPUT ? AUDIO_PORT_IS_OUTPUT
+                                                                 : AUDIO_PORT_IS_INPUT);
+    atomic_init(&port->cycle_buffer, NULL);
+    if (client->n_discovered == client->cap_discovered)
+    {
+        uint32_t       capacity = client->cap_discovered ? client->cap_discovered * 2u : 32u;
+        audio_port_t **ports    = realloc(client->discovered, (size_t)capacity * sizeof(*ports));
+        if (!ports)
+        {
+            audio_free_discovered_port(port);
+            return;
+        }
+        client->discovered     = ports;
+        client->cap_discovered = capacity;
+    }
+    client->discovered[client->n_discovered++] = port;
+    audio_refresh_defaults(client);
+}
+
 static int
 audio_on_metadata_property(void *userdata, uint32_t subject, const char *key, const char *type,
                            const char *value)
 {
-    audio_client_t *c = userdata;
+    audio_client_t *client = userdata;
+    char           *destination;
+    char            name[256] = "";
     (void)subject;
     (void)type;
-    if (!key || !value)
+    if (!key)
         return 0;
-
-    char *dst;
     if (!strcmp(key, "default.audio.sink"))
-        dst = c->default_sink_name;
+        destination = client->default_sink_name;
     else if (!strcmp(key, "default.audio.source"))
-        dst = c->default_source_name;
+        destination = client->default_source_name;
     else
         return 0;
-
-    char name[256] = "";
-    spa_json_str_object_find(value, strlen(value), "name", name, sizeof name);
-    if (!strcmp(dst, name))
-        return 0; /* unchanged */
-    if (dst[0])   /* a real switch, not the initial fill: ask the driver to follow */
-        atomic_store(&c->default_changed, true);
-    memcpy(dst, name, sizeof name);
-
-    TRACE("default metadata: sink=\"%s\" source=\"%s\"\n", c->default_sink_name,
-          c->default_source_name);
+    if (value)
+        spa_json_str_object_find(value, strlen(value), "name", name, sizeof(name));
+    memcpy(destination, name, sizeof(name));
+    audio_refresh_defaults(client);
     return 0;
 }
 
@@ -1765,81 +1810,88 @@ static const struct pw_metadata_events audio_metadata_events = {
 };
 
 static void
-audio_cache_metadata(audio_client_t *c, uint32_t id, uint32_t version, const struct spa_dict *props)
+audio_cache_metadata(audio_client_t *client, uint32_t id, uint32_t version,
+                     const struct spa_dict *props)
 {
     const char *name = spa_dict_lookup(props, PW_KEY_METADATA_NAME);
-    if (!name || strcmp(name, "default"))
+    if (!name || strcmp(name, "default") || client->default_metadata)
         return;
-    if (c->default_metadata)
-        return; /* already bound */
-
-    c->default_metadata = pw_registry_bind(c->registry, id, PW_TYPE_INTERFACE_Metadata, version, 0);
-    if (!c->default_metadata)
-    {
-        WARN("failed to bind 'default' metadata; 'Follow default' will use the "
-             "first device\n");
+    client->default_metadata
+            = pw_registry_bind(client->registry, id, PW_TYPE_INTERFACE_Metadata, version, 0);
+    if (!client->default_metadata)
         return;
-    }
-    pw_metadata_add_listener(c->default_metadata, &c->default_metadata_listener,
-                             &audio_metadata_events, c);
-    TRACE("bound 'default' metadata (id=%u)\n", id);
+    client->default_metadata_id = id;
+    pw_metadata_add_listener(client->default_metadata, &client->default_metadata_listener,
+                             &audio_metadata_events, client);
 }
 
 bool
-audio_default_changed(audio_client_t *c)
+audio_default_changed(audio_client_t *client)
 {
-    return c ? atomic_exchange(&c->default_changed, false) : false;
+    return client ? atomic_exchange_explicit(&client->default_changed, false, memory_order_acq_rel)
+                  : false;
 }
 
 static void
 audio_on_registry_global(void *userdata, uint32_t id, uint32_t permissions, const char *type,
                          uint32_t version, const struct spa_dict *props)
 {
-    audio_client_t *c = userdata;
+    audio_client_t *client = userdata;
     (void)permissions;
-
     if (!type || !props)
         return;
-
     if (!strcmp(type, PW_TYPE_INTERFACE_Node))
-        audio_cache_node(c, id, props);
+        audio_cache_node(client, id, props);
     else if (!strcmp(type, PW_TYPE_INTERFACE_Port))
-        audio_cache_port(c, id, props);
+        audio_cache_port(client, id, props);
     else if (!strcmp(type, PW_TYPE_INTERFACE_Metadata))
-        audio_cache_metadata(c, id, version, props);
+        audio_cache_metadata(client, id, version, props);
 }
 
 static void
 audio_on_registry_global_remove(void *userdata, uint32_t id)
 {
-    audio_client_t *c = userdata;
-
-    for (uint32_t i = 0; i < c->n_discovered; i++)
+    audio_client_t *client = userdata;
+    if (id == client->default_metadata_id)
     {
-        if (c->discovered[i]->pw_port_id == id)
+        spa_hook_remove(&client->default_metadata_listener);
+        pw_proxy_destroy((struct pw_proxy *)client->default_metadata);
+        client->default_metadata       = NULL;
+        client->default_metadata_id    = SPA_ID_INVALID;
+        client->default_sink_name[0]   = '\0';
+        client->default_source_name[0] = '\0';
+        audio_refresh_defaults(client);
+        return;
+    }
+    for (uint32_t i = 0; i < client->n_ports; ++i)
+        if (client->ports[i]->pw_port_id == id)
         {
-            audio_port_t *p = c->discovered[i];
-            free(p->name);
-            free(p->type);
-            free(p);
-            memmove(&c->discovered[i], &c->discovered[i + 1],
-                    (c->n_discovered - i - 1) * sizeof(*c->discovered));
-            c->n_discovered--;
+            client->ports[i]->pw_port_id = 0;
+            client->ports[i]->port_id    = 0;
             return;
         }
-    }
-    for (uint32_t i = 0; i < c->n_nodes; i++)
-    {
-        if (c->nodes[i]->id == id)
+    for (uint32_t i = 0; i < client->n_discovered; ++i)
+        if (client->discovered[i]->pw_port_id == id)
         {
-            struct audio_node_info *n = c->nodes[i];
-            free(n->node_name);
-            free(n->display_name);
-            free(n->media_class);
-            free(n);
-            memmove(&c->nodes[i], &c->nodes[i + 1], (c->n_nodes - i - 1) * sizeof(*c->nodes));
-            c->n_nodes--;
+            audio_free_discovered_port(client->discovered[i]);
+            memmove(&client->discovered[i], &client->discovered[i + 1],
+                    (size_t)(client->n_discovered - i - 1) * sizeof(*client->discovered));
+            --client->n_discovered;
+            audio_refresh_defaults(client);
             return;
         }
-    }
+    for (uint32_t i = 0; i < client->n_nodes; ++i)
+        if (client->nodes[i]->id == id)
+        {
+            struct audio_node_info *node = client->nodes[i];
+            free(node->node_name);
+            free(node->display_name);
+            free(node->media_class);
+            free(node);
+            memmove(&client->nodes[i], &client->nodes[i + 1],
+                    (size_t)(client->n_nodes - i - 1) * sizeof(*client->nodes));
+            --client->n_nodes;
+            audio_refresh_defaults(client);
+            return;
+        }
 }

@@ -21,6 +21,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* Opaque handles */
@@ -39,6 +40,17 @@ typedef struct
     audio_nframes_t max;
 } audio_latency_range_t;
 
+typedef struct
+{
+    char     node_name[256];
+    char     port_name[256];
+    char     key[256];
+    uint32_t node_id;
+    uint32_t port_id;
+    uint32_t direction;
+    uint32_t global_port_id;
+} audio_endpoint_t;
+
 typedef enum
 {
     AUDIO_CAPTURE_LATENCY  = 0,
@@ -48,19 +60,15 @@ typedef enum
 /* Callback signatures */
 
 typedef int (*audio_process_cb)(audio_nframes_t nframes, void *arg);
-typedef int (*audio_buffer_size_cb)(audio_nframes_t nframes, void *arg);
 typedef int (*audio_sample_rate_cb)(audio_nframes_t nframes, void *arg);
-typedef void (*audio_latency_cb)(audio_latency_mode_t mode, void *arg);
 
 /* Constants */
-
-#define AUDIO_DEFAULT_TYPE "32 bit float mono audio"
 
 /* audio_open option flags */
 #define AUDIO_NULL_OPTION 0x00u
 #define AUDIO_NO_START_SERVER 0x01u
 
-/* audio_port_register / audio_get_ports flag bits */
+/* audio_port_register / audio_get_device_ports flag bits */
 #define AUDIO_PORT_IS_INPUT 0x01u
 #define AUDIO_PORT_IS_OUTPUT 0x02u
 #define AUDIO_PORT_IS_PHYSICAL 0x04u
@@ -86,7 +94,7 @@ void audio_set_forced_rate(audio_client_t *client, audio_nframes_t rate);
 /* When set, the next audio_activate does NOT pin the graph quantum
  * (PW_KEY_NODE_FORCE_QUANTUM): the filter becomes a follower so the target
  * device (e.g. a Bluetooth sink whose clock cannot be slaved) drives the cycle.
- * Default off; wired devices keep the forced low-latency quantum. */
+ * Default off. Wired devices keep the forced low-latency quantum. */
 void audio_set_follow_device(audio_client_t *client, bool follow);
 
 /* Select SCHED_FIFO for the next data-loop start. Call while the loop is stopped. */
@@ -103,25 +111,21 @@ uint64_t audio_get_time_nsec(audio_client_t *client);
 
 /* Ports */
 
-audio_port_t *audio_port_register(audio_client_t *client, const char *port_name,
-                                  const char *port_type, uint64_t flags, uint64_t buffer_size);
+audio_port_t *audio_port_register(audio_client_t *client, const char *port_name, uint64_t flags,
+                                  uint32_t channel);
 bool          audio_port_unregister(audio_client_t *client, audio_port_t *port);
 void         *audio_port_get_buffer(audio_port_t *port, audio_nframes_t nframes);
 /* Capacity in frames of the port's dequeued cycle buffer (datas[0].maxsize),
  * 0 when no buffer is mapped this cycle.  Lets the RT copy clamp against a
  * daemon buffer smaller than the host period (quantum < buffer_size). */
 audio_nframes_t audio_port_buffer_avail_frames(const audio_port_t *port);
-const char     *audio_port_name(const audio_port_t *port);
-const char     *audio_port_type(const audio_port_t *port);
-audio_port_t   *audio_port_by_name(audio_client_t *client, const char *port_name);
-/* The returned NULL-terminated array and its name strings are duplicated
- * out of the discovered cache; free both with audio_free_ports (not audio_free). */
-const char **audio_get_ports(audio_client_t *client, const char *port_name_pattern,
-                             const char *type_name_pattern, uint64_t flags);
-/* Like audio_get_ports, but restricted to the device whose PipeWire
- * node.name == node_name.  node_name NULL/"" falls back to the first
- * available device (same as audio_get_ports). Free with audio_free_ports. */
+bool            audio_port_get_name(const audio_port_t *port, char *out, size_t size);
+/* The returned NULL-terminated endpoint-key array owns all strings. */
 const char **audio_get_device_ports(audio_client_t *client, const char *node_name, uint64_t flags);
+bool audio_get_device_endpoints(audio_client_t *client, const char *node_name, uint64_t flags,
+                                audio_endpoint_t *endpoints, uint32_t capacity, uint32_t *count);
+bool audio_port_publish_output(audio_port_t *port, const audio_sample_t *source,
+                               audio_nframes_t frames, bool admitted, bool active);
 /* Returns and clears the "PipeWire default sink/source changed" flag (set when
  * the "default" metadata switches to a different node after the initial fill).
  * Lets the ASIO side trigger a reconnect when the user follows the default. */
@@ -131,14 +135,11 @@ void audio_port_get_latency_range(audio_port_t *port, uint32_t mode, audio_laten
 /* Callbacks */
 
 bool audio_set_process_callback(audio_client_t *client, audio_process_cb cb, void *arg);
-bool audio_set_buffer_size_callback(audio_client_t *client, audio_buffer_size_cb cb, void *arg);
 bool audio_set_sample_rate_callback(audio_client_t *client, audio_sample_rate_cb cb, void *arg);
-bool audio_set_latency_callback(audio_client_t *client, audio_latency_cb cb, void *arg);
 
 /* Connections / memory */
 
 bool audio_connect(audio_client_t *client, const char *src, const char *dst);
 void audio_free(void *ptr);
-/* Frees an array returned by audio_get_ports / audio_get_device_ports,
- * including the duplicated name strings. */
+/* Frees an array returned by audio_get_device_ports, including its strings. */
 void audio_free_ports(const char **ports);

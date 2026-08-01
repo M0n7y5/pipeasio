@@ -38,6 +38,7 @@
 
 #include "audio.h"
 #include "pipeasio_config.h"
+#include "pipeasio_handle_table.h"
 #include "pipeasio_offsets.h"
 #include "pipeasio_rt_priority.h"
 #include "pipeasio_unix_abi.h"
@@ -48,54 +49,74 @@
 /* Priority shared with the native callback thread. */
 #define PAU_PUMP_RT_PRIORITY PIPEASIO_RT_PRIO_DEFAULT
 
-/* Token table for unix-side pointers. */
+enum token_kind
+{
+    TOKEN_CLIENT = 1,
+    TOKEN_PORT   = 2
+};
 
-#define PAU_TOKEN_MAX 512
+typedef struct token_entry
+{
+    void           *value;
+    enum token_kind kind;
+} token_entry;
 
-static void           *g_token[PAU_TOKEN_MAX];
-static pthread_mutex_t g_token_lock = PTHREAD_MUTEX_INITIALIZER;
+static pipeasio_handle_table token_table;
+static pthread_once_t        token_once = PTHREAD_ONCE_INIT;
+static bool                  token_ready;
+
+static void
+token_initialize(void)
+{
+    token_ready = pipeasio_handle_table_init(&token_table);
+}
 
 static pa_handle
-tok_add(void *p)
+tok_add(void *value, enum token_kind kind)
 {
-    pa_handle h    = 0;
-    pa_handle slot = 0;
-    pthread_mutex_lock(&g_token_lock);
-    for (uint32_t i = 0; i < PAU_TOKEN_MAX; i++)
-    {
-        if (g_token[i] == p)
-        {
-            h = i + 1;
-            break;
-        }
-        if (!g_token[i] && !slot)
-            slot = i + 1;
-    }
-    if (!h && slot)
-    {
-        g_token[slot - 1] = p;
-        h                 = slot;
-    }
-    pthread_mutex_unlock(&g_token_lock);
-    return h;
+    token_entry *entry;
+    pa_handle    handle;
+    pthread_once(&token_once, token_initialize);
+    if (!token_ready || !value)
+        return 0;
+    entry = malloc(sizeof(*entry));
+    if (!entry)
+        return 0;
+    entry->value = value;
+    entry->kind  = kind;
+    handle       = pipeasio_handle_table_insert(&token_table, entry);
+    if (!handle)
+        free(entry);
+    return handle;
 }
 
 static void *
-tok_get(pa_handle h)
+tok_get(pa_handle handle, enum token_kind kind)
 {
-    if (h == 0 || h > PAU_TOKEN_MAX)
+    token_entry *entry;
+    pthread_once(&token_once, token_initialize);
+    if (!token_ready)
         return NULL;
-    return g_token[h - 1];
+    entry = pipeasio_handle_table_get(&token_table, handle);
+    return entry && entry->kind == kind ? entry->value : NULL;
 }
 
-static void
-tok_clear(pa_handle h)
+static void *
+tok_clear(pa_handle handle, enum token_kind kind)
 {
-    if (h == 0 || h > PAU_TOKEN_MAX)
-        return;
-    pthread_mutex_lock(&g_token_lock);
-    g_token[h - 1] = NULL;
-    pthread_mutex_unlock(&g_token_lock);
+    token_entry *entry;
+    void        *value = NULL;
+    pthread_once(&token_once, token_initialize);
+    if (!token_ready)
+        return NULL;
+    entry = pipeasio_handle_table_remove(&token_table, handle);
+    if (entry)
+    {
+        if (entry->kind == kind)
+            value = entry->value;
+        free(entry);
+    }
+    return value;
 }
 
 /* Client context. */
@@ -113,7 +134,9 @@ typedef struct client_ctx
     uint8_t         out_active[PAU_RT_MAX_PORTS];
     audio_port_t   *in_port[PAU_RT_MAX_PORTS]; /* by channel, from PAU_PORT_REGISTER */
     audio_port_t   *out_port[PAU_RT_MAX_PORTS];
-    bool            half;           /* current ASIO double-buffer index */
+    bool            half; /* current ASIO double-buffer index */
+    pa_handle       port_handles[PAU_RT_MAX_PORTS * 2];
+    uint32_t        port_handle_count;
     long            rt_deadline_ns; /* per-cycle reply budget           */
 
     /* RT/aux producer to PE pump bridge. */
@@ -123,7 +146,7 @@ typedef struct client_ctx
     pthread_cond_t  done;
     bool            sync_init;
     bool            rt_raised;     /* pump SCHED_FIFO self-raise done (one-shot) */
-    bool            want_realtime; /* config.ini realtime; env overrides */
+    bool            want_realtime; /* config.ini realtime, env overrides */
     bool            installed;
     bool            pending;
     bool            delivered;
@@ -132,19 +155,21 @@ typedef struct client_ctx
     uint32_t        seq;
     pa_wait_params  evt;
     uint32_t        produced;
+    bool            admitted;
+    bool            cycle_complete;
     int32_t         result;
 } client_ctx;
 
 static client_ctx *
-cc_get(pa_handle h)
+cc_get(pa_handle handle)
 {
-    return (client_ctx *)tok_get(h);
+    return tok_get(handle, TOKEN_CLIENT);
 }
 
 static audio_port_t *
-port_get(pa_handle h)
+port_get(pa_handle handle)
 {
-    return (audio_port_t *)tok_get(h);
+    return tok_get(handle, TOKEN_PORT);
 }
 
 /* Bridge synchronization. */
@@ -184,13 +209,15 @@ bridge_reset(client_ctx *cc)
     if (!cc->sync_init)
         return;
     pthread_mutex_lock(&cc->mutex);
-    cc->pending     = false;
-    cc->delivered   = false;
-    cc->reply_ready = false;
-    cc->shutdown    = false;
-    cc->rt_raised   = false;
-    cc->produced    = 0;
-    cc->result      = 0;
+    cc->pending        = false;
+    cc->delivered      = false;
+    cc->reply_ready    = false;
+    cc->shutdown       = false;
+    cc->rt_raised      = false;
+    cc->produced       = 0;
+    cc->admitted       = false;
+    cc->cycle_complete = false;
+    cc->result         = 0;
     pthread_mutex_unlock(&cc->mutex);
 }
 
@@ -201,9 +228,11 @@ bridge_shutdown(client_ctx *cc)
     if (!cc->sync_init)
         return;
     pthread_mutex_lock(&cc->mutex);
-    cc->shutdown    = true;
-    cc->pending     = false;
-    cc->reply_ready = true;
+    cc->shutdown       = true;
+    cc->pending        = false;
+    cc->reply_ready    = true;
+    cc->admitted       = false;
+    cc->cycle_complete = true;
     pthread_cond_broadcast(&cc->ready);
     pthread_cond_broadcast(&cc->done);
     pthread_mutex_unlock(&cc->mutex);
@@ -222,61 +251,84 @@ bridge_destroy(client_ctx *cc)
     cc->sync_init = false;
 }
 
-/* Post one bridge event and wait boundedly for the PE pump.  prod_mutex
- * serializes the RT producer with the aux callbacks (buffer_size / sample_rate
- * / latency, fired on PipeWire's main-loop thread): if an aux invoke is in
- * flight, the RT cycle blocks on prod_mutex for up to rt_deadline_ns.  Aux
- * events occur only on renegotiation, so this stall window is acceptable. */
 static uint32_t
-bridge_invoke(client_ctx *cc, uint32_t kind, uint32_t index, uint32_t nframes, uint64_t time_nsec,
-              int32_t value)
+bridge_invoke_locked(client_ctx *cc, uint32_t kind, uint32_t index, uint32_t nframes,
+                     uint64_t time_nsec, int32_t value, bool *admitted)
 {
-    uint32_t        produced = 0;
     struct timespec deadline;
-
+    uint32_t        produced = 0;
+    *admitted                = false;
     if (!cc->sync_init || !cc->installed)
         return 0;
-
-    pthread_mutex_lock(&cc->prod_mutex);
     pthread_mutex_lock(&cc->mutex);
     if (cc->shutdown)
     {
         pthread_mutex_unlock(&cc->mutex);
-        pthread_mutex_unlock(&cc->prod_mutex);
         return 0;
     }
-
-    memset(&cc->evt, 0, sizeof cc->evt);
-    cc->evt.version   = PIPEASIO_UNIX_ABI_VERSION;
-    cc->evt.seq       = ++cc->seq;
-    cc->evt.kind      = kind;
-    cc->evt.index     = index;
-    cc->evt.nframes   = nframes;
-    cc->evt.time_nsec = pa_i64_from(time_nsec);
-    cc->evt.value     = value;
-    cc->pending       = true;
-    cc->delivered     = false;
-    cc->reply_ready   = false;
+    memset(&cc->evt, 0, sizeof(cc->evt));
+    cc->evt.version    = PIPEASIO_UNIX_ABI_VERSION;
+    cc->evt.seq        = ++cc->seq;
+    cc->evt.kind       = kind;
+    cc->evt.index      = index;
+    cc->evt.nframes    = nframes;
+    cc->evt.time_nsec  = pa_i64_from(time_nsec);
+    cc->evt.value      = value;
+    cc->pending        = true;
+    cc->delivered      = false;
+    cc->reply_ready    = false;
+    cc->cycle_complete = false;
     pthread_cond_signal(&cc->ready);
-
     clock_gettime(CLOCK_MONOTONIC, &deadline);
     deadline.tv_nsec += cc->rt_deadline_ns > 0 ? cc->rt_deadline_ns : PAU_RT_DEADLINE_FLOOR_NS;
     while (deadline.tv_nsec >= 1000000000L)
     {
         deadline.tv_nsec -= 1000000000L;
-        deadline.tv_sec++;
+        ++deadline.tv_sec;
     }
-
     while (!cc->reply_ready && !cc->shutdown)
     {
-        int rc = pthread_cond_timedwait(&cc->done, &cc->mutex, &deadline);
-        if (rc != 0) /* ETIMEDOUT or error: drop this cycle, keep the stream */
-            break;
+        int rc = cc->delivered ? pthread_cond_wait(&cc->done, &cc->mutex)
+                               : pthread_cond_timedwait(&cc->done, &cc->mutex, &deadline);
+        if (rc && !cc->delivered)
+        {
+            cc->pending = false;
+            pthread_mutex_unlock(&cc->mutex);
+            return 0;
+        }
     }
     if (cc->reply_ready && !cc->shutdown)
-        produced = cc->produced;
-    cc->pending = false; /* abandon: a late reply with the old seq is ignored */
+    {
+        produced  = cc->produced;
+        *admitted = cc->admitted;
+    }
+    if (kind != PAU_CB_BUFFER_SWITCH)
+    {
+        cc->pending        = false;
+        cc->cycle_complete = true;
+        pthread_cond_broadcast(&cc->done);
+    }
     pthread_mutex_unlock(&cc->mutex);
+    return produced;
+}
+
+static void
+bridge_complete_locked(client_ctx *cc)
+{
+    pthread_mutex_lock(&cc->mutex);
+    cc->pending        = false;
+    cc->cycle_complete = true;
+    pthread_cond_broadcast(&cc->done);
+    pthread_mutex_unlock(&cc->mutex);
+}
+
+static uint32_t
+bridge_invoke(client_ctx *cc, uint32_t kind, uint32_t index, uint32_t nframes, uint64_t time_nsec,
+              int32_t value)
+{
+    bool admitted;
+    pthread_mutex_lock(&cc->prod_mutex);
+    uint32_t produced = bridge_invoke_locked(cc, kind, index, nframes, time_nsec, value, &admitted);
     pthread_mutex_unlock(&cc->prod_mutex);
     return produced;
 }
@@ -286,79 +338,50 @@ bridge_invoke(client_ctx *cc, uint32_t kind, uint32_t index, uint32_t nframes, u
 static int
 wow64_rt_process(audio_nframes_t nframes, void *arg)
 {
-    client_ctx *cc = arg;
-    bool        half;
+    client_ctx *cc       = arg;
+    bool        admitted = false;
     uint32_t    produced;
-
+    pthread_mutex_lock(&cc->prod_mutex);
+    bool half = cc->half;
     if (!cc->buffer_base)
     {
-        for (uint32_t i = 0; i < cc->n_out; i++)
-            if (cc->out_active[i] && cc->out_port[i])
-            {
-                audio_sample_t *dst   = audio_port_get_buffer(cc->out_port[i], nframes);
-                audio_nframes_t avail = audio_port_buffer_avail_frames(cc->out_port[i]);
-                audio_nframes_t n     = (dst && avail < nframes) ? avail : (dst ? nframes : 0);
-                if (n)
-                    memset(dst, 0, sizeof(audio_sample_t) * n);
-            }
+        for (uint32_t i = 0; i < cc->n_out; ++i)
+            if (cc->out_port[i])
+                audio_port_publish_output(cc->out_port[i], NULL, nframes, false, false);
+        pthread_mutex_unlock(&cc->prod_mutex);
         return 0;
     }
-
-    half = cc->half;
-
-    /* Gather. */
-    for (uint32_t i = 0; i < cc->n_in; i++)
+    for (uint32_t i = 0; i < cc->n_in; ++i)
         if (cc->in_active[i] && cc->in_port[i])
         {
-            audio_sample_t *src   = audio_port_get_buffer(cc->in_port[i], nframes);
-            audio_sample_t *dst   = cc->buffer_base
-                                    + pipeasio_host_input_offset_samples(i, cc->buffer_size)
-                                    + pipeasio_host_half_offset_samples(half, cc->buffer_size);
-            audio_nframes_t avail = audio_port_buffer_avail_frames(cc->in_port[i]);
-            audio_nframes_t n     = (src && avail < nframes) ? avail : (src ? nframes : 0);
-            if (n)
-                memcpy(dst, src, sizeof(audio_sample_t) * n);
-            if (n < nframes)
-                memset(dst + n, 0, sizeof(audio_sample_t) * (nframes - n));
-        }
-
-    /* Host callback. */
-    produced = bridge_invoke(cc, PAU_CB_BUFFER_SWITCH, half, nframes,
-                             audio_get_time_nsec(cc->client), 0);
-
-    /* Scatter or silence. */
-    for (uint32_t i = 0; i < cc->n_out; i++)
-        if (cc->out_active[i] && cc->out_port[i])
-        {
-            audio_sample_t *dst = audio_port_get_buffer(cc->out_port[i], nframes);
-            if (!dst)
-                continue;
-            audio_nframes_t avail = audio_port_buffer_avail_frames(cc->out_port[i]);
-            audio_nframes_t n     = avail < nframes ? avail : nframes;
-            if (!n)
-                continue;
-            if (produced)
-            {
-                audio_sample_t *src
-                        = cc->buffer_base
-                          + pipeasio_host_output_offset_samples(i, cc->n_in, cc->buffer_size)
-                          + pipeasio_host_half_offset_samples(half, cc->buffer_size);
-                memcpy(dst, src, sizeof(audio_sample_t) * n);
-            }
+            audio_sample_t *source = audio_port_get_buffer(cc->in_port[i], nframes);
+            audio_sample_t *destination
+                    = cc->buffer_base + pipeasio_host_input_offset_samples(i, cc->buffer_size)
+                      + pipeasio_host_half_offset_samples(half, cc->buffer_size);
+            if (source)
+                memcpy(destination, source, sizeof(*destination) * nframes);
             else
-            {
-                memset(dst, 0, sizeof(audio_sample_t) * n);
-            }
+                memset(destination, 0, sizeof(*destination) * nframes);
         }
-
-    cc->half = !half;
-    return 0;
-}
-
-static int
-wow64_buffer_size_cb(audio_nframes_t nframes, void *arg)
-{
-    bridge_invoke((client_ctx *)arg, PAU_CB_BUFFER_SIZE, 0, 0, 0, (int32_t)nframes);
+    produced = bridge_invoke_locked(cc, PAU_CB_BUFFER_SWITCH, half, nframes,
+                                    audio_get_time_nsec(cc->client), 0, &admitted);
+    for (uint32_t i = 0; i < cc->n_out; ++i)
+    {
+        const audio_sample_t *source
+                = admitted && produced
+                          ? cc->buffer_base
+                                    + pipeasio_host_output_offset_samples(i, cc->n_in,
+                                                                          cc->buffer_size)
+                                    + pipeasio_host_half_offset_samples(half, cc->buffer_size)
+                          : NULL;
+        if (cc->out_port[i])
+            audio_port_publish_output(cc->out_port[i], source, nframes, admitted && produced,
+                                      cc->out_active[i]);
+    }
+    if (admitted)
+        cc->half = !half;
+    bridge_complete_locked(cc);
+    pthread_mutex_unlock(&cc->prod_mutex);
     return 0;
 }
 
@@ -369,30 +392,7 @@ wow64_sample_rate_cb(audio_nframes_t nframes, void *arg)
     return 0;
 }
 
-static void
-wow64_latency_cb(audio_latency_mode_t mode, void *arg)
-{
-    bridge_invoke((client_ctx *)arg, PAU_CB_LATENCY, 0, 0, 0, (int32_t)mode);
-}
-
 /* Small helpers. */
-
-static void
-copy_string(char *dst, size_t dst_size, const char *src)
-{
-    if (!dst || dst_size == 0)
-        return;
-    if (!src)
-    {
-        dst[0] = '\0';
-        return;
-    }
-    size_t n = strlen(src);
-    if (n >= dst_size)
-        n = dst_size - 1;
-    memcpy(dst, src, n);
-    dst[n] = '\0';
-}
 
 #define PAU_CHECK(p)                                                                               \
     do                                                                                             \
@@ -400,8 +400,6 @@ copy_string(char *dst, size_t dst_size, const char *src)
         if (!(p) || ((const pa_open_params *)(p))->version != PIPEASIO_UNIX_ABI_VERSION)           \
             return STATUS_INVALID_PARAMETER;                                                       \
     } while (0)
-
-/* Unix-call handlers. */
 
 static NTSTATUS
 wow64_open(void *args)
@@ -428,7 +426,7 @@ wow64_open(void *args)
         p->status = status;
         return STATUS_SUCCESS;
     }
-    p->client = tok_add(cc);
+    p->client = tok_add(cc, TOKEN_CLIENT);
     p->status = status;
     if (!p->client)
     {
@@ -449,15 +447,17 @@ wow64_close(void *args)
     PAU_CHECK(p);
     cc        = cc_get(p->client);
     p->result = 0;
-    if (cc)
-    {
-        bridge_shutdown(cc);
-        audio_close(cc->client);
-        bridge_destroy(cc);
-        tok_clear(p->client);
-        free(cc);
-        p->result = 1;
-    }
+    if (!cc)
+        return STATUS_INVALID_HANDLE;
+    bridge_shutdown(cc);
+    for (uint32_t i = 0; i < cc->port_handle_count; ++i)
+        tok_clear(cc->port_handles[i], TOKEN_PORT);
+    cc->port_handle_count = 0;
+    audio_close(cc->client);
+    bridge_destroy(cc);
+    tok_clear(p->client, TOKEN_CLIENT);
+    free(cc);
+    p->result = 1;
     return STATUS_SUCCESS;
 }
 
@@ -596,29 +596,29 @@ wow64_port_register(void *args)
     pa_port_register_params *p = args;
     client_ctx              *cc;
     audio_port_t            *port;
-
     PAU_CHECK(p);
-    cc = cc_get(p->client);
+    p->port = 0;
+    cc      = cc_get(p->client);
     if (!cc)
         return STATUS_INVALID_HANDLE;
-    port = audio_port_register(cc->client, p->name, p->type, p->flags, p->channel);
+    if (!memchr(p->name, '\0', sizeof(p->name)) || !p->name[0] || p->channel >= PAU_RT_MAX_PORTS
+        || (p->flags != AUDIO_PORT_IS_INPUT && p->flags != AUDIO_PORT_IS_OUTPUT)
+        || cc->port_handle_count >= PAU_RT_MAX_PORTS * 2)
+        return STATUS_INVALID_PARAMETER;
+    port = audio_port_register(cc->client, p->name, p->flags, p->channel);
     if (!port)
-    {
-        p->port = 0;
         return STATUS_SUCCESS;
-    }
-    /* Map channel index to the RT port arrays. */
-    if (p->channel < PAU_RT_MAX_PORTS)
+    p->port = tok_add(port, TOKEN_PORT);
+    if (!p->port)
     {
-        if (p->flags & AUDIO_PORT_IS_INPUT)
-            cc->in_port[p->channel] = port;
-        else if (p->flags & AUDIO_PORT_IS_OUTPUT)
-            cc->out_port[p->channel] = port;
+        audio_port_unregister(cc->client, port);
+        return STATUS_NO_MEMORY;
     }
-    /* Hand the PE side a token for this port so audio_port_name/type/
-     * latency_range (used by autoconnect) can resolve it; the RT path uses the
-     * cc->in_port/out_port arrays above, but the proxy needs a non-zero handle. */
-    p->port = tok_add(port);
+    if (p->flags == AUDIO_PORT_IS_INPUT)
+        cc->in_port[p->channel] = port;
+    else
+        cc->out_port[p->channel] = port;
+    cc->port_handles[cc->port_handle_count++] = p->port;
     return STATUS_SUCCESS;
 }
 
@@ -628,65 +628,31 @@ wow64_port_unregister(void *args)
     pa_port_params *p = args;
     client_ctx     *cc;
     audio_port_t   *port;
-
     PAU_CHECK(p);
-    cc   = cc_get(p->client);
-    port = port_get(p->port);
+    p->result = 0;
+    cc        = cc_get(p->client);
+    port      = port_get(p->port);
     if (!cc || !port)
         return STATUS_INVALID_HANDLE;
-    audio_port_unregister(cc->client, port);
-    for (uint32_t i = 0; i < PAU_RT_MAX_PORTS; i++)
+    if (!audio_port_unregister(cc->client, port))
+        return STATUS_UNSUCCESSFUL;
+    for (uint32_t i = 0; i < PAU_RT_MAX_PORTS; ++i)
     {
         if (cc->in_port[i] == port)
             cc->in_port[i] = NULL;
         if (cc->out_port[i] == port)
             cc->out_port[i] = NULL;
     }
-    tok_clear(p->port);
-    return STATUS_SUCCESS;
-}
-
-static NTSTATUS
-wow64_port_name(void *args)
-{
-    pa_port_params *p = args;
-    audio_port_t   *port;
-
-    PAU_CHECK(p);
-    port = port_get(p->port);
-    if (!port)
-        return STATUS_INVALID_HANDLE;
-    copy_string(p->name, sizeof p->name, audio_port_name(port));
-    return STATUS_SUCCESS;
-}
-
-static NTSTATUS
-wow64_port_type(void *args)
-{
-    pa_port_params *p = args;
-    audio_port_t   *port;
-
-    PAU_CHECK(p);
-    port = port_get(p->port);
-    if (!port)
-        return STATUS_INVALID_HANDLE;
-    copy_string(p->name, sizeof p->name, audio_port_type(port));
-    return STATUS_SUCCESS;
-}
-
-static NTSTATUS
-wow64_port_by_name(void *args)
-{
-    pa_port_params *p = args;
-    client_ctx     *cc;
-    audio_port_t   *port;
-
-    PAU_CHECK(p);
-    cc = cc_get(p->client);
-    if (!cc)
-        return STATUS_INVALID_HANDLE;
-    port    = audio_port_by_name(cc->client, p->name);
-    p->port = port ? tok_add(port) : 0;
+    for (uint32_t i = 0; i < cc->port_handle_count; ++i)
+        if (cc->port_handles[i] == p->port)
+        {
+            memmove(&cc->port_handles[i], &cc->port_handles[i + 1],
+                    (cc->port_handle_count - i - 1) * sizeof(cc->port_handles[0]));
+            --cc->port_handle_count;
+            break;
+        }
+    tok_clear(p->port, TOKEN_PORT);
+    p->result = 1;
     return STATUS_SUCCESS;
 }
 
@@ -707,60 +673,49 @@ wow64_port_latency_range(void *args)
     return STATUS_SUCCESS;
 }
 
-/* Pack a NULL-terminated port list into the wire blob. */
-static void
-pack_ports(const char **ports, char *blob, size_t blob_size, uint32_t *out_count)
-{
-    size_t   off   = 0;
-    uint32_t count = 0;
-
-    if (ports)
-    {
-        for (uint32_t i = 0; ports[i]; i++)
-        {
-            size_t len = strlen(ports[i]) + 1;
-            if (off + len > blob_size)
-                break;
-            memcpy(blob + off, ports[i], len);
-            off += len;
-            count++;
-        }
-    }
-    *out_count = count;
-}
-
-static NTSTATUS
-wow64_get_ports(void *args)
-{
-    pa_ports_params *p = args;
-    client_ctx      *cc;
-    const char     **ports;
-
-    PAU_CHECK(p);
-    cc = cc_get(p->client);
-    if (!cc)
-        return STATUS_INVALID_HANDLE;
-    ports = audio_get_ports(cc->client, p->pattern[0] ? p->pattern : NULL,
-                            p->type[0] ? p->type : NULL, p->flags);
-    pack_ports(ports, p->names, sizeof p->names, &p->count);
-    audio_free_ports(ports);
-    return STATUS_SUCCESS;
-}
-
 static NTSTATUS
 wow64_get_device_ports(void *args)
 {
-    pa_ports_params *p = args;
-    client_ctx      *cc;
-    const char     **ports;
-
+    pa_ports_params  *p = args;
+    client_ctx       *cc;
+    audio_endpoint_t *endpoints;
+    uint32_t          count = 0;
     PAU_CHECK(p);
-    cc = cc_get(p->client);
+    p->result   = 0;
+    p->complete = 0;
+    p->count    = 0;
+    p->bytes    = 0;
+    cc          = cc_get(p->client);
     if (!cc)
         return STATUS_INVALID_HANDLE;
-    ports = audio_get_device_ports(cc->client, p->node[0] ? p->node : NULL, p->flags);
-    pack_ports(ports, p->names, sizeof p->names, &p->count);
-    audio_free_ports(ports);
+    if (p->requested > PAU_ENDPOINT_MAX || !memchr(p->node, '\0', sizeof(p->node)))
+        return STATUS_INVALID_PARAMETER;
+    endpoints = calloc(p->requested ? p->requested : 1, sizeof(*endpoints));
+    if (!endpoints)
+        return STATUS_NO_MEMORY;
+    if (!audio_get_device_endpoints(cc->client, p->node[0] ? p->node : NULL, p->flags, endpoints,
+                                    p->requested, &count)
+        || count > p->requested)
+    {
+        free(endpoints);
+        return STATUS_SUCCESS;
+    }
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        pa_endpoint_record *out = &p->endpoints[i];
+        memcpy(out->key, endpoints[i].key, strlen(endpoints[i].key) + 1);
+        memcpy(out->node_name, endpoints[i].node_name, strlen(endpoints[i].node_name) + 1);
+        memcpy(out->port_name, endpoints[i].port_name, strlen(endpoints[i].port_name) + 1);
+        out->node_id        = endpoints[i].node_id;
+        out->port_id        = endpoints[i].port_id;
+        out->direction      = endpoints[i].direction;
+        out->global_port_id = endpoints[i].global_port_id;
+        p->bytes += (uint32_t)strlen(out->key) + 1;
+    }
+    free(endpoints);
+    p->count    = count;
+    p->complete = 1;
+    p->result   = 1;
     return STATUS_SUCCESS;
 }
 
@@ -771,24 +726,12 @@ wow64_connect(void *args)
     client_ctx        *cc;
 
     PAU_CHECK(p);
+    if (!memchr(p->src, '\0', sizeof(p->src)) || !memchr(p->dst, '\0', sizeof(p->dst)))
+        return STATUS_INVALID_PARAMETER;
     cc = cc_get(p->client);
     if (!cc)
         return STATUS_INVALID_HANDLE;
     p->ok = audio_connect(cc->client, p->src, p->dst) ? 1 : 0;
-    return STATUS_SUCCESS;
-}
-
-static NTSTATUS
-wow64_get_client_name(void *args)
-{
-    pa_name_params *p = args;
-    client_ctx     *cc;
-
-    PAU_CHECK(p);
-    cc = cc_get(p->client);
-    if (!cc)
-        return STATUS_INVALID_HANDLE;
-    copy_string(p->name, sizeof p->name, audio_get_client_name(cc->client));
     return STATUS_SUCCESS;
 }
 
@@ -816,8 +759,8 @@ wow64_deactivate(void *args)
     cc = cc_get(p->client);
     if (!cc)
         return STATUS_INVALID_HANDLE;
+    bridge_shutdown(cc);
     p->result = audio_deactivate(cc->client) ? 1 : 0;
-    bridge_shutdown(cc); /* let the pump's PAU_WAIT return and the PE join it */
     return STATUS_SUCCESS;
 }
 
@@ -831,11 +774,10 @@ wow64_install_callbacks(void *args)
     cc = cc_get(p->client);
     if (!cc)
         return STATUS_INVALID_HANDLE;
-    bridge_reset(cc); /* fresh activation: clear any prior shutdown/pending */
-    audio_set_process_callback(cc->client, wow64_rt_process, cc);
-    audio_set_buffer_size_callback(cc->client, wow64_buffer_size_cb, cc);
-    audio_set_sample_rate_callback(cc->client, wow64_sample_rate_cb, cc);
-    audio_set_latency_callback(cc->client, wow64_latency_cb, cc);
+    bridge_reset(cc);
+    if (!audio_set_process_callback(cc->client, wow64_rt_process, cc)
+        || !audio_set_sample_rate_callback(cc->client, wow64_sample_rate_cb, cc))
+        return STATUS_UNSUCCESSFUL;
     cc->installed = true;
     p->result     = 1;
     return STATUS_SUCCESS;
@@ -847,29 +789,40 @@ wow64_bind_rt(void *args)
     pa_bind_params *p = args;
     client_ctx     *cc;
     audio_nframes_t rate;
-
     PAU_CHECK(p);
-    cc = cc_get(p->client);
+    p->result = 0;
+    cc        = cc_get(p->client);
     if (!cc)
         return STATUS_INVALID_HANDLE;
-
+    if (!p->buffer_base || !p->buffer_size || p->n_in > PAU_RT_MAX_PORTS
+        || p->n_out > PAU_RT_MAX_PORTS)
+        return STATUS_INVALID_PARAMETER;
+    for (uint32_t i = 0; i < p->n_in; ++i)
+        if (!cc->in_port[i])
+            return STATUS_INVALID_PARAMETER;
+    for (uint32_t i = 0; i < p->n_out; ++i)
+        if (!cc->out_port[i])
+            return STATUS_INVALID_PARAMETER;
+    pthread_mutex_lock(&cc->prod_mutex);
     cc->buffer_base = (audio_sample_t *)(uintptr_t)p->buffer_base;
     cc->buffer_size = p->buffer_size;
-    cc->n_in        = p->n_in < PAU_RT_MAX_PORTS ? p->n_in : PAU_RT_MAX_PORTS;
-    cc->n_out       = p->n_out < PAU_RT_MAX_PORTS ? p->n_out : PAU_RT_MAX_PORTS;
-    memcpy(cc->in_active, p->in_active, sizeof cc->in_active);
-    memcpy(cc->out_active, p->out_active, sizeof cc->out_active);
-    cc->half = false;
-
-    /* max(2 * cycle period, 5 ms). */
+    cc->n_in        = p->n_in;
+    cc->n_out       = p->n_out;
+    memset(cc->in_active, 0, sizeof(cc->in_active));
+    memset(cc->out_active, 0, sizeof(cc->out_active));
+    memcpy(cc->in_active, p->in_active, p->n_in);
+    memcpy(cc->out_active, p->out_active, p->n_out);
+    cc->half           = false;
     rate               = audio_get_sample_rate(cc->client);
     cc->rt_deadline_ns = PAU_RT_DEADLINE_FLOOR_NS;
-    if (rate && cc->buffer_size)
+    if (rate)
     {
         long period = (long)((double)cc->buffer_size * 1.0e9 / (double)rate);
         if (2 * period > cc->rt_deadline_ns)
             cc->rt_deadline_ns = 2 * period;
     }
+    pthread_mutex_unlock(&cc->prod_mutex);
+    p->result = 1;
     return STATUS_SUCCESS;
 }
 
@@ -939,10 +892,12 @@ wow64_wait_callback(void *args)
     else
     {
         pa_handle owner = p->client;
-        *p              = cc->evt; /* copy seq/kind/index/nframes/time/value */
+        *p              = cc->evt;
         p->client       = owner;
+        p->delivered    = 1;
         p->shutdown     = 0;
-        cc->delivered   = true; /* consume: do not redeliver until next event */
+        cc->delivered   = true;
+        pthread_cond_broadcast(&cc->done);
     }
     pthread_mutex_unlock(&cc->mutex);
     return STATUS_SUCCESS;
@@ -963,12 +918,23 @@ wow64_reply_callback(void *args)
     if (!cc->shutdown && cc->pending && p->seq == cc->seq)
     {
         cc->produced    = p->produced;
+        cc->admitted    = p->admitted != 0;
         cc->result      = p->result;
         cc->reply_ready = true;
-        pthread_cond_signal(&cc->done);
+        pthread_cond_broadcast(&cc->done);
+        if (cc->evt.kind == PAU_CB_BUFFER_SWITCH)
+            while (!cc->cycle_complete && !cc->shutdown)
+                pthread_cond_wait(&cc->done, &cc->mutex);
     }
     pthread_mutex_unlock(&cc->mutex);
     return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+wow64_reserved(void *args)
+{
+    PAU_CHECK(args);
+    return STATUS_NOT_SUPPORTED;
 }
 
 /* Call tables.  Order must match enum pa_call. */
@@ -986,14 +952,14 @@ const unixlib_entry_t __wine_unix_call_funcs[] = {
     wow64_default_changed,
     wow64_port_register,
     wow64_port_unregister,
-    wow64_port_name,
-    wow64_port_type,
-    wow64_port_by_name,
+    wow64_reserved,
+    wow64_reserved,
+    wow64_reserved,
     wow64_port_latency_range,
-    wow64_get_ports,
+    wow64_reserved,
     wow64_get_device_ports,
     wow64_connect,
-    wow64_get_client_name,
+    wow64_reserved,
     wow64_activate,
     wow64_deactivate,
     wow64_install_callbacks,
@@ -1020,14 +986,14 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] = {
     wow64_default_changed,
     wow64_port_register,
     wow64_port_unregister,
-    wow64_port_name,
-    wow64_port_type,
-    wow64_port_by_name,
+    wow64_reserved,
+    wow64_reserved,
+    wow64_reserved,
     wow64_port_latency_range,
-    wow64_get_ports,
+    wow64_reserved,
     wow64_get_device_ports,
     wow64_connect,
-    wow64_get_client_name,
+    wow64_reserved,
     wow64_activate,
     wow64_deactivate,
     wow64_install_callbacks,

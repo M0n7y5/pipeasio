@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -euo pipefail
+
+hook_pe="@CMAKE_BINARY_DIR@/pipeasio64_stop_test.dll"
+hook_so="@CMAKE_BINARY_DIR@/pipeasio64_stop_test.dll.so"
+runner="@CMAKE_CURRENT_BINARY_DIR@/run.sh"
+
+for tool in wine wineboot pw-cli; do
+    command -v "$tool" >/dev/null || { echo "[gate-interleave] $tool unavailable"; exit 77; }
+done
+pw-cli info 0 >/dev/null 2>&1 || { echo "[gate-interleave] no PipeWire daemon"; exit 77; }
+[[ -f "$hook_pe" && -f "$hook_so" ]] || {
+    echo "[gate-interleave] hooked driver not built" >&2
+    exit 1
+}
+
+base=${PROBE_PREFIX:-"$HOME/.cache/pipeasio-probe"}
+export PROBE_PREFIX="${base}-gate-interleave"
+staged="@CMAKE_CURRENT_BINARY_DIR@/gate-interleave-install"
+rm -rf -- "$staged"
+mkdir -p "$staged/lib/wine/x86_64-windows" "$staged/lib/wine/x86_64-unix"
+cp "$hook_pe" "$staged/lib/wine/x86_64-windows/pipeasio64_stop_test.dll"
+cp "$hook_so" "$staged/lib/wine/x86_64-unix/pipeasio64_stop_test.dll.so"
+cp "$hook_so" "$staged/lib/wine/x86_64-unix/pipeasio64.dll.so"
+cp "$hook_so" "$staged/lib/wine/x86_64-unix/pipeasio.dll.so"
+
+export WINEPREFIX="$PROBE_PREFIX"
+if [[ ! -d "$WINEPREFIX/drive_c" ]]; then
+    wineboot --init >/dev/null 2>&1
+fi
+cp "$hook_pe" "$WINEPREFIX/drive_c/windows/system32/pipeasio64_stop_test.dll"
+wine reg add 'HKLM\Software\Classes\CLSID\{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}\InprocServer32' \
+    /ve /d pipeasio64_stop_test.dll /f >/dev/null
+wine reg add 'HKLM\Software\Classes\CLSID\{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}\InprocServer32' \
+    /v ThreadingModel /d Apartment /f >/dev/null
+wine reg add 'HKLM\Software\ASIO\PipeASIO' /v CLSID \
+    /d '{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}' /f >/dev/null
+
+export PIPEASIO_ROOT="$staged"
+export PIPEASIO_PREFIX="$staged"
+export PIPEASIO_RT_PRIORITY=off
+export PROBE_AUTOCONNECT=0
+export PROBE_ENV_KEEP="PROBE_GATE_BARRIER"
+export PROBE_GATE_BARRIER=1
+exec "$runner" 1

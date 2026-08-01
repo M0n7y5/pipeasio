@@ -28,7 +28,6 @@
 
 #include <stdbool.h>
 #include <stdio.h>
-#include <errno.h>
 #include <limits.h>
 #ifndef PIPEASIO_WOW64_PE
 #include <unistd.h>
@@ -40,7 +39,7 @@
 
 #include <stdlib.h> /* getenv for PIPEASIO_DEBUG */
 
-/* wine/debug.h provides debugstr_guid; pipeasio_log.h overrides TRACE/WARN/ERR. */
+/* wine/debug.h provides debugstr_guid. pipeasio_log.h overrides TRACE/WARN/ERR. */
 #ifndef PIPEASIO_WOW64_PE
 #include "wine/debug.h"
 #endif
@@ -57,7 +56,9 @@
 #include "audio.h"
 #include "pipeasio_offsets.h"
 #include "pipeasio_config.h"
+#include "pipeasio_parse.h"
 #include "pipeasio_rt.h"
+#include "pipeasio_admission_gate.h"
 #ifdef PIPEASIO_WOW64_PE
 #include "pipeasio_wow64_pe.h"
 #endif
@@ -87,7 +88,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(asio);
 #define PIPEASIO_MAXIMUM_BUFFERSIZE 8192
 #define PIPEASIO_PREFERRED_BUFFERSIZE 1024
 
-/* i386 ASIO uses MS thiscall; GCC needs a trampoline. */
+/* i386 ASIO uses MS thiscall. GCC needs a trampoline. */
 #if defined(PIPEASIO_WOW64_PE) /* i386 PE / COFF (MinGW) */
 #define __ASM_DEFINE_FUNC(name, suffix, code)                                                      \
     asm(".text\n\t.align 4\n\t.globl _" #name suffix "\n_" #name suffix                            \
@@ -169,7 +170,25 @@ typedef struct TimeInformation
     w_int64_t timeStampForTimeCode;
     ULONG     flagsForTimeCode;
     char      _4[64];
+
 } TimeInformation;
+typedef struct ASIOClockSource
+{
+    LONG index;
+    LONG associatedChannel;
+    LONG associatedGroup;
+    LONG isCurrentSource;
+    char name[32];
+} ASIOClockSource;
+typedef struct ASIOChannelInfo
+{
+    LONG channel;
+    LONG isInput;
+    LONG isActive;
+    LONG channelGroup;
+    LONG type;
+    char name[32];
+} ASIOChannelInfo;
 
 typedef struct Callbacks
 {
@@ -216,6 +235,25 @@ DECLARE_INTERFACE_(IPipeASIO, IUnknown)
 #undef INTERFACE
 
 typedef struct IPipeASIO *LPPIPEASIO;
+typedef enum pipeasio_driver_state
+{
+    Loaded,
+    Initializing,
+    Initialized,
+    Preparing,
+    Prepared,
+    Starting,
+    Running,
+    Stopping,
+    Disposing,
+    Destroying
+} pipeasio_driver_state;
+
+typedef struct method_token
+{
+    struct IPipeASIOImpl *owner;
+    bool                  counted;
+} method_token;
 
 typedef struct IOChannel
 {
@@ -227,9 +265,21 @@ typedef struct IOChannel
 
 typedef struct IPipeASIOImpl
 {
-    /* COM stuff */
-    const IPipeASIOVtbl *lpVtbl;
-    LONG                 ref;
+    /* COM and lifetime state */
+    const IPipeASIOVtbl    *lpVtbl;
+    _Atomic ULONG           ref;
+    pipeasio_admission_gate method_gate;
+    pipeasio_admission_gate host_gate;
+    HANDLE                  method_idle;
+    HANDLE                  host_idle;
+    SRWLOCK                 lifecycle_lock;
+    HANDLE                  work_event;
+    HANDLE                  worker;
+    DWORD                   worker_tid;
+    HMODULE                 module_pin;
+    _Atomic uint32_t        gate_owner_seq;
+    _Atomic uint32_t        lifecycle_waiters;
+    _Atomic uint32_t        stop_generation;
 
     /* The app's main window handle on windows, 0 on OS/X */
     HWND sys_ref;
@@ -240,7 +290,7 @@ typedef struct IPipeASIOImpl
     BOOL host_buffer_index;
     Callbacks *_Atomic host_callbacks;
     /* Live-config watcher: polls config.ini, asks the host to reset on change.
-     * Heap ctx shared with the watcher thread; see struct config_watch. */
+     * Heap ctx shared with the watcher thread. See struct config_watch. */
     struct config_watch   *config_watch;
     CRITICAL_SECTION       config_lock;      /* guards staged_cfg */
     struct pipeasio_config staged_cfg;       /* watcher -> apply handoff */
@@ -249,7 +299,7 @@ typedef struct IPipeASIOImpl
     LONG                   host_current_buffersize;
     _Atomic INT            host_driver_state;
     _Atomic uint64_t       host_num_samples;
-    double                 host_sample_rate;
+    _Atomic uint32_t       host_sample_rate;
     TimeInformation        host_time;
     BOOL                   host_time_info_mode;
     _Atomic uint64_t       host_time_stamp;
@@ -280,14 +330,6 @@ typedef struct IPipeASIOImpl
     IOChannel      *input_channel;
     IOChannel      *output_channel;
 } IPipeASIOImpl;
-
-enum
-{
-    Loaded,
-    Initialized,
-    Prepared,
-    Running
-};
 
 /****************************************************************************
  *  Interface Methods
@@ -354,17 +396,24 @@ HIDDEN void __thiscall_OutputReady(void);
  *  ASIO process callbacks
  */
 
-static inline int  buffer_size_callback(audio_nframes_t nframes, void *arg);
-static inline void latency_callback(audio_latency_mode_t mode, void *arg);
-static inline int  process_callback(audio_nframes_t nframes, void *arg);
-static inline int  sample_rate_callback(audio_nframes_t nframes, void *arg);
+static inline int process_callback(audio_nframes_t nframes, void *arg);
+static inline int sample_rate_callback(audio_nframes_t nframes, void *arg);
 
 /*
  *  Support functions
  */
 
-HRESULT WINAPI PipeASIOCreateInstance(REFIID riid, LPVOID *ppobj);
-static VOID    configure_driver(IPipeASIOImpl *This);
+HRESULT WINAPI      PipeASIOCreateInstance(REFIID riid, LPVOID *ppobj);
+static VOID         configure_driver(IPipeASIOImpl *This);
+static DWORD WINAPI lifecycle_worker(void *arg);
+static bool         method_begin(IPipeASIOImpl *This, bool identity, method_token *token);
+static void         method_end(method_token *token);
+static bool         drain_gate(IPipeASIOImpl *This, pipeasio_admission_gate *gate, HANDLE idle,
+                               uint32_t target);
+static bool         wait_stop_generation(IPipeASIOImpl *This, uint32_t observed);
+static LONG         stop_admitted(IPipeASIOImpl *This);
+extern void         pipeasio_object_created(void);
+extern void         pipeasio_object_destroyed(void);
 
 /* {2d3ca9e2-1193-4c5d-b5fd-38798f3dc074} */
 static GUID const CLSID_PipeASIO
@@ -395,6 +444,325 @@ static const IPipeASIOVtbl PipeASIO_Vtbl = { (void *)QueryInterface,
                                              (void *)THISCALL(ControlPanel),
                                              (void *)THISCALL(Future),
                                              (void *)THISCALL(OutputReady) };
+static _Thread_local pipeasio_host_call_token *host_token_top;
+
+static pipeasio_gate_owner
+next_gate_owner(IPipeASIOImpl *This)
+{
+    uint32_t owner = atomic_fetch_add_explicit(&This->gate_owner_seq, 1, memory_order_relaxed) + 1;
+    if (!owner || owner > PIPEASIO_GATE_OWNER_MAX)
+    {
+        uint32_t expected = owner;
+        atomic_compare_exchange_strong(&This->gate_owner_seq, &expected, 1);
+        owner = 1;
+    }
+    return owner;
+}
+
+static bool
+claim_closed_gate(pipeasio_admission_gate *gate, pipeasio_gate_owner owner)
+{
+    uint64_t            word = atomic_load_explicit(&gate->word, memory_order_acquire);
+    pipeasio_gate_owner prior;
+    if (!(word & PIPEASIO_GATE_CLOSED_BIT) || (word & PIPEASIO_GATE_PERMANENT_BIT))
+        return false;
+    prior = pipeasio_gate_word_owner(word);
+    if (prior == owner)
+        return true;
+    if (!prior)
+    {
+        uint64_t next = (word & (PIPEASIO_GATE_COUNT_MASK | PIPEASIO_GATE_CLOSED_BIT))
+                        | pipeasio_gate_owner_bits(owner);
+        return atomic_compare_exchange_strong_explicit(&gate->word, &word, next,
+                                                       memory_order_acq_rel, memory_order_acquire);
+    }
+    return pipeasio_gate_handoff(gate, prior, owner);
+}
+
+static bool
+method_begin(IPipeASIOImpl *This, bool identity, method_token *token)
+{
+    bool entered   = identity ? pipeasio_gate_try_enter_identity(&This->method_gate)
+                              : pipeasio_gate_try_enter(&This->method_gate);
+    token->owner   = This;
+    token->counted = entered;
+    if (!entered)
+        return false;
+    if (atomic_load_explicit(&This->host_driver_state, memory_order_acquire) == Destroying)
+    {
+        method_end(token);
+        return false;
+    }
+    return true;
+}
+
+#ifdef PIPEASIO_TEST_GATE_BARRIER
+static void gate_leave_test_barrier(void);
+static void gate_drain_test_signal(void);
+#endif
+
+static void
+method_end(method_token *token)
+{
+    IPipeASIOImpl *This;
+    if (!token || !token->counted)
+        return;
+    This           = token->owner;
+    token->counted = false;
+    if (pipeasio_gate_is_closed(&This->method_gate))
+        SetEvent(This->method_idle);
+#ifdef PIPEASIO_TEST_GATE_BARRIER
+    gate_leave_test_barrier();
+#endif
+    pipeasio_gate_leave(&This->method_gate);
+}
+
+static bool
+drain_gate(IPipeASIOImpl *This, pipeasio_admission_gate *gate, HANDLE idle, uint32_t target)
+{
+    (void)This;
+    DWORD deadline = GetTickCount() + 10000;
+    for (;;)
+    {
+        if (pipeasio_gate_count(gate) == target)
+            return true;
+        ResetEvent(idle);
+        if (pipeasio_gate_count(gate) == target)
+            return true;
+        /* Leavers signal before decrementing so the count still guards this
+         * event's lifetime, but a leaver can still miss its signal (it checked
+         * the gate open just before we closed).  The event is a latency hint
+         * only: bounded slices re-check the count, so a lost signal costs one
+         * slice while a genuinely stuck gate still times out. */
+        DWORD now = GetTickCount();
+        if ((LONG)(now - deadline) >= 0)
+            return false;
+        DWORD slice = deadline - now;
+        if (slice > 100)
+            slice = 100;
+#ifdef PIPEASIO_TEST_GATE_BARRIER
+        /* Tell the interleave test the drain is asleep on the event: only an
+         * unsignaled decrement landing here exercises the lost-wakeup path. */
+        gate_drain_test_signal();
+#endif
+        WaitForSingleObject(idle, slice);
+    }
+}
+
+static bool
+wait_stop_generation(IPipeASIOImpl *This, uint32_t observed)
+{
+    DWORD started = GetTickCount();
+
+    for (;;)
+    {
+        if (atomic_load_explicit(&This->stop_generation, memory_order_acquire) != observed)
+            return true;
+        if (atomic_load_explicit(&This->host_driver_state, memory_order_acquire) == Destroying)
+            return false;
+
+        DWORD elapsed = GetTickCount() - started;
+        if (elapsed >= 10000)
+            return false;
+        if (!WaitOnAddress((volatile void *)&This->stop_generation, &observed, sizeof observed,
+                           10000 - elapsed)
+            && GetLastError() != ERROR_TIMEOUT)
+            return false;
+    }
+}
+
+#ifdef PIPEASIO_TEST_STOP_BARRIER
+static void
+stop_completion_test_barrier(void)
+{
+    static LONG used;
+    char        entered_name[128];
+    char        release_name[128];
+
+    if (InterlockedCompareExchange(&used, 1, 0) != 0
+        || !GetEnvironmentVariableA("PIPEASIO_TEST_STOP_ENTERED", entered_name, sizeof entered_name)
+        || !GetEnvironmentVariableA("PIPEASIO_TEST_STOP_RELEASE", release_name,
+                                    sizeof release_name))
+        return;
+
+    HANDLE entered = OpenEventA(EVENT_MODIFY_STATE, FALSE, entered_name);
+    HANDLE release = OpenEventA(SYNCHRONIZE, FALSE, release_name);
+    if (entered && release)
+    {
+        SetEvent(entered);
+        WaitForSingleObject(release, 10000);
+    }
+    if (entered)
+        CloseHandle(entered);
+    if (release)
+        CloseHandle(release);
+}
+#endif
+
+#ifdef PIPEASIO_TEST_GATE_BARRIER
+/* Signal the test event named by PIPEASIO_TEST_GATE_DRAIN each time a drain
+ * is about to sleep.  Lazily opened. Env is armed only for the interleave. */
+static void
+gate_drain_test_signal(void)
+{
+    static HANDLE drain_event;
+    static LONG   opened;
+    char          drain_name[128];
+
+    if (drain_event)
+    {
+        SetEvent(drain_event);
+        return;
+    }
+    /* Env before the one-shot CAS: earlier drains (e.g. Init's) can run
+     * before the probe arms the test, and must not consume it. */
+    if (!GetEnvironmentVariableA("PIPEASIO_TEST_GATE_DRAIN", drain_name, sizeof drain_name)
+        || InterlockedCompareExchange(&opened, 1, 0) != 0)
+        return;
+    drain_event = OpenEventA(EVENT_MODIFY_STATE, FALSE, drain_name);
+    if (drain_event)
+        SetEvent(drain_event);
+    else
+        InterlockedExchange(&opened, 0); /* let a later slice retry */
+}
+
+/* One-shot stall between method_end's is_closed check and its gate_leave.
+ * Armed while the gate is open, it forces the lost-wakeup interleaving the
+ * sliced drain_gate tolerates: the leaver decrements without ever signaling. */
+static void
+gate_leave_test_barrier(void)
+{
+    static LONG used;
+    char        entered_name[128];
+    char        release_name[128];
+
+    /* Env first: the one-shot must survive method_ends that ran before the
+     * probe armed it (the CAS alone would consume it on the first call). */
+    if (!GetEnvironmentVariableA("PIPEASIO_TEST_GATE_ENTERED", entered_name, sizeof entered_name)
+        || !GetEnvironmentVariableA("PIPEASIO_TEST_GATE_RELEASE", release_name, sizeof release_name)
+        || InterlockedCompareExchange(&used, 1, 0) != 0)
+        return;
+
+    HANDLE entered = OpenEventA(EVENT_MODIFY_STATE, FALSE, entered_name);
+    HANDLE release = OpenEventA(SYNCHRONIZE, FALSE, release_name);
+    if (entered && release)
+    {
+        SetEvent(entered);
+        WaitForSingleObject(release, 10000);
+    }
+    if (entered)
+        CloseHandle(entered);
+    if (release)
+        CloseHandle(release);
+}
+#endif
+
+bool
+pipeasio_host_call_begin(void *owner, pipeasio_host_call_kind kind, pipeasio_host_call_token *token)
+{
+    IPipeASIOImpl *This = owner;
+    Callbacks     *callbacks;
+    INT            state;
+
+    memset(token, 0, sizeof *token);
+    token->owner      = owner;
+    token->gate       = &This->host_gate;
+    token->idle_event = This->host_idle;
+    token->kind       = kind;
+    if (!pipeasio_gate_try_enter(&This->host_gate))
+        return false;
+    token->counted = true;
+
+    state = atomic_load_explicit(&This->host_driver_state, memory_order_acquire);
+    if ((kind == PIPEASIO_HOST_PROCESS && state != Running)
+        || (kind == PIPEASIO_HOST_SAMPLE_RATE && state != Running)
+        || (kind == PIPEASIO_HOST_CONFIG_RESET && state != Prepared && state != Running)
+        || (kind == PIPEASIO_HOST_TIME_INFO && state != Preparing))
+        return false;
+
+    callbacks = atomic_load_explicit(&This->host_callbacks, memory_order_acquire);
+    if (!callbacks)
+        return false;
+    token->callbacks = callbacks;
+    token->previous  = host_token_top;
+    host_token_top   = token;
+    token->admitted  = true;
+    return true;
+}
+
+void
+pipeasio_host_call_end(pipeasio_host_call_token *token)
+{
+    IPipeASIOImpl *This;
+    if (!token)
+        return;
+    This = token->owner;
+    if (token->admitted)
+    {
+        host_token_top  = token->previous;
+        token->admitted = false;
+    }
+    if (!token->counted)
+        return;
+    token->counted = false;
+    if (pipeasio_gate_is_closed(&This->host_gate))
+        SetEvent(This->host_idle);
+    pipeasio_gate_leave(&This->host_gate);
+}
+
+bool
+pipeasio_host_call_is_reentrant(void *owner)
+{
+    pipeasio_host_call_token *token;
+    for (token = host_token_top; token; token = token->previous)
+        if (token->owner == owner)
+            return true;
+    return false;
+}
+
+void
+pipeasio_host_call_process(pipeasio_host_call_token *token, int32_t buffer_index,
+                           audio_nframes_t add_samples, uint64_t time_nsec)
+{
+    IPipeASIOImpl *This    = token->owner;
+    Callbacks     *cb      = token->callbacks;
+    uint64_t       samples = atomic_load_explicit(&This->host_num_samples, memory_order_relaxed);
+
+    atomic_store_explicit(&This->host_time_stamp, time_nsec, memory_order_relaxed);
+    if (This->host_time_info_mode)
+    {
+        This->host_time._2            = 1.0;
+        This->host_time.numSamples.lo = (ULONG)(samples & 0xFFFFFFFFu);
+        This->host_time.numSamples.hi = (ULONG)(samples >> 32);
+        This->host_time.timeStamp.lo  = (ULONG)(time_nsec & 0xFFFFFFFFu);
+        This->host_time.timeStamp.hi  = (ULONG)(time_nsec >> 32);
+        This->host_time.sampleRate
+                = (double)atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
+        This->host_time.flags = 0x7;
+        cb->swapBuffersWithTimeInfo(&This->host_time, buffer_index, 1);
+    }
+    else
+    {
+        cb->swapBuffers(buffer_index, 1);
+    }
+    atomic_store_explicit(&This->host_num_samples, samples + add_samples, memory_order_relaxed);
+}
+
+int32_t
+pipeasio_host_call_notify(pipeasio_host_call_token *token, int32_t selector, int32_t value,
+                          void *message, double *opt)
+{
+    Callbacks *cb = token->callbacks;
+    return cb->sendNotification ? cb->sendNotification(selector, value, message, opt) : 0;
+}
+
+void
+pipeasio_host_call_sample_rate(pipeasio_host_call_token *token, audio_nframes_t sample_rate)
+{
+    Callbacks *cb = token->callbacks;
+    if (cb->sampleRateChanged)
+        cb->sampleRateChanged((double)sample_rate);
+}
 
 /*****************************************************************************
  * Interface method definitions
@@ -404,58 +772,64 @@ HIDDEN HRESULT STDMETHODCALLTYPE
 QueryInterface(LPPIPEASIO iface, REFIID riid, void **ppvObject)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
+    method_token   token;
+    ULONG          ref;
 
-    TRACE("iface: %p, riid: %s, ppvObject: %p)\n", iface, wine_dbgstr_guid(riid), ppvObject);
-
-    if (ppvObject == NULL)
-        return E_INVALIDARG;
-
-    if (IsEqualIID(&CLSID_PipeASIO, riid))
-    {
-        AddRef(iface);
+    if (!ppvObject)
+        return E_POINTER;
+    *ppvObject = NULL;
+    if (!IsEqualIID(&CLSID_PipeASIO, riid) && !IsEqualIID(&IID_IUnknown, riid))
+        return E_NOINTERFACE;
+    if (!method_begin(This, true, &token))
+        return E_NOINTERFACE;
+    ref = AddRef(iface);
+    if (ref)
         *ppvObject = This;
-        return S_OK;
-    }
-
-    return E_NOINTERFACE;
+    method_end(&token);
+    return ref ? S_OK : E_NOINTERFACE;
 }
 
 HIDDEN ULONG STDMETHODCALLTYPE
 AddRef(LPPIPEASIO iface)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
-    ULONG          ref  = InterlockedIncrement(&(This->ref));
+    ULONG          ref  = atomic_load_explicit(&This->ref, memory_order_acquire);
 
-    TRACE("iface: %p, ref count is %u\n", iface, (unsigned)ref);
-    return ref;
+    while (ref)
+    {
+        if (atomic_load_explicit(&This->host_driver_state, memory_order_acquire) == Destroying)
+            return 0;
+        if (atomic_compare_exchange_weak_explicit(&This->ref, &ref, ref + 1, memory_order_acq_rel,
+                                                  memory_order_acquire))
+            return ref + 1;
+    }
+    return 0;
 }
 
-/* Live-config watcher context, heap-allocated and owned jointly by the
- * driver object and the watcher thread (refs == 2 at spawn).  Decouples the
- * watcher's lifetime from IPipeASIOImpl so a host that services the
- * kAsioResetRequest notification synchronously on the watcher thread
- * (Dispose/CreateBuffers/Release reentrancy) cannot leave the thread
- * looping over freed memory or waiting on a successor's stop event. */
+/* Refcounted: one reference for the owner, one for the watcher thread; the
+ * last release frees.  `owner` stays valid because the context remains
+ * attached to the object until the thread has exited, and the final teardown
+ * joins the thread before anything it owns can die (see stop_config_watch). */
 struct config_watch
 {
-    IPipeASIOImpl *owner; /* valid while not orphaned (see stop_config_watch) */
+    IPipeASIOImpl *owner;
     HANDLE         stop_event;
-    HANDLE         thread; /* set by the spawner before it drops its ref */
+    HANDLE         thread;
     DWORD          tid;
-    LONG           refs;     /* 2 at spawn: owner + thread; last unref frees */
-    LONG           orphaned; /* nonzero: thread must not touch owner again */
+    volatile LONG  refs;
 };
 
 static void
-config_watch_unref(struct config_watch *w)
+config_watch_release(struct config_watch *w)
 {
-    if (InterlockedDecrement(&w->refs))
-        return;
-    if (w->thread)
-        CloseHandle(w->thread);
-    if (w->stop_event)
-        CloseHandle(w->stop_event);
-    HeapFree(GetProcessHeap(), 0, w);
+    if (InterlockedDecrement(&w->refs) == 0)
+    {
+        if (w->thread)
+            CloseHandle(w->thread);
+        if (w->stop_event)
+            CloseHandle(w->stop_event);
+        HeapFree(GetProcessHeap(), 0, w);
+    }
 }
 
 /* Poll config.ini and request host reset when it changes. */
@@ -481,6 +855,7 @@ config_watch_proc(LPVOID arg)
     if (!pipeasio_config_path(path, sizeof path))
     {
         WARN("config watcher: cannot resolve config path, live reload disabled\n");
+        config_watch_release(w);
         return 0;
     }
     TRACE("config watcher: watching %s\n", path);
@@ -604,49 +979,44 @@ config_watch_proc(LPVOID arg)
             }
         }
 
-        if (reset && This->host_driver_state == Running)
+        if (reset)
         {
-            Callbacks *cb = atomic_load_explicit(&This->host_callbacks, memory_order_relaxed);
-            if (cb)
+            pipeasio_host_call_token token;
+            TRACE("config watcher: requesting host reset\n");
+            if (pipeasio_host_call_begin(This, PIPEASIO_HOST_CONFIG_RESET, &token))
             {
-                TRACE("config watcher: requesting host reset\n");
-                AddRef((LPPIPEASIO)This);
-                if (cb->sendNotification(1, 3, 0, 0))
-                    cb->sendNotification(3, 0, 0, 0);
-                ULONG left = Release((LPPIPEASIO)This);
-                /* The host may have serviced the reset synchronously on this
-                 * thread (Dispose/CreateBuffers/Release).  If we were orphaned
-                 * or we just destroyed the object, stop touching This. */
-                if (left == 0 || InterlockedCompareExchange(&w->orphaned, 0, 0))
-                    break;
+                if (pipeasio_host_call_notify(&token, 1, 3, NULL, NULL))
+                    pipeasio_host_call_notify(&token, 3, 0, NULL, NULL);
             }
+            pipeasio_host_call_end(&token);
         }
     }
-    config_watch_unref(w);
+    config_watch_release(w);
     return 0;
 }
 
-/* Signal, dispose, and (cross-thread) join the config watcher.  Idempotent:
- * safe to call when the watcher was never started or already stopped. */
-static void
-stop_config_watch(IPipeASIOImpl *This)
+/* Signal and join the config watcher.  The context stays attached to the
+ * object until the thread has actually exited: a created-but-unscheduled (or
+ * notify-blocked) watcher may hold no gate admission, so the gate drains
+ * cannot guard w->owner or the DLL mapping for it.  Callers that keep the
+ * object alive pass wait_forever=false for best effort: the refcount lets
+ * the watcher free the context on exit.  The final teardown passes
+ * wait_forever=true so no watcher thread can outlive the object or the
+ * module.  Idempotent: returns true once no watcher remains attached. */
+static bool
+stop_config_watch(IPipeASIOImpl *This, bool wait_forever)
 {
     struct config_watch *w = This->config_watch;
     if (!w)
-        return;
-    This->config_watch = NULL;
+        return true;
     SetEvent(w->stop_event);
-    if (GetCurrentThreadId() == w->tid)
-    {
-        /* Reentrant self-stop: the host serviced our reset notification
-         * synchronously.  Mark orphaned; the watcher breaks out when the
-         * notification returns and drops the thread's ref itself. */
-        InterlockedExchange(&w->orphaned, 1);
-        config_watch_unref(w); /* the owner's ref */
-        return;
-    }
-    WaitForSingleObject(w->thread, INFINITE);
-    config_watch_unref(w);
+    if (w->thread && GetCurrentThreadId() != w->tid)
+        WaitForSingleObject(w->thread, wait_forever ? INFINITE : 10000);
+    if (w->thread && WaitForSingleObject(w->thread, 0) != WAIT_OBJECT_0)
+        return false;
+    This->config_watch = NULL;
+    config_watch_release(w);
+    return true;
 }
 
 /* Implies Stop() and DisposeBuffers(). */
@@ -654,49 +1024,131 @@ stop_config_watch(IPipeASIOImpl *This)
 HIDDEN ULONG STDMETHODCALLTYPE
 Release(LPPIPEASIO iface)
 {
-    IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
-    ULONG          ref  = InterlockedDecrement(&This->ref);
+    IPipeASIOImpl *This       = (IPipeASIOImpl *)iface;
+    HANDLE         completion = NULL;
+    bool           reentrant;
+    ULONG          ref = atomic_load_explicit(&This->ref, memory_order_acquire);
 
-    TRACE("iface: %p, ref count is %u\n", iface, (unsigned)ref);
-
-    if (ref != 0)
-        return ref;
-
-    if (This->host_driver_state == Running)
-        Stop(iface);
-    if (This->host_driver_state == Prepared)
-        DisposeBuffers(iface);
-
-    if (This->host_driver_state == Initialized)
+    while (ref)
     {
-        /* just for good measure we deinitialize IOChannel structures and unregister ports */
-        for (int i = 0; i < This->pipeasio_number_inputs; i++)
+        if (ref > 1)
         {
-            audio_port_unregister(This->audio_client, This->input_channel[i].port);
-            This->input_channel[i].active = false;
-            This->input_channel[i].port   = NULL;
+            if (atomic_compare_exchange_weak_explicit(&This->ref, &ref, ref - 1,
+                                                      memory_order_acq_rel, memory_order_acquire))
+                return ref - 1;
+            continue;
         }
-        for (int i = 0; i < This->pipeasio_number_outputs; i++)
-        {
-            audio_port_unregister(This->audio_client, This->output_channel[i].port);
-            This->output_channel[i].active = false;
-            This->output_channel[i].port   = NULL;
-        }
-        This->host_active_inputs = This->host_active_outputs = 0;
-        TRACE("%i IOChannel structures released\n",
-              This->pipeasio_number_inputs + This->pipeasio_number_outputs);
+        if (!atomic_compare_exchange_weak_explicit(&This->ref, &ref, 0, memory_order_acq_rel,
+                                                   memory_order_acquire))
+            continue;
 
-        audio_free_ports(This->phys_output_ports);
-        audio_free_ports(This->phys_input_ports);
-        stop_config_watch(This);
-        audio_close(This->audio_client);
-        if (This->input_channel)
-            HeapFree(GetProcessHeap(), 0, This->input_channel);
+        reentrant = pipeasio_host_call_is_reentrant(This);
+        if (!reentrant)
+            DuplicateHandle(GetCurrentProcess(), This->worker, GetCurrentProcess(), &completion,
+                            SYNCHRONIZE, FALSE, 0);
+        atomic_exchange_explicit(&This->host_driver_state, Destroying, memory_order_acq_rel);
+        pipeasio_gate_close_permanently(&This->method_gate);
+        pipeasio_gate_close_permanently(&This->host_gate);
+        SetEvent(This->method_idle);
+        SetEvent(This->host_idle);
+        WakeByAddressAll((void *)&This->stop_generation);
+        SetEvent(This->work_event);
+        if (completion)
+        {
+            WaitForSingleObject(completion, 10000);
+            CloseHandle(completion);
+        }
+        return 0;
     }
-    TRACE("PipeASIO terminated\n\n");
-    DeleteCriticalSection(&This->config_lock);
-    HeapFree(GetProcessHeap(), 0, This);
-    return ref;
+    return 0;
+}
+static void
+destroy_driver_resources(IPipeASIOImpl *This)
+{
+    /* Final: no watcher thread may outlive the object or the module. */
+    stop_config_watch(This, true);
+    if (This->audio_client)
+    {
+        audio_deactivate(This->audio_client);
+        audio_close(This->audio_client);
+        This->audio_client = NULL;
+    }
+    atomic_store_explicit(&This->host_callbacks, NULL, memory_order_release);
+    if (This->callback_audio_buffer)
+    {
+        HeapFree(GetProcessHeap(), 0, This->callback_audio_buffer);
+        This->callback_audio_buffer = NULL;
+    }
+    audio_free_ports(This->phys_input_ports);
+    audio_free_ports(This->phys_output_ports);
+    This->phys_input_ports  = NULL;
+    This->phys_output_ports = NULL;
+    if (This->input_channel)
+    {
+        HeapFree(GetProcessHeap(), 0, This->input_channel);
+        This->input_channel  = NULL;
+        This->output_channel = NULL;
+    }
+}
+
+static DWORD WINAPI
+lifecycle_worker(void *arg)
+{
+    IPipeASIOImpl *This = arg;
+
+    for (;;)
+    {
+        WaitForSingleObject(This->work_event, INFINITE);
+        bool completed = false;
+        if (atomic_load_explicit(&This->host_driver_state, memory_order_acquire) == Stopping)
+            while (!drain_gate(This, &This->host_gate, This->host_idle, 0))
+                ;
+        AcquireSRWLockExclusive(&This->lifecycle_lock);
+        INT expected = Stopping;
+        if (atomic_compare_exchange_strong_explicit(&This->host_driver_state, &expected, Prepared,
+                                                    memory_order_acq_rel, memory_order_acquire))
+        {
+            atomic_fetch_add_explicit(&This->stop_generation, 1, memory_order_release);
+            completed = true;
+        }
+        ReleaseSRWLockExclusive(&This->lifecycle_lock);
+#ifdef PIPEASIO_TEST_STOP_BARRIER
+        if (completed)
+            stop_completion_test_barrier();
+#endif
+        if (completed)
+            WakeByAddressAll((void *)&This->stop_generation);
+        if (atomic_load_explicit(&This->host_driver_state, memory_order_acquire) != Destroying)
+            continue;
+
+        stop_config_watch(This, true);
+        while (!drain_gate(This, &This->method_gate, This->method_idle, 0))
+            ;
+        while (!drain_gate(This, &This->host_gate, This->host_idle, 0))
+            ;
+        while (atomic_load_explicit(&This->lifecycle_waiters, memory_order_acquire) != 0)
+            Sleep(1);
+
+        destroy_driver_resources(This);
+        DeleteCriticalSection(&This->config_lock);
+
+        HANDLE  method_idle = This->method_idle;
+        HANDLE  host_idle   = This->host_idle;
+        HANDLE  work_event  = This->work_event;
+        HANDLE  worker      = This->worker;
+        HMODULE module      = This->module_pin;
+
+        pipeasio_object_destroyed();
+        HeapFree(GetProcessHeap(), 0, This);
+        CloseHandle(method_idle);
+        CloseHandle(host_idle);
+        CloseHandle(work_event);
+        if (worker)
+            CloseHandle(worker);
+        if (module)
+            FreeLibraryAndExitThread(module, 0);
+        ExitThread(0);
+    }
 }
 
 /* sysRef is 0 on OS/X; on Windows it is the application's main window handle.
@@ -706,140 +1158,120 @@ DEFINE_THISCALL_WRAPPER(Init, 8)
 HIDDEN LONG STDMETHODCALLTYPE
 Init(LPPIPEASIO iface, void *sysRef)
 {
-    IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
-    uint32_t       audio_status;
-    uint32_t       audio_options = AUDIO_NULL_OPTION;
-    int            i;
+    IPipeASIOImpl      *This = (IPipeASIOImpl *)iface;
+    method_token        token;
+    pipeasio_gate_owner owner;
+    uint32_t            audio_status = 0;
+    INT                 expected     = Loaded;
+    int                 total;
 
-    This->sys_ref = sysRef;
-    /* Do not call mlockall(MCL_FUTURE).  Wine's win32u maps USER shared memory
-     * after driver init; locking those pages can exhaust RLIMIT_MEMLOCK and
-     * crash plugin-heavy hosts.  PipeWire's RT module owns paging. */
-    configure_driver(This);
-
-    if (!(This->audio_client = audio_open(This->client_name, audio_options, &audio_status)))
+    if (!method_begin(This, false, &token))
+        return 0;
+    if (!atomic_compare_exchange_strong_explicit(&This->host_driver_state, &expected, Initializing,
+                                                 memory_order_acq_rel, memory_order_acquire))
     {
-        WARN("Unable to open an audio client as: %s\n", This->client_name);
+        method_end(&token);
         return 0;
     }
-    TRACE("audio client opened as: '%s'\n", audio_get_client_name(This->audio_client));
+
+    owner = next_gate_owner(This);
+    if (!pipeasio_gate_close(&This->method_gate, owner)
+        || !drain_gate(This, &This->method_gate, This->method_idle, 1)
+        || !pipeasio_gate_reopen(&This->method_gate, owner))
+        goto fail;
+
+    configure_driver(This);
+    This->sys_ref = sysRef;
+    total         = This->pipeasio_number_inputs + This->pipeasio_number_outputs;
+    if (total <= 0 || total > PIPEASIO_MAX_CHANNELS * 2)
+        goto fail;
+
+    This->audio_client = audio_open(This->client_name, AUDIO_NULL_OPTION, &audio_status);
+    if (!This->audio_client)
+        goto fail;
 
     audio_set_forced_rate(This->audio_client, (audio_nframes_t)This->pipeasio_sample_rate);
     audio_set_follow_device(This->audio_client, This->pipeasio_follow_device_clock);
     audio_set_realtime(This->audio_client, This->pipeasio_realtime);
-
-    This->host_sample_rate = audio_get_sample_rate(This->audio_client);
-    /* Before CreateBuffers, report the configured preferred size. */
+    atomic_store_explicit(&This->host_sample_rate, audio_get_sample_rate(This->audio_client),
+                          memory_order_release);
     This->host_current_buffersize = This->pipeasio_preferred_buffersize;
     if (This->pipeasio_follow_device_clock)
     {
-        /* First guess until the watcher observes the device quantum. */
-        LONG hint = atomic_load(&This->follower_quantum);
+        LONG hint = atomic_load_explicit(&This->follower_quantum, memory_order_acquire);
         if (hint)
             This->host_current_buffersize = hint;
     }
 
-    /* Zeroed: CreateBuffers initializes audio_buffer and active. */
     This->input_channel = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
-                                    (This->pipeasio_number_inputs + This->pipeasio_number_outputs)
-                                            * sizeof(IOChannel));
+                                    (size_t)total * sizeof(*This->input_channel));
     if (!This->input_channel)
-    {
-        audio_close(This->audio_client);
-        ERR("Unable to allocate IOChannel structures for %i channels\n",
-            This->pipeasio_number_inputs);
-        return 0;
-    }
+        goto fail;
     This->output_channel = This->input_channel + This->pipeasio_number_inputs;
-    TRACE("%i IOChannel structures allocated\n",
-          This->pipeasio_number_inputs + This->pipeasio_number_outputs);
 
-    This->phys_input_ports = audio_get_ports(This->audio_client, NULL, NULL,
-                                             AUDIO_PORT_IS_PHYSICAL | AUDIO_PORT_IS_OUTPUT);
-    for (This->num_phys_input_ports = 0;
-         This->phys_input_ports && This->phys_input_ports[This->num_phys_input_ports];
-         This->num_phys_input_ports++)
-        ;
-    This->phys_output_ports = audio_get_ports(This->audio_client, NULL, NULL,
-                                              AUDIO_PORT_IS_PHYSICAL | AUDIO_PORT_IS_INPUT);
-    for (This->num_phys_output_ports = 0;
-         This->phys_output_ports && This->phys_output_ports[This->num_phys_output_ports];
-         This->num_phys_output_ports++)
-        ;
-
-    for (i = 0; i < This->pipeasio_number_inputs; i++)
+    for (int i = 0; i < This->pipeasio_number_inputs; ++i)
     {
-        This->input_channel[i].active = false;
-        This->input_channel[i].port   = NULL;
-        snprintf(This->input_channel[i].port_name, PIPEASIO_MAX_NAME_LENGTH, "in_%i", i + 1);
+        snprintf(This->input_channel[i].port_name, sizeof This->input_channel[i].port_name, "in_%i",
+                 i + 1);
         This->input_channel[i].port
                 = audio_port_register(This->audio_client, This->input_channel[i].port_name,
-                                      AUDIO_DEFAULT_TYPE, AUDIO_PORT_IS_INPUT, i);
+                                      AUDIO_PORT_IS_INPUT, (uint32_t)i);
+        if (!This->input_channel[i].port)
+            goto fail;
     }
-    for (i = 0; i < This->pipeasio_number_outputs; i++)
+    for (int i = 0; i < This->pipeasio_number_outputs; ++i)
     {
-        This->output_channel[i].active = false;
-        This->output_channel[i].port   = NULL;
-        snprintf(This->output_channel[i].port_name, PIPEASIO_MAX_NAME_LENGTH, "out_%i", i + 1);
+        snprintf(This->output_channel[i].port_name, sizeof This->output_channel[i].port_name,
+                 "out_%i", i + 1);
         This->output_channel[i].port
                 = audio_port_register(This->audio_client, This->output_channel[i].port_name,
-                                      AUDIO_DEFAULT_TYPE, AUDIO_PORT_IS_OUTPUT, i);
+                                      AUDIO_PORT_IS_OUTPUT, (uint32_t)i);
+        if (!This->output_channel[i].port)
+            goto fail;
     }
-    TRACE("%i IOChannel structures initialized\n",
-          This->pipeasio_number_inputs + This->pipeasio_number_outputs);
+    if (!audio_set_process_callback(This->audio_client, process_callback, This)
+        || !audio_set_sample_rate_callback(This->audio_client, sample_rate_callback, This))
+        goto fail;
 
-    if (!audio_set_buffer_size_callback(This->audio_client, buffer_size_callback, This))
-    {
-        audio_close(This->audio_client);
-        HeapFree(GetProcessHeap(), 0, This->input_channel);
-        ERR("Unable to register buffer size change callback\n");
-        audio_free_ports(This->phys_input_ports);
-        audio_free_ports(This->phys_output_ports);
-        return 0;
-    }
-
-    if (!audio_set_latency_callback(This->audio_client, latency_callback, This))
-    {
-        audio_close(This->audio_client);
-        HeapFree(GetProcessHeap(), 0, This->input_channel);
-        ERR("Unable to register latency callback\n");
-        audio_free_ports(This->phys_input_ports);
-        audio_free_ports(This->phys_output_ports);
-        return 0;
-    }
-
-    if (!audio_set_process_callback(This->audio_client, process_callback, This))
-    {
-        audio_close(This->audio_client);
-        HeapFree(GetProcessHeap(), 0, This->input_channel);
-        ERR("Unable to register process callback\n");
-        audio_free_ports(This->phys_input_ports);
-        audio_free_ports(This->phys_output_ports);
-        return 0;
-    }
-
-    if (!audio_set_sample_rate_callback(This->audio_client, sample_rate_callback, This))
-    {
-        audio_close(This->audio_client);
-        HeapFree(GetProcessHeap(), 0, This->input_channel);
-        ERR("Unable to register sample rate change callback\n");
-        audio_free_ports(This->phys_input_ports);
-        audio_free_ports(This->phys_output_ports);
-        return 0;
-    }
-
-    This->host_driver_state = Initialized;
-    TRACE("PipeASIO " PIPEASIO_VERSION " initialized\n");
+    expected = Initializing;
+    if (!atomic_compare_exchange_strong_explicit(&This->host_driver_state, &expected, Initialized,
+                                                 memory_order_release, memory_order_acquire))
+        goto fail;
+    method_end(&token);
     return 1;
+
+fail:
+    if (This->audio_client)
+    {
+        audio_close(This->audio_client);
+        This->audio_client = NULL;
+    }
+    if (This->input_channel)
+    {
+        HeapFree(GetProcessHeap(), 0, This->input_channel);
+        This->input_channel  = NULL;
+        This->output_channel = NULL;
+    }
+    expected = Initializing;
+    atomic_compare_exchange_strong_explicit(&This->host_driver_state, &expected, Loaded,
+                                            memory_order_release, memory_order_acquire);
+    if (!pipeasio_gate_is_permanent(&This->method_gate)
+        && pipeasio_gate_is_closed(&This->method_gate))
+        pipeasio_gate_reopen(&This->method_gate, owner);
+    method_end(&token);
+    return 0;
 }
 
 DEFINE_THISCALL_WRAPPER(GetDriverName, 8)
 HIDDEN void STDMETHODCALLTYPE
 GetDriverName(LPPIPEASIO iface, char *name)
 {
-    TRACE("iface: %p, name: %p\n", iface, name);
+    IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
+    method_token   token;
+    if (!name || !method_begin(This, true, &token))
+        return;
     strcpy(name, "PipeASIO");
-    return;
+    method_end(&token);
 }
 
 DEFINE_THISCALL_WRAPPER(GetDriverVersion, 4)
@@ -847,18 +1279,25 @@ HIDDEN LONG STDMETHODCALLTYPE
 GetDriverVersion(LPPIPEASIO iface)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
-
-    TRACE("iface: %p\n", iface);
-    return This->host_version;
+    method_token   token;
+    LONG           version;
+    if (!method_begin(This, true, &token))
+        return -1000;
+    version = This->host_version;
+    method_end(&token);
+    return version;
 }
 
 DEFINE_THISCALL_WRAPPER(GetErrorMessage, 8)
 HIDDEN void STDMETHODCALLTYPE
 GetErrorMessage(LPPIPEASIO iface, char *string)
 {
-    TRACE("iface: %p, string: %p)\n", iface, string);
+    IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
+    method_token   token;
+    if (!string || !method_begin(This, true, &token))
+        return;
     strcpy(string, "PipeASIO does not return error messages\n");
-    return;
+    method_end(&token);
 }
 
 /* Returns -1000 if IO is missing, -999 if the audio backend fails to start. */
@@ -867,52 +1306,199 @@ DEFINE_THISCALL_WRAPPER(Start, 4)
 HIDDEN LONG STDMETHODCALLTYPE
 Start(LPPIPEASIO iface)
 {
-    IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
-    int            i;
+    IPipeASIOImpl      *This = (IPipeASIOImpl *)iface;
+    method_token        token;
+    pipeasio_gate_owner owner;
+    INT                 expected;
+    size_t              samples;
 
-    TRACE("iface: %p\n", iface);
-
-    if (This->host_driver_state != Prepared)
+    if (!method_begin(This, false, &token))
         return -1000;
+    if (pipeasio_host_call_is_reentrant(This))
+    {
+        method_end(&token);
+        return -1000;
+    }
 
-    for (i = 0; i < (This->pipeasio_number_inputs + This->pipeasio_number_outputs) * 2
-                            * This->host_current_buffersize;
-         i++)
-        This->callback_audio_buffer[i] = 0;
+    for (;;)
+    {
+        AcquireSRWLockExclusive(&This->lifecycle_lock);
+        expected = atomic_load_explicit(&This->host_driver_state, memory_order_acquire);
+        if (expected == Prepared
+            && atomic_compare_exchange_strong_explicit(&This->host_driver_state, &expected,
+                                                       Starting, memory_order_acq_rel,
+                                                       memory_order_acquire))
+        {
+            ReleaseSRWLockExclusive(&This->lifecycle_lock);
+            break;
+        }
+        if (expected != Stopping)
+        {
+            ReleaseSRWLockExclusive(&This->lifecycle_lock);
+            method_end(&token);
+            return -1000;
+        }
 
-    /* prime the callback by preprocessing one outbound host bufffer */
+        uint32_t observed = atomic_load_explicit(&This->stop_generation, memory_order_acquire);
+        atomic_fetch_add_explicit(&This->lifecycle_waiters, 1, memory_order_acq_rel);
+        ReleaseSRWLockExclusive(&This->lifecycle_lock);
+        method_end(&token);
+        bool completed = wait_stop_generation(This, observed);
+        if (!method_begin(This, false, &token))
+        {
+            atomic_fetch_sub_explicit(&This->lifecycle_waiters, 1, memory_order_release);
+            return -1000;
+        }
+        atomic_fetch_sub_explicit(&This->lifecycle_waiters, 1, memory_order_release);
+        if (!completed)
+        {
+            method_end(&token);
+            return -1000;
+        }
+    }
+
+    owner = next_gate_owner(This);
+    if (!pipeasio_gate_close(&This->method_gate, owner)
+        || !drain_gate(This, &This->method_gate, This->method_idle, 1)
+        || !pipeasio_gate_reopen(&This->method_gate, owner)
+        || !claim_closed_gate(&This->host_gate, owner)
+        || !drain_gate(This, &This->host_gate, This->host_idle, 0))
+        goto fail;
+
+    samples = (size_t)(This->pipeasio_number_inputs + This->pipeasio_number_outputs) * 2
+              * (size_t)This->host_current_buffersize;
+    memset(This->callback_audio_buffer, 0, samples * sizeof(*This->callback_audio_buffer));
     This->host_buffer_index = 0;
     atomic_store_explicit(&This->host_num_samples, 0, memory_order_relaxed);
     atomic_store_explicit(&This->host_time_stamp, 0, memory_order_relaxed);
+#ifdef PIPEASIO_WOW64_PE
+    {
+        bool in_active[PIPEASIO_MAX_CHANNELS]  = { false };
+        bool out_active[PIPEASIO_MAX_CHANNELS] = { false };
+        for (int i = 0; i < This->pipeasio_number_inputs; ++i)
+            in_active[i] = This->input_channel[i].active;
+        for (int i = 0; i < This->pipeasio_number_outputs; ++i)
+            out_active[i] = This->output_channel[i].active;
+        if (!pipeasio_wow64_bind_rt(This->audio_client, This->callback_audio_buffer,
+                                    This->host_current_buffersize, This->pipeasio_number_inputs,
+                                    This->pipeasio_number_outputs, in_active, out_active))
+            goto fail;
+    }
+#endif
 
-    /* systemTime from the PipeWire graph clock - 0 until the first process
-     * cycle runs, which is fine for the one-shot prime. */
-    pipeasio_host_buffer_switch(This, This->host_buffer_index, 0,
-                                audio_get_time_nsec(This->audio_client));
-
-    This->host_buffer_index = This->host_buffer_index ? 0 : 1;
-
-    This->host_driver_state = Running;
-    TRACE("PipeASIO successfully loaded\n");
+    if (!pipeasio_gate_reopen(&This->host_gate, owner))
+        goto fail;
+    expected = Starting;
+    if (!atomic_compare_exchange_strong_explicit(&This->host_driver_state, &expected, Running,
+                                                 memory_order_release, memory_order_acquire))
+    {
+        pipeasio_gate_close(&This->host_gate, owner);
+        goto fail;
+    }
+    method_end(&token);
     return 0;
+
+fail:
+    expected = Starting;
+    atomic_compare_exchange_strong_explicit(&This->host_driver_state, &expected, Prepared,
+                                            memory_order_release, memory_order_acquire);
+    if (!pipeasio_gate_is_permanent(&This->method_gate)
+        && pipeasio_gate_is_closed(&This->method_gate))
+        pipeasio_gate_reopen(&This->method_gate, owner);
+    method_end(&token);
+    return -999;
 }
 
 /* Returns -1000 if IO is missing. swapBuffers() must not be called after this returns. */
+
+static LONG
+stop_admitted(IPipeASIOImpl *This)
+{
+    bool     start_worker = false;
+    uint32_t observed;
+
+    AcquireSRWLockExclusive(&This->lifecycle_lock);
+    INT state = atomic_load_explicit(&This->host_driver_state, memory_order_acquire);
+    observed  = atomic_load_explicit(&This->stop_generation, memory_order_acquire);
+    if (state == Running)
+    {
+        pipeasio_gate_owner owner = next_gate_owner(This);
+        if (!atomic_compare_exchange_strong_explicit(&This->host_driver_state, &state, Stopping,
+                                                     memory_order_acq_rel, memory_order_acquire)
+            || !pipeasio_gate_close(&This->host_gate, owner))
+        {
+            ReleaseSRWLockExclusive(&This->lifecycle_lock);
+            return -1000;
+        }
+        start_worker = true;
+    }
+    else if (state != Stopping)
+    {
+        ReleaseSRWLockExclusive(&This->lifecycle_lock);
+        return -1000;
+    }
+    ReleaseSRWLockExclusive(&This->lifecycle_lock);
+
+    if (start_worker)
+        SetEvent(This->work_event);
+    if (pipeasio_host_call_is_reentrant(This))
+        return 0;
+    return wait_stop_generation(This, observed) ? 0 : -1000;
+}
 
 DEFINE_THISCALL_WRAPPER(Stop, 4)
 HIDDEN LONG STDMETHODCALLTYPE
 Stop(LPPIPEASIO iface)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
+    method_token   token;
+    bool           start_worker = false;
+    uint32_t       observed;
 
-    TRACE("iface: %p\n", iface);
-
-    if (This->host_driver_state != Running)
+    if (!method_begin(This, false, &token))
         return -1000;
 
-    This->host_driver_state = Prepared;
+    AcquireSRWLockExclusive(&This->lifecycle_lock);
+    INT state = atomic_load_explicit(&This->host_driver_state, memory_order_acquire);
+    observed  = atomic_load_explicit(&This->stop_generation, memory_order_acquire);
+    if (state == Running)
+    {
+        INT                 expected = Running;
+        pipeasio_gate_owner owner    = next_gate_owner(This);
+        if (!atomic_compare_exchange_strong_explicit(&This->host_driver_state, &expected, Stopping,
+                                                     memory_order_acq_rel, memory_order_acquire)
+            || !pipeasio_gate_close(&This->host_gate, owner))
+        {
+            ReleaseSRWLockExclusive(&This->lifecycle_lock);
+            method_end(&token);
+            return -1000;
+        }
+        start_worker = true;
+    }
+    else if (state != Stopping)
+    {
+        ReleaseSRWLockExclusive(&This->lifecycle_lock);
+        method_end(&token);
+        return -1000;
+    }
 
-    return 0;
+    if (pipeasio_host_call_is_reentrant(This))
+    {
+        ReleaseSRWLockExclusive(&This->lifecycle_lock);
+        if (start_worker)
+            SetEvent(This->work_event);
+        method_end(&token);
+        return 0;
+    }
+    atomic_fetch_add_explicit(&This->lifecycle_waiters, 1, memory_order_acq_rel);
+    ReleaseSRWLockExclusive(&This->lifecycle_lock);
+
+    if (start_worker)
+        SetEvent(This->work_event);
+    method_end(&token);
+    LONG result = wait_stop_generation(This, observed) ? 0 : -1000;
+    atomic_fetch_sub_explicit(&This->lifecycle_waiters, 1, memory_order_release);
+    return result;
 }
 
 /* Returns -1000 if no channels are available, otherwise AES_OK. */
@@ -922,15 +1508,23 @@ HIDDEN LONG STDMETHODCALLTYPE
 GetChannels(LPPIPEASIO iface, LONG *numInputChannels, LONG *numOutputChannels)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
-
+    method_token   token;
+    LONG           result;
     if (!numInputChannels || !numOutputChannels)
         return -998;
-
-    *numInputChannels  = This->pipeasio_number_inputs;
-    *numOutputChannels = This->pipeasio_number_outputs;
-    TRACE("iface: %p, inputs: %i, outputs: %i\n", iface, This->pipeasio_number_inputs,
-          This->pipeasio_number_outputs);
-    return 0;
+    if (!method_begin(This, false, &token))
+        return -1000;
+    INT state = atomic_load_explicit(&This->host_driver_state, memory_order_acquire);
+    if (state != Initialized && state != Prepared && state != Running)
+        result = -1000;
+    else
+    {
+        *numInputChannels  = This->pipeasio_number_inputs;
+        *numOutputChannels = This->pipeasio_number_outputs;
+        result             = (*numInputChannels || *numOutputChannels) ? 0 : -1000;
+    }
+    method_end(&token);
+    return result;
 }
 
 /* Returns -1000 if no IO is available, otherwise AES_OK. */
@@ -940,21 +1534,31 @@ HIDDEN LONG STDMETHODCALLTYPE
 GetLatencies(LPPIPEASIO iface, LONG *inputLatency, LONG *outputLatency)
 {
     IPipeASIOImpl        *This = (IPipeASIOImpl *)iface;
-    audio_latency_range_t range;
-
+    method_token          token;
+    audio_latency_range_t range = { 0, 0 };
     if (!inputLatency || !outputLatency)
         return -998;
-
-    if (This->host_driver_state == Loaded)
+    if (!method_begin(This, false, &token))
         return -1000;
-
-    audio_port_get_latency_range(This->input_channel[0].port, AUDIO_CAPTURE_LATENCY, &range);
-    *inputLatency = range.max;
-    audio_port_get_latency_range(This->output_channel[0].port, AUDIO_PLAYBACK_LATENCY, &range);
-    *outputLatency = range.max;
-    TRACE("iface: %p, input latency: %d, output latency: %d\n", iface, (int)*inputLatency,
-          (int)*outputLatency);
-
+    INT state = atomic_load_explicit(&This->host_driver_state, memory_order_acquire);
+    if (state != Initialized && state != Prepared && state != Running)
+    {
+        method_end(&token);
+        return -1000;
+    }
+    *inputLatency  = 0;
+    *outputLatency = 0;
+    if (This->pipeasio_number_inputs > 0)
+    {
+        audio_port_get_latency_range(This->input_channel[0].port, AUDIO_CAPTURE_LATENCY, &range);
+        *inputLatency = (LONG)range.max;
+    }
+    if (This->pipeasio_number_outputs > 0)
+    {
+        audio_port_get_latency_range(This->output_channel[0].port, AUDIO_PLAYBACK_LATENCY, &range);
+        *outputLatency = (LONG)range.max;
+    }
+    method_end(&token);
     return 0;
 }
 
@@ -966,17 +1570,25 @@ GetBufferSize(LPPIPEASIO iface, LONG *minSize, LONG *maxSize, LONG *preferredSiz
               LONG *granularity)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
-
-    TRACE("iface: %p, minSize: %p, maxSize: %p, preferredSize: %p, granularity: %p\n", iface,
-          minSize, maxSize, preferredSize, granularity);
-
+    method_token   token;
+    bool           pending;
+    BOOL           fixed;
+    BOOL           follow;
+    LONG           pref;
     if (!minSize || !maxSize || !preferredSize || !granularity)
         return -998;
-
-    bool pending = atomic_load_explicit(&This->config_pending, memory_order_acquire);
-    BOOL fixed   = This->pipeasio_fixed_buffersize;
-    BOOL follow  = This->pipeasio_follow_device_clock;
-    LONG pref    = This->pipeasio_preferred_buffersize;
+    if (!method_begin(This, false, &token))
+        return -1000;
+    INT state = atomic_load_explicit(&This->host_driver_state, memory_order_acquire);
+    if (state != Initialized && state != Prepared && state != Running)
+    {
+        method_end(&token);
+        return -1000;
+    }
+    pending = atomic_load_explicit(&This->config_pending, memory_order_acquire);
+    fixed   = This->pipeasio_fixed_buffersize;
+    follow  = This->pipeasio_follow_device_clock;
+    pref    = This->pipeasio_preferred_buffersize;
     if (pending)
     {
         EnterCriticalSection(&This->config_lock);
@@ -987,19 +1599,18 @@ GetBufferSize(LPPIPEASIO iface, LONG *minSize, LONG *maxSize, LONG *preferredSiz
     }
     if (fixed || follow)
     {
-        LONG q   = atomic_load_explicit(&This->follower_quantum, memory_order_relaxed);
-        *minSize = *maxSize = *preferredSize = (follow && q) ? q : pref;
+        LONG quantum = atomic_load_explicit(&This->follower_quantum, memory_order_acquire);
+        *minSize = *maxSize = *preferredSize = (follow && quantum) ? quantum : pref;
         *granularity                         = 0;
-        TRACE("Buffersize fixed at %d (pending=%d)\n", (int)*preferredSize, (int)pending);
-        return 0;
     }
-
-    *minSize       = PIPEASIO_MINIMUM_BUFFERSIZE;
-    *maxSize       = PIPEASIO_MAXIMUM_BUFFERSIZE;
-    *preferredSize = pref;
-    *granularity   = -1;
-    TRACE("The host can control buffersize (min=%d max=%d preferred=%d)\n", (int)*minSize,
-          (int)*maxSize, (int)*preferredSize);
+    else
+    {
+        *minSize       = PIPEASIO_MINIMUM_BUFFERSIZE;
+        *maxSize       = PIPEASIO_MAXIMUM_BUFFERSIZE;
+        *preferredSize = pref;
+        *granularity   = -1;
+    }
+    method_end(&token);
     return 0;
 }
 
@@ -1010,13 +1621,14 @@ HIDDEN LONG STDMETHODCALLTYPE
 CanSampleRate(LPPIPEASIO iface, double sampleRate)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
-
-    TRACE("iface: %p, Samplerate = %li, requested samplerate = %li\n", iface,
-          (long)This->host_sample_rate, (long)sampleRate);
-
-    if (sampleRate != This->host_sample_rate)
-        return -995;
-    return 0;
+    method_token   token;
+    LONG           result;
+    if (!method_begin(This, false, &token))
+        return -1000;
+    uint32_t current = atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
+    result           = sampleRate == (double)current ? 0 : -995;
+    method_end(&token);
+    return result;
 }
 
 /* currentRate holds 0 if unknown.
@@ -1027,14 +1639,15 @@ HIDDEN LONG STDMETHODCALLTYPE
 GetSampleRate(LPPIPEASIO iface, double *sampleRate)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
-
-    TRACE("iface: %p, Sample rate is %i\n", iface, (int)This->host_sample_rate);
-
+    method_token   token;
     if (!sampleRate)
         return -998;
-
-    *sampleRate = This->host_sample_rate;
-    return 0;
+    if (!method_begin(This, false, &token))
+        return -1000;
+    uint32_t current = atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
+    *sampleRate      = (double)current;
+    method_end(&token);
+    return current ? 0 : -995;
 }
 
 /* SR == 0 enables external sync. Returns -995 on unknown SR, -997 if the
@@ -1045,12 +1658,14 @@ HIDDEN LONG STDMETHODCALLTYPE
 SetSampleRate(LPPIPEASIO iface, double sampleRate)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
-
-    TRACE("iface: %p, Sample rate %f requested\n", iface, sampleRate);
-
-    if (sampleRate != This->host_sample_rate)
-        return -995;
-    return 0;
+    method_token   token;
+    LONG           result;
+    if (!method_begin(This, false, &token))
+        return -1000;
+    uint32_t current = atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
+    result           = sampleRate == (double)current ? 0 : -995;
+    method_end(&token);
+    return result;
 }
 
 /* numSources: on entry the number of allocated members, on return the number
@@ -1060,34 +1675,44 @@ DEFINE_THISCALL_WRAPPER(GetClockSources, 12)
 HIDDEN LONG STDMETHODCALLTYPE
 GetClockSources(LPPIPEASIO iface, void *clocks, LONG *numSources)
 {
-    LONG *lclocks = (LONG *)clocks;
-
-    TRACE("iface: %p, clocks: %p, numSources: %p\n", iface, clocks, numSources);
-
-    if (!clocks || !numSources)
+    IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
+    method_token   token;
+    LONG           capacity;
+    if (!numSources)
         return -998;
-
-    *lclocks++ = 0;
-    *lclocks++ = -1;
-    *lclocks++ = -1;
-    *lclocks++ = 1;
-    strcpy((char *)lclocks, "Internal");
+    capacity = *numSources;
+    if (capacity < 0 || (capacity > 0 && !clocks))
+        return -998;
+    if (!method_begin(This, false, &token))
+        return -1000;
     *numSources = 1;
+    if (capacity > 0)
+    {
+        ASIOClockSource *clock = clocks;
+        memset(clock, 0, sizeof(*clock));
+        clock->associatedChannel = -1;
+        clock->associatedGroup   = -1;
+        clock->isCurrentSource   = 1;
+        strcpy(clock->name, "Internal");
+    }
+    method_end(&token);
     return 0;
 }
 
 /* index is one returned by GetClockSources(). Returns -1000 on missing IO;
- * -997 if a clock can't be selected; -995 should not be returned. */
+ * -997 if a clock can't be selected. -995 should not be returned. */
 
 DEFINE_THISCALL_WRAPPER(SetClockSource, 8)
 HIDDEN LONG STDMETHODCALLTYPE
 SetClockSource(LPPIPEASIO iface, LONG index)
 {
-    TRACE("iface: %p, index: %d\n", iface, (int)index);
-
-    if (index != 0)
+    IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
+    method_token   token;
+    if (!method_begin(This, false, &token))
         return -1000;
-    return 0;
+    LONG result = index == 0 ? 0 : -1000;
+    method_end(&token);
+    return result;
 }
 
 /* sPos holds the position, reset to 0 on Start(); tStamp holds the system time
@@ -1098,20 +1723,18 @@ HIDDEN LONG STDMETHODCALLTYPE
 GetSamplePosition(LPPIPEASIO iface, w_int64_t *sPos, w_int64_t *tStamp)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
-
-    TRACE("iface: %p, sPos: %p, tStamp: %p\n", iface, sPos, tStamp);
-
+    method_token   token;
     if (!sPos || !tStamp)
         return -998;
-
-    uint64_t stamp   = atomic_load_explicit(&This->host_time_stamp, memory_order_relaxed);
-    uint64_t samples = atomic_load_explicit(&This->host_num_samples, memory_order_relaxed);
-
-    tStamp->lo = (ULONG)(stamp & 0xFFFFFFFFu);
-    tStamp->hi = (ULONG)(stamp >> 32);
-    sPos->lo   = (ULONG)(samples & 0xFFFFFFFFu);
-    sPos->hi   = (ULONG)(samples >> 32);
-
+    if (!method_begin(This, false, &token))
+        return -1000;
+    uint64_t stamp   = atomic_load_explicit(&This->host_time_stamp, memory_order_acquire);
+    uint64_t samples = atomic_load_explicit(&This->host_num_samples, memory_order_acquire);
+    tStamp->lo       = (ULONG)(stamp & UINT32_MAX);
+    tStamp->hi       = (ULONG)(stamp >> 32);
+    sPos->lo         = (ULONG)(samples & UINT32_MAX);
+    sPos->hi         = (ULONG)(samples >> 32);
+    method_end(&token);
     return 0;
 }
 
@@ -1121,26 +1744,31 @@ DEFINE_THISCALL_WRAPPER(GetChannelInfo, 8)
 HIDDEN LONG STDMETHODCALLTYPE
 GetChannelInfo(LPPIPEASIO iface, void *info)
 {
-    IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
+    IPipeASIOImpl  *This = (IPipeASIOImpl *)iface;
+    method_token    token;
+    ASIOChannelInfo request;
+    ASIOChannelInfo result = { 0 };
     if (!info)
         return -998;
-    LONG *linfo = (LONG *)info;
-
-    const LONG channelNumber = *linfo++;
-    const LONG isInputType   = *linfo++;
-
-    if (channelNumber < 0
-        || (isInputType ? channelNumber >= This->pipeasio_number_inputs
-                        : channelNumber >= This->pipeasio_number_outputs))
+    memcpy(&request, info, sizeof(request));
+    if (!method_begin(This, false, &token))
+        return -1000;
+    if (request.channel < 0
+        || (request.isInput ? request.channel >= This->pipeasio_number_inputs
+                            : request.channel >= This->pipeasio_number_outputs))
+    {
+        method_end(&token);
         return -998;
-
-    *linfo++ = (isInputType ? This->input_channel : This->output_channel)[channelNumber].active;
-    *linfo++ = 0;
-    *linfo++ = 19;
-    memcpy(linfo,
-           (isInputType ? This->input_channel : This->output_channel)[channelNumber].port_name,
-           PIPEASIO_MAX_NAME_LENGTH);
-
+    }
+    IOChannel *channel
+            = &(request.isInput ? This->input_channel : This->output_channel)[request.channel];
+    result.channel  = request.channel;
+    result.isInput  = request.isInput;
+    result.isActive = channel->active;
+    result.type     = 19;
+    lstrcpynA(result.name, channel->port_name, sizeof(result.name));
+    memcpy(info, &result, sizeof(result));
+    method_end(&token);
     return 0;
 }
 
@@ -1200,282 +1828,307 @@ HIDDEN LONG STDMETHODCALLTYPE
 CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels, LONG bufferSize,
               Callbacks *callbacks)
 {
-    IPipeASIOImpl     *This                 = (IPipeASIOImpl *)iface;
-    BufferInformation *bufferInfoPerChannel = bufferInfo;
-    int                i, j, k;
+    IPipeASIOImpl      *This = (IPipeASIOImpl *)iface;
+    method_token        token;
+    pipeasio_gate_owner owner;
+    BufferInformation  *tables                               = NULL;
+    BufferInformation  *original                             = NULL;
+    BufferInformation  *result                               = NULL;
+    audio_sample_t     *audio_buffer                         = NULL;
+    const char        **input_endpoints                      = NULL;
+    const char        **output_endpoints                     = NULL;
+    bool                input_active[PIPEASIO_MAX_CHANNELS]  = { false };
+    bool                output_active[PIPEASIO_MAX_CHANNELS] = { false };
+    bool                backend_active                       = false;
+    bool                caller_written                       = false;
+    LONG                active_inputs                        = 0;
+    LONG                active_outputs                       = 0;
+    LONG                old_buffer_size;
+    LONG                error    = -997;
+    INT                 expected = Initialized;
+    size_t              table_bytes;
+    size_t              audio_bytes;
+    size_t              input_endpoint_count  = 0;
+    size_t              output_endpoint_count = 0;
 
-    TRACE("iface: %p, bufferInfo: %p, numChannels: %d, bufferSize: %d, callbacks: %p\n", iface,
-          bufferInfo, (int)numChannels, (int)bufferSize, callbacks);
-
-    if (This->host_driver_state != Initialized)
+    if (!method_begin(This, false, &token))
         return -1000;
-
-    if (!bufferInfo || !callbacks)
-        return -997;
-
-    /* RT data loop is stopped here (post-DisposeBuffers); safe to commit a
-     * config the watcher staged while Running. */
-    apply_pending_config(This);
-
-    /* Check for invalid channel numbers.  Both the count-per-direction
-     * AND each entry's channelNumber must be in range - without the
-     * latter, a host that passes channelNumber=99 walks straight off
-     * input_channel[]/output_channel[] into adjacent heap. */
-    for (i = j = k = 0; i < numChannels; i++, bufferInfoPerChannel++)
+    if (!atomic_compare_exchange_strong_explicit(&This->host_driver_state, &expected, Preparing,
+                                                 memory_order_acq_rel, memory_order_acquire))
     {
-        if (bufferInfoPerChannel->isInputType)
+        method_end(&token);
+        return -1000;
+    }
+    owner = next_gate_owner(This);
+    if (!pipeasio_gate_close(&This->method_gate, owner)
+        || !drain_gate(This, &This->method_gate, This->method_idle, 1)
+        || !pipeasio_gate_reopen(&This->method_gate, owner))
+    {
+        error = -1000;
+        goto fail;
+    }
+
+    if (!bufferInfo || !callbacks || numChannels < 0
+        || numChannels > This->pipeasio_number_inputs + This->pipeasio_number_outputs)
+        goto fail;
+    table_bytes = (size_t)numChannels * sizeof(*bufferInfo);
+    if (numChannels)
+    {
+        tables = HeapAlloc(GetProcessHeap(), 0, table_bytes * 2);
+        if (!tables)
         {
-            if (j++ >= This->pipeasio_number_inputs)
-            {
-                WARN("Invalid input channel requested (too many)\n");
-                return -997;
-            }
-            if (bufferInfoPerChannel->channelNumber < 0
-                || bufferInfoPerChannel->channelNumber >= This->pipeasio_number_inputs)
-            {
-                WARN("Invalid input channelNumber %ld (max %d)\n",
-                     (long)bufferInfoPerChannel->channelNumber, This->pipeasio_number_inputs - 1);
-                return -997;
-            }
+            error = -994;
+            goto fail;
+        }
+        original = tables;
+        result   = tables + numChannels;
+        memcpy(original, bufferInfo, table_bytes);
+        memcpy(result, bufferInfo, table_bytes);
+    }
+
+    for (LONG i = 0; i < numChannels; ++i)
+    {
+        LONG channel = bufferInfo[i].channelNumber;
+        if (bufferInfo[i].isInputType)
+        {
+            if (channel < 0 || channel >= This->pipeasio_number_inputs || input_active[channel])
+                goto fail;
+            input_active[channel] = true;
+            ++active_inputs;
         }
         else
         {
-            if (k++ >= This->pipeasio_number_outputs)
-            {
-                WARN("Invalid output channel requested (too many)\n");
-                return -997;
-            }
-            if (bufferInfoPerChannel->channelNumber < 0
-                || bufferInfoPerChannel->channelNumber >= This->pipeasio_number_outputs)
-            {
-                WARN("Invalid output channelNumber %ld (max %d)\n",
-                     (long)bufferInfoPerChannel->channelNumber, This->pipeasio_number_outputs - 1);
-                return -997;
-            }
+            if (channel < 0 || channel >= This->pipeasio_number_outputs || output_active[channel])
+                goto fail;
+            output_active[channel] = true;
+            ++active_outputs;
         }
     }
 
-    /* set buf_size */
+    apply_pending_config(This);
+    old_buffer_size = This->host_current_buffersize;
     if (This->pipeasio_fixed_buffersize || This->pipeasio_follow_device_clock)
     {
-        if (This->host_current_buffersize != bufferSize)
-            return -997;
-        /* Sync the backend buffer size so audio_activate forces the matching
-         * PipeWire quantum.  Without this the graph keeps its default quantum
-         * while the host fills only bufferSize frames per cycle - the daemon
-         * then plays buffer-worth of real audio stretched across a larger
-         * quantum, i.e. slow, pitched-down output. */
-        if (!audio_set_buffer_size(This->audio_client, bufferSize))
-        {
-            WARN("Unable to set buffersize to %d\n", (int)bufferSize);
-            return -999;
-        }
-        TRACE("Buffersize fixed at %d\n", (int)This->host_current_buffersize);
+        if (bufferSize != This->host_current_buffersize)
+            goto fail;
     }
     else
-    { /* fail if not a power of two and if out of range */
-        if (!(bufferSize > 0 && !(bufferSize & (bufferSize - 1))
-              && bufferSize >= PIPEASIO_MINIMUM_BUFFERSIZE
-              && bufferSize <= PIPEASIO_MAXIMUM_BUFFERSIZE))
-        {
-            WARN("Invalid buffersize %d requested\n", (int)bufferSize);
-            return -997;
-        }
-        else
-        {
-            /* Always push the host size to the backend before audio_activate. */
-            This->host_current_buffersize = bufferSize;
-            if (!audio_set_buffer_size(This->audio_client, bufferSize))
-            {
-                WARN("Unable to set buffersize to %d\n", (int)bufferSize);
-                return -999;
-            }
-            TRACE("Buffer size set to %d\n", (int)bufferSize);
-        }
-    }
-
-    This->host_callbacks      = callbacks;
-    This->host_time_info_mode = FALSE;
-
-    if (This->host_callbacks->sendNotification(7, 0, 0, 0))
-        This->host_time_info_mode = TRUE;
-
-    /* Allocate audio buffers */
-
-    const size_t cb_bytes = pipeasio_host_callback_size_bytes(
-            This->pipeasio_number_inputs, This->pipeasio_number_outputs,
-            This->host_current_buffersize, sizeof(audio_sample_t));
-    This->callback_audio_buffer = HeapAlloc(GetProcessHeap(), 0, cb_bytes);
-    if (!This->callback_audio_buffer)
     {
-        ERR("Unable to allocate %i audio buffers\n",
-            This->pipeasio_number_inputs + This->pipeasio_number_outputs);
-        return -994;
+        if (bufferSize < PIPEASIO_MINIMUM_BUFFERSIZE || bufferSize > PIPEASIO_MAXIMUM_BUFFERSIZE
+            || (bufferSize & (bufferSize - 1)) != 0)
+            goto fail;
+        This->host_current_buffersize = bufferSize;
     }
-    TRACE("%i audio buffers allocated (%zu kB) base=%p end=%p\n",
-          This->pipeasio_number_inputs + This->pipeasio_number_outputs, cb_bytes / 1024,
-          This->callback_audio_buffer, (void *)((char *)This->callback_audio_buffer + cb_bytes));
+    if (!audio_set_buffer_size(This->audio_client, (audio_nframes_t)bufferSize))
+    {
+        error = -999;
+        goto fail_restore_size;
+    }
 
-    for (i = 0; i < This->pipeasio_number_inputs; i++)
+    audio_bytes = pipeasio_host_callback_size_bytes(This->pipeasio_number_inputs,
+                                                    This->pipeasio_number_outputs, bufferSize,
+                                                    sizeof(*audio_buffer));
+    if (!audio_bytes
+        || !(audio_buffer = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, audio_bytes)))
+    {
+        error = -994;
+        goto fail_restore_size;
+    }
+
+    for (int i = 0; i < This->pipeasio_number_inputs; ++i)
+    {
         This->input_channel[i].audio_buffer
-                = This->callback_audio_buffer
-                  + pipeasio_host_input_offset_samples(i, This->host_current_buffersize);
-    for (i = 0; i < This->pipeasio_number_outputs; i++)
-        This->output_channel[i].audio_buffer
-                = This->callback_audio_buffer
-                  + pipeasio_host_output_offset_samples(i, This->pipeasio_number_inputs,
-                                                        This->host_current_buffersize);
-
-    /* initialize BufferInformation structures */
-    bufferInfoPerChannel     = bufferInfo;
-    This->host_active_inputs = This->host_active_outputs = 0;
-
-    for (i = 0; i < This->pipeasio_number_inputs; i++)
-    {
-        This->input_channel[i].active = false;
+                = audio_buffer + pipeasio_host_input_offset_samples(i, bufferSize);
+        This->input_channel[i].active = input_active[i];
     }
-    for (i = 0; i < This->pipeasio_number_outputs; i++)
+    for (int i = 0; i < This->pipeasio_number_outputs; ++i)
     {
-        This->output_channel[i].active = false;
+        This->output_channel[i].audio_buffer = audio_buffer
+                                               + pipeasio_host_output_offset_samples(
+                                                       i, This->pipeasio_number_inputs, bufferSize);
+        This->output_channel[i].active       = output_active[i];
     }
 
-    for (i = 0; i < numChannels; i++, bufferInfoPerChannel++)
+    for (LONG i = 0; i < numChannels; ++i)
     {
-        const LONG ch = bufferInfoPerChannel->channelNumber;
-        if (bufferInfoPerChannel->isInputType)
-        {
-            bufferInfoPerChannel->audioBufferStart = &This->input_channel[ch].audio_buffer[0];
-            bufferInfoPerChannel->audioBufferEnd
-                    = &This->input_channel[ch].audio_buffer[This->host_current_buffersize];
-            This->input_channel[ch].active = true;
-            This->host_active_inputs++;
-            TRACE("  bufferInfo[%d]: IN  ch=%ld start=%p end=%p (cb_offset=%zu)\n", i, (long)ch,
-                  bufferInfoPerChannel->audioBufferStart, bufferInfoPerChannel->audioBufferEnd,
-                  (size_t)((char *)bufferInfoPerChannel->audioBufferStart
-                           - (char *)This->callback_audio_buffer));
-        }
-        else
-        {
-            bufferInfoPerChannel->audioBufferStart = &This->output_channel[ch].audio_buffer[0];
-            bufferInfoPerChannel->audioBufferEnd
-                    = &This->output_channel[ch].audio_buffer[This->host_current_buffersize];
-            This->output_channel[ch].active = true;
-            This->host_active_outputs++;
-            TRACE("  bufferInfo[%d]: OUT ch=%ld start=%p end=%p (cb_offset=%zu)\n", i, (long)ch,
-                  bufferInfoPerChannel->audioBufferStart, bufferInfoPerChannel->audioBufferEnd,
-                  (size_t)((char *)bufferInfoPerChannel->audioBufferStart
-                           - (char *)This->callback_audio_buffer));
-        }
+        LONG            channel    = bufferInfo[i].channelNumber;
+        audio_sample_t *base       = bufferInfo[i].isInputType
+                                             ? This->input_channel[channel].audio_buffer
+                                             : This->output_channel[channel].audio_buffer;
+        result[i].audioBufferStart = base;
+        result[i].audioBufferEnd   = base + bufferSize;
     }
-    TRACE("%d audio channels initialized (active_in=%d active_out=%d)\n",
-          (int)(This->host_active_inputs + This->host_active_outputs),
-          (int)This->host_active_inputs, (int)This->host_active_outputs);
 
 #ifdef PIPEASIO_WOW64_PE
-    /* Hand the shared callback buffer + channel activity to the unix RT loop;
-     * the gather/scatter runs unix-side (see src/wow64/audio_unix.c). */
+    if (!pipeasio_wow64_bind_rt(This->audio_client, audio_buffer, bufferSize,
+                                This->pipeasio_number_inputs, This->pipeasio_number_outputs,
+                                input_active, output_active))
     {
-        bool in_active[PIPEASIO_MAX_CHANNELS];
-        bool out_active[PIPEASIO_MAX_CHANNELS];
-        for (i = 0; i < This->pipeasio_number_inputs; i++)
-            in_active[i] = This->input_channel[i].active;
-        for (i = 0; i < This->pipeasio_number_outputs; i++)
-            out_active[i] = This->output_channel[i].active;
-        pipeasio_wow64_bind_rt(This->audio_client, This->callback_audio_buffer,
-                               This->host_current_buffersize, This->pipeasio_number_inputs,
-                               This->pipeasio_number_outputs, in_active, out_active);
+        error = -1000;
+        goto fail_internal;
     }
 #endif
-
     if (!audio_activate(This->audio_client))
     {
-        for (i = 0; i < This->pipeasio_number_inputs; i++)
-        {
-            This->input_channel[i].audio_buffer = NULL;
-            This->input_channel[i].active       = false;
-        }
-        for (i = 0; i < This->pipeasio_number_outputs; i++)
-        {
-            This->output_channel[i].audio_buffer = NULL;
-            This->output_channel[i].active       = false;
-        }
-        HeapFree(GetProcessHeap(), 0, This->callback_audio_buffer);
-        This->callback_audio_buffer = NULL;
-        This->host_callbacks        = NULL;
-        This->host_active_inputs = This->host_active_outputs = 0;
-        return -1000;
+        error = -1000;
+        goto fail_internal;
     }
+    backend_active = true;
 
-    /* Connect to hardware: a chosen device (by node.name) or the first
-     * available one ("" => default).  Our inputs read FROM a source's output
-     * ports; our outputs write TO a sink's input ports. */
     if (This->pipeasio_connect_to_hardware)
     {
-        const char **in_src
-                = This->pipeasio_input_device[0]
-                          ? audio_get_device_ports(This->audio_client, This->pipeasio_input_device,
-                                                   AUDIO_PORT_IS_OUTPUT)
-                          : NULL;
-        const char **out_dst
-                = This->pipeasio_output_device[0]
-                          ? audio_get_device_ports(This->audio_client, This->pipeasio_output_device,
-                                                   AUDIO_PORT_IS_INPUT)
-                          : NULL;
-        const char **use_in  = in_src ? in_src : This->phys_input_ports;
-        const char **use_out = out_dst ? out_dst : This->phys_output_ports;
-
-        for (i = 0; use_in && use_in[i] && i < This->pipeasio_number_inputs; i++)
+        char local_name[PIPEASIO_MAX_NAME_LENGTH];
+        input_endpoints = audio_get_device_ports(
+                This->audio_client,
+                This->pipeasio_input_device[0] ? This->pipeasio_input_device : NULL,
+                AUDIO_PORT_IS_OUTPUT);
+        output_endpoints = audio_get_device_ports(
+                This->audio_client,
+                This->pipeasio_output_device[0] ? This->pipeasio_output_device : NULL,
+                AUDIO_PORT_IS_INPUT);
+        if (!input_endpoints || !output_endpoints)
         {
-            const char *type = audio_port_type(audio_port_by_name(This->audio_client, use_in[i]));
-            if (type && strstr(type, "audio"))
-                audio_connect(This->audio_client, use_in[i],
-                              audio_port_name(This->input_channel[i].port));
+            error = -1000;
+            goto fail_internal;
         }
-        for (i = 0; use_out && use_out[i] && i < This->pipeasio_number_outputs; i++)
+        while (input_endpoints[input_endpoint_count])
+            ++input_endpoint_count;
+        while (output_endpoints[output_endpoint_count])
+            ++output_endpoint_count;
+        for (int i = 0; i < This->pipeasio_number_inputs; ++i)
         {
-            const char *type = audio_port_type(audio_port_by_name(This->audio_client, use_out[i]));
-            if (type && strstr(type, "audio"))
-                audio_connect(This->audio_client, audio_port_name(This->output_channel[i].port),
-                              use_out[i]);
-        }
-
-        if (in_src)
-            audio_free_ports(in_src);
-        if (out_dst)
-            audio_free_ports(out_dst);
-    }
-
-    /* at this point all the connections are made and the process callback is outputting silence */
-    This->host_driver_state = Prepared;
-
-    /* Watch config.ini for panel edits and reset on change (live reload).
-     * Reap any prior watcher before starting a fresh one; no-op on the
-     * normal path. */
-    stop_config_watch(This);
-    {
-        struct config_watch *w
-                = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(struct config_watch));
-        if (w)
-        {
-            w->owner      = This;
-            w->refs       = 2;
-            w->stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
-            if (w->stop_event)
-                w->thread = CreateThread(NULL, 0, config_watch_proc, w, 0, &w->tid);
-            if (w->thread)
-                This->config_watch = w;
-            else
+            if (!input_active[i] || (size_t)i >= input_endpoint_count)
+                continue;
+            if (!audio_port_get_name(This->input_channel[i].port, local_name, sizeof local_name)
+                || !audio_connect(This->audio_client, input_endpoints[i], local_name))
             {
-                if (w->stop_event)
-                    CloseHandle(w->stop_event);
-                HeapFree(GetProcessHeap(), 0, w);
-                WARN("config watcher: start failed, live reload disabled\n");
+                error = -1000;
+                goto fail_internal;
             }
         }
-        else
-            WARN("config watcher: alloc failed, live reload disabled\n");
+        for (int i = 0; i < This->pipeasio_number_outputs; ++i)
+        {
+            if (!output_active[i] || (size_t)i >= output_endpoint_count)
+                continue;
+            if (!audio_port_get_name(This->output_channel[i].port, local_name, sizeof local_name)
+                || !audio_connect(This->audio_client, local_name, output_endpoints[i]))
+            {
+                error = -1000;
+                goto fail_internal;
+            }
+        }
     }
+    audio_free_ports(input_endpoints);
+    audio_free_ports(output_endpoints);
+    input_endpoints  = NULL;
+    output_endpoints = NULL;
+
+    {
+        /* A previous best-effort stop may have left a watcher attached.  Join
+         * it for real before replacing it: if it were blocked in a host reset
+         * notification it holds a host-gate admission, so this wait has the
+         * same bound as the gate drains. */
+        stop_config_watch(This, true);
+        struct config_watch *watch = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*watch));
+        if (watch)
+        {
+            watch->owner      = This;
+            watch->refs       = 2; /* stop_config_watch + watcher thread */
+            watch->stop_event = CreateEventA(NULL, TRUE, FALSE, NULL);
+            if (watch->stop_event)
+                watch->thread = CreateThread(NULL, 0, config_watch_proc, watch, 0, &watch->tid);
+            if (watch->thread)
+                This->config_watch = watch;
+            else
+            {
+                if (watch->stop_event)
+                    CloseHandle(watch->stop_event);
+                HeapFree(GetProcessHeap(), 0, watch);
+            }
+        }
+    }
+
+    This->callback_audio_buffer = audio_buffer;
+    This->host_active_inputs    = active_inputs;
+    This->host_active_outputs   = active_outputs;
+    This->host_time_info_mode   = FALSE;
+    atomic_store_explicit(&This->host_callbacks, callbacks, memory_order_release);
+
+    if (!claim_closed_gate(&This->host_gate, owner)
+        || !pipeasio_gate_reopen(&This->host_gate, owner))
+    {
+        error = -1000;
+        goto fail_internal_published;
+    }
+    {
+        pipeasio_host_call_token host_token;
+        if (pipeasio_host_call_begin(This, PIPEASIO_HOST_TIME_INFO, &host_token))
+            This->host_time_info_mode
+                    = pipeasio_host_call_notify(&host_token, 7, 0, NULL, NULL) != 0;
+        pipeasio_host_call_end(&host_token);
+    }
+    if (!pipeasio_gate_close(&This->host_gate, owner)
+        || !drain_gate(This, &This->host_gate, This->host_idle, 0)
+        || atomic_load_explicit(&This->host_driver_state, memory_order_acquire) != Preparing)
+    {
+        error = -1000;
+        goto fail_internal_published;
+    }
+
+    if (numChannels)
+    {
+        memcpy(bufferInfo, result, table_bytes);
+        caller_written = true;
+    }
+    expected = Preparing;
+    if (!atomic_compare_exchange_strong_explicit(&This->host_driver_state, &expected, Prepared,
+                                                 memory_order_release, memory_order_acquire))
+    {
+        if (caller_written)
+            memcpy(bufferInfo, original, table_bytes);
+        error = -1000;
+        goto fail_internal_published;
+    }
+    HeapFree(GetProcessHeap(), 0, tables);
+    method_end(&token);
     return 0;
+
+fail_internal_published:
+    atomic_store_explicit(&This->host_callbacks, NULL, memory_order_release);
+    This->callback_audio_buffer = NULL;
+    This->host_active_inputs    = 0;
+    This->host_active_outputs   = 0;
+    stop_config_watch(This, false);
+fail_internal:
+    audio_free_ports(input_endpoints);
+    audio_free_ports(output_endpoints);
+    if (backend_active)
+        audio_deactivate(This->audio_client);
+    for (int i = 0; i < This->pipeasio_number_inputs; ++i)
+    {
+        This->input_channel[i].audio_buffer = NULL;
+        This->input_channel[i].active       = false;
+    }
+    for (int i = 0; i < This->pipeasio_number_outputs; ++i)
+    {
+        This->output_channel[i].audio_buffer = NULL;
+        This->output_channel[i].active       = false;
+    }
+    HeapFree(GetProcessHeap(), 0, audio_buffer);
+fail_restore_size:
+    This->host_current_buffersize = old_buffer_size;
+fail:
+    if (caller_written)
+        memcpy(bufferInfo, original, table_bytes);
+    HeapFree(GetProcessHeap(), 0, tables);
+    expected = Preparing;
+    atomic_compare_exchange_strong_explicit(&This->host_driver_state, &expected, Initialized,
+                                            memory_order_release, memory_order_acquire);
+    if (!pipeasio_gate_is_permanent(&This->method_gate)
+        && pipeasio_gate_is_closed(&This->method_gate))
+        pipeasio_gate_reopen(&This->method_gate, owner);
+    method_end(&token);
+    return error;
 }
 
 /* Implies Stop(). Returns -997 if no buffers were previously allocated, -1000 on missing IO. */
@@ -1484,43 +2137,96 @@ DEFINE_THISCALL_WRAPPER(DisposeBuffers, 4)
 HIDDEN LONG STDMETHODCALLTYPE
 DisposeBuffers(LPPIPEASIO iface)
 {
-    IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
-    int            i;
+    IPipeASIOImpl      *This = (IPipeASIOImpl *)iface;
+    method_token        token;
+    pipeasio_gate_owner owner;
+    INT                 state;
+    INT                 expected;
+    bool                backend_ok  = true;
+    bool                method_held = false;
 
-    TRACE("iface: %p\n", iface);
-
-    /* Stop the live-config watcher before any teardown so no in-flight reset
-     * request races with Stop()/host_callbacks going away. */
-    stop_config_watch(This);
-
-    if (This->host_driver_state == Running)
-        Stop(iface);
-    if (This->host_driver_state != Prepared)
+    if (!method_begin(This, false, &token))
         return -1000;
-
-    if (!audio_deactivate(This->audio_client))
+    if (pipeasio_host_call_is_reentrant(This))
+    {
+        method_end(&token);
         return -1000;
+    }
 
-    This->host_callbacks = NULL;
+    state = atomic_load_explicit(&This->host_driver_state, memory_order_acquire);
+    if (state == Running || state == Stopping)
+    {
+        if (stop_admitted(This) != 0)
+        {
+            method_end(&token);
+            return -1000;
+        }
+        state = atomic_load_explicit(&This->host_driver_state, memory_order_acquire);
+    }
+    expected = Prepared;
+    if (state != Prepared
+        || !atomic_compare_exchange_strong_explicit(&This->host_driver_state, &expected, Disposing,
+                                                    memory_order_acq_rel, memory_order_acquire))
+    {
+        method_end(&token);
+        return -1000;
+    }
 
-    for (i = 0; i < This->pipeasio_number_inputs; i++)
+    owner = next_gate_owner(This);
+    if (!pipeasio_gate_close(&This->method_gate, owner))
+        goto fail_held;
+    method_held = true;
+    if (!drain_gate(This, &This->method_gate, This->method_idle, 1))
+        goto fail_held;
+    if (!pipeasio_gate_reopen(&This->method_gate, owner))
+        goto fail_held;
+    method_held = false;
+    if (!claim_closed_gate(&This->host_gate, owner))
+        goto fail_held;
+    if (!drain_gate(This, &This->host_gate, This->host_idle, 0))
+        goto fail_held;
+
+    stop_config_watch(This, false);
+    if (This->audio_client)
+        backend_ok = audio_deactivate(This->audio_client);
+    atomic_store_explicit(&This->host_callbacks, NULL, memory_order_release);
+
+    for (int i = 0; i < This->pipeasio_number_inputs; ++i)
     {
         This->input_channel[i].audio_buffer = NULL;
         This->input_channel[i].active       = false;
     }
-    for (i = 0; i < This->pipeasio_number_outputs; i++)
+    for (int i = 0; i < This->pipeasio_number_outputs; ++i)
     {
         This->output_channel[i].audio_buffer = NULL;
         This->output_channel[i].active       = false;
     }
-    This->host_active_inputs = This->host_active_outputs = 0;
-
+    This->host_active_inputs  = 0;
+    This->host_active_outputs = 0;
     if (This->callback_audio_buffer)
+    {
         HeapFree(GetProcessHeap(), 0, This->callback_audio_buffer);
-    This->callback_audio_buffer = NULL;
+        This->callback_audio_buffer = NULL;
+    }
 
-    This->host_driver_state = Initialized;
-    return 0;
+    expected = Disposing;
+    atomic_compare_exchange_strong_explicit(&This->host_driver_state, &expected, Initialized,
+                                            memory_order_release, memory_order_acquire);
+    method_end(&token);
+    return backend_ok ? 0 : -1000;
+
+fail_held:
+    /* No teardown ran: restore the state we entered with so a retry sees a
+     * coherent object.  host_gate stays closed (possibly under this owner):
+     * that is its normal Prepared state, and the next close operation claims
+     * it via claim_closed_gate. */
+    if (method_held && !pipeasio_gate_is_permanent(&This->method_gate))
+        pipeasio_gate_reopen(&This->method_gate, owner);
+    expected = Disposing;
+    atomic_compare_exchange_strong_explicit(&This->host_driver_state, &expected, Prepared,
+                                            memory_order_release, memory_order_acquire);
+    method_end(&token);
+    return -1000;
 }
 
 /* Returns -1000 if no control panel exists, but the return code should be
@@ -1530,8 +2236,12 @@ DEFINE_THISCALL_WRAPPER(ControlPanel, 4)
 HIDDEN LONG STDMETHODCALLTYPE
 ControlPanel(LPPIPEASIO iface)
 {
-    char cfg_path[1024];
-    char message[1536];
+    char           cfg_path[1024];
+    char           message[1536];
+    IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
+    method_token   token;
+    if (!method_begin(This, false, &token))
+        return -1000;
 
     TRACE("iface: %p\n", iface);
 
@@ -1556,6 +2266,7 @@ ControlPanel(LPPIPEASIO iface)
              cfg_path);
 
     MessageBoxA(NULL, message, "PipeASIO Settings", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+    method_end(&token);
     return 0;
 }
 
@@ -1565,69 +2276,29 @@ DEFINE_THISCALL_WRAPPER(Future, 12)
 HIDDEN LONG STDMETHODCALLTYPE
 Future(LPPIPEASIO iface, LONG selector, void *opt)
 {
-    TRACE("iface: %p, selector: %d, opt: %p\n", iface, (int)selector, opt);
-
+    IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
+    method_token   token;
+    LONG           result;
+    (void)opt;
+    if (!method_begin(This, false, &token))
+        return -1000;
     switch (selector)
     {
-    case 1:
-    case 2:
-        TRACE("The driver does not support TimeCode\n");
-        return -998;
-    case 3:
-        TRACE("The driver denied request to set input monitor\n");
-        return -1000;
-    case 4:
-        TRACE("The driver denied request for Transport control\n");
-        return -998;
-    case 5:
-        TRACE("The driver denied request to set input gain\n");
-        return -998;
-    case 6:
-        TRACE("The driver denied request to get input meter \n");
-        return -998;
-    case 7:
-        TRACE("The driver denied request to set output gain\n");
-        return -998;
-    case 8:
-        TRACE("The driver denied request to get output meter\n");
-        return -998;
-    case 9:
-        TRACE("The driver does not support input monitor\n");
-        return -998;
     case 10:
-        TRACE("The driver supports TimeInfo\n");
-        return 0x3f4847a0;
-    case 11:
-        TRACE("The driver does not support TimeCode\n");
-        return -998;
-    case 12:
-        TRACE("The driver denied request for Transport\n");
-        return -998;
-    case 13:
-        TRACE("The driver does not support input gain\n");
-        return -998;
-    case 14:
-        TRACE("The driver does not support input meter\n");
-        return -998;
-    case 15:
-        TRACE("The driver does not support output gain\n");
-        return -998;
-    case 16:
-        TRACE("The driver does not support output meter\n");
-        return -998;
+        result = 0x3f4847a0;
+        break;
+    case 3:
     case 0x23111961:
-        TRACE("The driver denied request to set DSD IO format\n");
-        return -1000;
     case 0x23111983:
-        TRACE("The driver denied request to get DSD IO format\n");
-        return -1000;
     case 0x23112004:
-        TRACE("The driver does not support DSD IO format\n");
-        return -1000;
+        result = -1000;
+        break;
     default:
-        TRACE("ASIOFuture() called with undocumented selector\n");
-        return -998;
+        result = -998;
+        break;
     }
+    method_end(&token);
+    return result;
 }
 
 /* Returns 0 if supported, -1000 to disable. */
@@ -1636,7 +2307,11 @@ DEFINE_THISCALL_WRAPPER(OutputReady, 4)
 HIDDEN LONG STDMETHODCALLTYPE
 OutputReady(LPPIPEASIO iface)
 {
-    (void)iface;
+    IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
+    method_token   token;
+    if (!method_begin(This, false, &token))
+        return -1000;
+    method_end(&token);
     return -1000;
 }
 
@@ -1645,141 +2320,57 @@ OutputReady(LPPIPEASIO iface)
  */
 
 static inline int
-buffer_size_callback(audio_nframes_t nframes, void *arg)
-{
-    (void)nframes;
-    IPipeASIOImpl *This = (IPipeASIOImpl *)arg;
-
-    if (This->host_driver_state != Running)
-        return 0;
-
-    if (This->host_callbacks->sendNotification(1, 3, 0, 0))
-        This->host_callbacks->sendNotification(3, 0, 0, 0);
-    return 0;
-}
-
-static inline void
-latency_callback(audio_latency_mode_t mode, void *arg)
-{
-    (void)mode;
-    IPipeASIOImpl *This = (IPipeASIOImpl *)arg;
-
-    if (This->host_driver_state != Running)
-        return;
-
-    if (This->host_callbacks->sendNotification(1, 6, 0, 0))
-        This->host_callbacks->sendNotification(6, 0, 0, 0);
-
-    return;
-}
-
-/* Host-callback bridge. */
-
-void
-pipeasio_host_buffer_switch(void *This, int32_t buffer_index, audio_nframes_t add_samples,
-                            uint64_t time_nsec)
-{
-    IPipeASIOImpl *impl = (IPipeASIOImpl *)This;
-    Callbacks     *cb   = atomic_load_explicit(&impl->host_callbacks, memory_order_relaxed);
-
-    /* Native 64-bit counters, split into the ASIO hi/lo wire format only at
-     * the edges.  Single RT writer; relaxed atomics keep GetSamplePosition's
-     * COM-thread reads untorn. */
-    uint64_t samples
-            = atomic_load_explicit(&impl->host_num_samples, memory_order_relaxed) + add_samples;
-    atomic_store_explicit(&impl->host_num_samples, samples, memory_order_relaxed);
-    atomic_store_explicit(&impl->host_time_stamp, time_nsec, memory_order_relaxed);
-
-    if (impl->host_time_info_mode)
-    {
-        impl->host_time._2            = 1.0;
-        impl->host_time.numSamples.lo = (ULONG)(samples & 0xFFFFFFFFu);
-        impl->host_time.numSamples.hi = (ULONG)(samples >> 32);
-        impl->host_time.timeStamp.lo  = (ULONG)(time_nsec & 0xFFFFFFFFu);
-        impl->host_time.timeStamp.hi  = (ULONG)(time_nsec >> 32);
-        impl->host_time.sampleRate    = impl->host_sample_rate;
-        impl->host_time.flags         = 0x7;
-
-        cb->swapBuffersWithTimeInfo(&impl->host_time, buffer_index, 1);
-    }
-    else
-    {
-        cb->swapBuffers(buffer_index, 1);
-    }
-}
-
-int
-pipeasio_host_is_running(void *This)
-{
-    return ((IPipeASIOImpl *)This)->host_driver_state == Running;
-}
-
-static inline int
 process_callback(audio_nframes_t nframes, void *arg)
 {
-    IPipeASIOImpl *This = (IPipeASIOImpl *)arg;
+    IPipeASIOImpl           *This = (IPipeASIOImpl *)arg;
+    pipeasio_host_call_token token;
+    bool admitted = pipeasio_host_call_begin(This, PIPEASIO_HOST_PROCESS, &token);
+    int  half     = 0;
 
-    int i;
-
-    /* output silence if the host callback isn't running yet */
-    if (atomic_load_explicit(&This->host_driver_state, memory_order_relaxed) != Running)
+    if (admitted)
     {
-        for (i = 0; i < This->host_active_outputs; i++)
+        /* Read only while admitted: Start writes host_buffer_index after
+         * draining the host gate, which rejected callbacks are not part of. */
+        half = This->host_buffer_index;
+        for (int i = 0; i < This->pipeasio_number_inputs; ++i)
         {
-            audio_sample_t *dst   = audio_port_get_buffer(This->output_channel[i].port, nframes);
-            audio_nframes_t avail = audio_port_buffer_avail_frames(This->output_channel[i].port);
-            audio_nframes_t n     = (dst && avail < nframes) ? avail : (dst ? nframes : 0);
-            if (n)
-                memset(dst, 0, sizeof(audio_sample_t) * n);
+            if (!This->input_channel[i].active)
+                continue;
+            audio_sample_t *source = audio_port_get_buffer(This->input_channel[i].port, nframes);
+            audio_sample_t *destination = &This->input_channel[i].audio_buffer[nframes * half];
+            if (source)
+                memcpy(destination, source, sizeof(*destination) * nframes);
+            else
+                memset(destination, 0, sizeof(*destination) * nframes);
         }
-        return 0;
+
+        pipeasio_host_call_process(&token, half, nframes, audio_get_time_nsec(This->audio_client));
     }
 
-    /* copy device input to host buffers */
-    for (i = 0; i < This->pipeasio_number_inputs; i++)
-        if (This->input_channel[i].active)
-        {
-            audio_sample_t *src = audio_port_get_buffer(This->input_channel[i].port, nframes);
-            audio_sample_t *dst
-                    = &This->input_channel[i].audio_buffer[nframes * This->host_buffer_index];
-            audio_nframes_t avail = audio_port_buffer_avail_frames(This->input_channel[i].port);
-            audio_nframes_t n     = (src && avail < nframes) ? avail : (src ? nframes : 0);
-            if (n)
-                memcpy(dst, src, sizeof(audio_sample_t) * n);
-            if (n < nframes)
-                memset(dst + n, 0, sizeof(audio_sample_t) * (nframes - n));
-        }
-
-    pipeasio_host_buffer_switch(This, This->host_buffer_index, nframes,
-                                audio_get_time_nsec(This->audio_client));
-
-    /* copy host to device output buffers */
-    for (i = 0; i < This->pipeasio_number_outputs; i++)
-        if (This->output_channel[i].active)
-        {
-            audio_sample_t *dst   = audio_port_get_buffer(This->output_channel[i].port, nframes);
-            audio_nframes_t avail = audio_port_buffer_avail_frames(This->output_channel[i].port);
-            audio_nframes_t n     = (dst && avail < nframes) ? avail : (dst ? nframes : 0);
-            if (n)
-                memcpy(dst,
-                       &This->output_channel[i].audio_buffer[nframes * This->host_buffer_index],
-                       sizeof(audio_sample_t) * n);
-        }
-
-    This->host_buffer_index = This->host_buffer_index ? 0 : 1;
+    for (int i = 0; i < This->pipeasio_number_outputs; ++i)
+    {
+        const audio_sample_t *source
+                = admitted ? &This->output_channel[i].audio_buffer[nframes * half] : NULL;
+        audio_port_publish_output(This->output_channel[i].port, source, nframes, admitted,
+                                  This->output_channel[i].active);
+    }
+    if (admitted)
+        This->host_buffer_index = half ? 0 : 1;
+    pipeasio_host_call_end(&token);
     return 0;
 }
 
 static inline int
 sample_rate_callback(audio_nframes_t nframes, void *arg)
 {
-    IPipeASIOImpl *This = (IPipeASIOImpl *)arg;
-
-    if (This->host_driver_state != Running)
-        return 0;
-
-    This->host_sample_rate = nframes;
-    This->host_callbacks->sampleRateChanged(nframes);
+    IPipeASIOImpl           *This = (IPipeASIOImpl *)arg;
+    pipeasio_host_call_token token;
+    if (pipeasio_host_call_begin(This, PIPEASIO_HOST_SAMPLE_RATE, &token))
+    {
+        atomic_store_explicit(&This->host_sample_rate, nframes, memory_order_release);
+        pipeasio_host_call_sample_rate(&token, nframes);
+    }
+    pipeasio_host_call_end(&token);
     return 0;
 }
 
@@ -1802,47 +2393,41 @@ strrchrW(const WCHAR *str, WCHAR ch)
 }
 #endif
 
+static bool
+read_environment(const char *name, char *value, DWORD capacity)
+{
+    DWORD length;
+    if (!value || capacity < 2)
+        return false;
+    value[0] = '\0';
+    length   = GetEnvironmentVariableA(name, value, capacity);
+    if (!length || length >= capacity)
+    {
+        value[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
 static VOID
 configure_driver(IPipeASIOImpl *This)
 {
     WCHAR                  application_path[MAX_PATH];
     WCHAR                 *application_name;
     char                   environment_variable[MAX_ENVIRONMENT_SIZE];
-    char                   name_env[PIPEASIO_MAX_NAME_LENGTH];
-    char                   dev_env[PIPEASIO_DEVICE_NAME_MAX];
-    LONG                   result;
-    DWORD                  n;
+    char                   name_environment[PIPEASIO_MAX_NAME_LENGTH];
+    char                   device_environment[PIPEASIO_DEVICE_NAME_MAX];
+    int                    parsed;
+    bool                   flag;
     struct pipeasio_config cfg;
-    /* Defaults remain valid if the WoW64 config call fails. */
     pipeasio_config_defaults(&cfg);
-
-    /* Initialise most member variables.
-     * host_num_samples, host_time, & host_time_stamp are initialized in Start()
-     * num_phys_input_ports & num_phys_output_ports are initialized in Init() */
-    This->host_active_inputs      = 0;
-    This->host_active_outputs     = 0;
-    This->host_buffer_index       = 0;
-    This->host_callbacks          = NULL;
-    This->host_current_buffersize = 0;
-    This->host_driver_state       = Loaded;
-    This->host_sample_rate        = 0;
-    This->host_time_info_mode     = FALSE;
-    This->host_version            = 92; /* ASIO API version, not PIPEASIO_VERSION */
-
-    /* Load settings from the flat INI the pipeasio-settings panel writes
-     * ($XDG_CONFIG_HOME/pipeasio/config.ini).  A missing file yields defaults. */
-    char cfg_path[1024] = "";
-    pipeasio_config_path(cfg_path, sizeof cfg_path);
 #ifdef PIPEASIO_WOW64_PE
     bool cfg_found = pipeasio_wow64_load_config(&cfg);
 #else
     bool cfg_found = pipeasio_config_load(&cfg);
 #endif
-    TRACE("config: %s  path=%s  buffer_size=%d inputs=%d outputs=%d fixed=%d "
-          "rate=%d auto=%d out='%s' in='%s'\n",
-          cfg_found ? "loaded" : "MISSING -> defaults", cfg_path, cfg.buffer_size, cfg.inputs,
-          cfg.outputs, cfg.fixed_buffer_size, cfg.sample_rate, cfg.auto_connect, cfg.output_device,
-          cfg.input_device);
+    TRACE("config: %s inputs=%d outputs=%d buffer=%d rate=%d\n", cfg_found ? "loaded" : "defaults",
+          cfg.inputs, cfg.outputs, cfg.buffer_size, cfg.sample_rate);
     This->pipeasio_number_inputs        = cfg.inputs;
     This->pipeasio_number_outputs       = cfg.outputs;
     This->pipeasio_connect_to_hardware  = cfg.auto_connect ? TRUE : FALSE;
@@ -1851,119 +2436,64 @@ configure_driver(IPipeASIOImpl *This)
     This->pipeasio_realtime             = cfg.realtime ? TRUE : FALSE;
     This->pipeasio_preferred_buffersize = cfg.buffer_size;
     This->pipeasio_sample_rate          = cfg.sample_rate;
-    lstrcpynA(This->pipeasio_output_device, cfg.output_device, sizeof This->pipeasio_output_device);
-    lstrcpynA(This->pipeasio_input_device, cfg.input_device, sizeof This->pipeasio_input_device);
-
-    This->audio_client          = NULL;
-    This->client_name[0]        = 0;
-    This->phys_input_ports      = NULL;
-    This->phys_output_ports     = NULL;
-    This->callback_audio_buffer = NULL;
-    This->input_channel         = NULL;
-    This->output_channel        = NULL;
-    This->config_watch          = NULL;
-
-    /* Client (PipeWire node) name: the INI may pin one, otherwise derive it
-     * from the host application's executable name. */
+    lstrcpynA(This->pipeasio_output_device, cfg.output_device,
+              sizeof(This->pipeasio_output_device));
+    lstrcpynA(This->pipeasio_input_device, cfg.input_device, sizeof(This->pipeasio_input_device));
+    lstrcpynA(This->client_name, "PipeASIO", sizeof(This->client_name));
     if (cfg.node_name[0])
-    {
-        lstrcpynA(This->client_name, cfg.node_name, PIPEASIO_MAX_NAME_LENGTH);
-    }
+        lstrcpynA(This->client_name, cfg.node_name, sizeof(This->client_name));
     else
     {
-        GetModuleFileNameW(0, application_path, MAX_PATH);
-        application_name = strrchrW(application_path, L'.');
-        if (application_name)
-            *application_name = 0;
-        application_name = strrchrW(application_path, L'\\');
-        application_name = application_name ? application_name + 1 : application_path;
-        WideCharToMultiByte(CP_ACP, WC_SEPCHARS, application_name, -1, This->client_name,
-                            PIPEASIO_MAX_NAME_LENGTH, NULL, NULL);
+        DWORD length = GetModuleFileNameW(NULL, application_path, MAX_PATH);
+        if (length && length < MAX_PATH)
+        {
+            application_name = strrchrW(application_path, L'.');
+            if (application_name)
+                *application_name = 0;
+            application_name = strrchrW(application_path, L'\\');
+            application_name = application_name ? application_name + 1 : application_path;
+            if (!WideCharToMultiByte(CP_ACP, WC_SEPCHARS, application_name, -1, This->client_name,
+                                     sizeof(This->client_name), NULL, NULL))
+                lstrcpynA(This->client_name, "PipeASIO", sizeof(This->client_name));
+        }
     }
-
-    /* Environment variables override INI values. */
-    if (GetEnvironmentVariableA("PIPEASIO_NUMBER_INPUTS", environment_variable,
-                                MAX_ENVIRONMENT_SIZE))
-    {
-        errno  = 0;
-        result = strtol(environment_variable, 0, 10);
-        if (errno != ERANGE)
-            This->pipeasio_number_inputs = result;
-    }
-    if (GetEnvironmentVariableA("PIPEASIO_NUMBER_OUTPUTS", environment_variable,
-                                MAX_ENVIRONMENT_SIZE))
-    {
-        errno  = 0;
-        result = strtol(environment_variable, 0, 10);
-        if (errno != ERANGE)
-            This->pipeasio_number_outputs = result;
-    }
-    if (This->pipeasio_number_inputs < 0)
-        This->pipeasio_number_inputs = 0;
-    if (This->pipeasio_number_inputs > PIPEASIO_MAX_CHANNELS)
-        This->pipeasio_number_inputs = PIPEASIO_MAX_CHANNELS;
-    if (This->pipeasio_number_outputs < 0)
-        This->pipeasio_number_outputs = 0;
-    if (This->pipeasio_number_outputs > PIPEASIO_MAX_CHANNELS)
-        This->pipeasio_number_outputs = PIPEASIO_MAX_CHANNELS;
-    if (GetEnvironmentVariableA("PIPEASIO_CONNECT_TO_HARDWARE", environment_variable,
-                                MAX_ENVIRONMENT_SIZE))
-    {
-        if (!strcasecmp(environment_variable, "on"))
-            This->pipeasio_connect_to_hardware = TRUE;
-        else if (!strcasecmp(environment_variable, "off"))
-            This->pipeasio_connect_to_hardware = FALSE;
-    }
-    if (GetEnvironmentVariableA("PIPEASIO_FIXED_BUFFERSIZE", environment_variable,
-                                MAX_ENVIRONMENT_SIZE))
-    {
-        if (!strcasecmp(environment_variable, "on"))
-            This->pipeasio_fixed_buffersize = TRUE;
-        else if (!strcasecmp(environment_variable, "off"))
-            This->pipeasio_fixed_buffersize = FALSE;
-    }
-    if (GetEnvironmentVariableA("PIPEASIO_FOLLOW_DEVICE_CLOCK", environment_variable,
-                                MAX_ENVIRONMENT_SIZE))
-    {
-        if (!strcasecmp(environment_variable, "on"))
-            This->pipeasio_follow_device_clock = TRUE;
-        else if (!strcasecmp(environment_variable, "off"))
-            This->pipeasio_follow_device_clock = FALSE;
-    }
-    if (GetEnvironmentVariableA("PIPEASIO_PREFERRED_BUFFERSIZE", environment_variable,
-                                MAX_ENVIRONMENT_SIZE))
-    {
-        errno  = 0;
-        result = strtol(environment_variable, 0, 10);
-        if (errno != ERANGE)
-            This->pipeasio_preferred_buffersize = result;
-    }
-    if (GetEnvironmentVariableA("PIPEASIO_SAMPLE_RATE", environment_variable, MAX_ENVIRONMENT_SIZE))
-    {
-        errno  = 0;
-        result = strtol(environment_variable, 0, 10);
-        if (errno != ERANGE)
-            This->pipeasio_sample_rate = result;
-    }
-    n = GetEnvironmentVariableA("PIPEASIO_OUTPUT_DEVICE", dev_env, sizeof dev_env);
-    if (n > 0 && n < sizeof dev_env)
-        lstrcpynA(This->pipeasio_output_device, dev_env, sizeof This->pipeasio_output_device);
-    n = GetEnvironmentVariableA("PIPEASIO_INPUT_DEVICE", dev_env, sizeof dev_env);
-    if (n > 0 && n < sizeof dev_env)
-        lstrcpynA(This->pipeasio_input_device, dev_env, sizeof This->pipeasio_input_device);
-
-    /* override the audio client name */
-    n = GetEnvironmentVariableA("PIPEASIO_CLIENT_NAME", name_env, sizeof name_env);
-    if (n > 0 && n < sizeof name_env)
-        lstrcpynA(This->client_name, name_env, PIPEASIO_MAX_NAME_LENGTH);
-
-    /* if pipeasio_preferred_buffersize is not a power of two or out of range,
-     * fall back to PIPEASIO_PREFERRED_BUFFERSIZE */
-    if (!(This->pipeasio_preferred_buffersize > 0
-          && !(This->pipeasio_preferred_buffersize & (This->pipeasio_preferred_buffersize - 1))
-          && This->pipeasio_preferred_buffersize >= PIPEASIO_MINIMUM_BUFFERSIZE
-          && This->pipeasio_preferred_buffersize <= PIPEASIO_MAXIMUM_BUFFERSIZE))
-        This->pipeasio_preferred_buffersize = PIPEASIO_PREFERRED_BUFFERSIZE;
+    if (read_environment("PIPEASIO_NUMBER_INPUTS", environment_variable,
+                         sizeof(environment_variable))
+        && pipeasio_parse_int(environment_variable, 0, PIPEASIO_MAX_CHANNELS, &parsed))
+        This->pipeasio_number_inputs = parsed;
+    if (read_environment("PIPEASIO_NUMBER_OUTPUTS", environment_variable,
+                         sizeof(environment_variable))
+        && pipeasio_parse_int(environment_variable, 0, PIPEASIO_MAX_CHANNELS, &parsed))
+        This->pipeasio_number_outputs = parsed;
+    if (read_environment("PIPEASIO_CONNECT_TO_HARDWARE", environment_variable,
+                         sizeof(environment_variable))
+        && pipeasio_parse_bool(environment_variable, &flag))
+        This->pipeasio_connect_to_hardware = flag ? TRUE : FALSE;
+    if (read_environment("PIPEASIO_FIXED_BUFFERSIZE", environment_variable,
+                         sizeof(environment_variable))
+        && pipeasio_parse_bool(environment_variable, &flag))
+        This->pipeasio_fixed_buffersize = flag ? TRUE : FALSE;
+    if (read_environment("PIPEASIO_FOLLOW_DEVICE_CLOCK", environment_variable,
+                         sizeof(environment_variable))
+        && pipeasio_parse_bool(environment_variable, &flag))
+        This->pipeasio_follow_device_clock = flag ? TRUE : FALSE;
+    if (read_environment("PIPEASIO_PREFERRED_BUFFERSIZE", environment_variable,
+                         sizeof(environment_variable))
+        && pipeasio_parse_int(environment_variable, PIPEASIO_MINIMUM_BUFFERSIZE,
+                              PIPEASIO_MAXIMUM_BUFFERSIZE, &parsed)
+        && !(parsed & (parsed - 1)))
+        This->pipeasio_preferred_buffersize = parsed;
+    if (read_environment("PIPEASIO_SAMPLE_RATE", environment_variable, sizeof(environment_variable))
+        && pipeasio_parse_int(environment_variable, 0, INT_MAX, &parsed))
+        This->pipeasio_sample_rate = parsed;
+    if (read_environment("PIPEASIO_OUTPUT_DEVICE", device_environment, sizeof(device_environment)))
+        lstrcpynA(This->pipeasio_output_device, device_environment,
+                  sizeof(This->pipeasio_output_device));
+    if (read_environment("PIPEASIO_INPUT_DEVICE", device_environment, sizeof(device_environment)))
+        lstrcpynA(This->pipeasio_input_device, device_environment,
+                  sizeof(This->pipeasio_input_device));
+    if (read_environment("PIPEASIO_CLIENT_NAME", name_environment, sizeof(name_environment)))
+        lstrcpynA(This->client_name, name_environment, sizeof(This->client_name));
 
     return;
 }
@@ -1973,20 +2503,73 @@ HRESULT WINAPI
 PipeASIOCreateInstance(REFIID riid, LPVOID *ppobj)
 {
     IPipeASIOImpl *pobj;
-    (void)riid; /* ASIO convention: hosts query by CLSID via CoCreateInstance */
+    HMODULE        module = NULL;
 
-    /* Host-facing doubles must start at zero, not indeterminate bytes. */
+    if (!ppobj)
+        return E_POINTER;
+    *ppobj = NULL;
+    if (!IsEqualIID(riid, &IID_IUnknown) && !IsEqualIID(riid, &CLSID_PipeASIO))
+        return E_NOINTERFACE;
+
     pobj = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*pobj));
-    if (pobj == NULL)
-    {
-        WARN("out of memory\n");
+    if (!pobj)
         return E_OUTOFMEMORY;
-    }
 
     pobj->lpVtbl = &PipeASIO_Vtbl;
-    InitializeCriticalSection(&pobj->config_lock);
-    pobj->ref = 1;
-    TRACE("pobj = %p\n", pobj);
+    atomic_init(&pobj->ref, 1);
+    atomic_init(&pobj->host_driver_state, Loaded);
+    atomic_init(&pobj->host_callbacks, NULL);
+    atomic_init(&pobj->host_num_samples, 0);
+    atomic_init(&pobj->host_sample_rate, 0);
+    atomic_init(&pobj->host_time_stamp, 0);
+    atomic_init(&pobj->config_pending, false);
+    atomic_init(&pobj->follower_quantum, 0);
+    atomic_init(&pobj->lifecycle_waiters, 0);
+    atomic_init(&pobj->stop_generation, 0);
+    atomic_init(&pobj->gate_owner_seq, 1);
+    InitializeSRWLock(&pobj->lifecycle_lock);
+    pobj->host_version = 92;
+    pipeasio_gate_init(&pobj->method_gate, true);
+    pipeasio_gate_init(&pobj->host_gate, false);
+    atomic_store_explicit(&pobj->host_gate.word,
+                          PIPEASIO_GATE_CLOSED_BIT | pipeasio_gate_owner_bits(1),
+                          memory_order_relaxed);
+
+    if (!InitializeCriticalSectionAndSpinCount(&pobj->config_lock, 0))
+        goto fail_alloc;
+    pobj->method_idle = CreateEventA(NULL, FALSE, FALSE, NULL);
+    if (!pobj->method_idle)
+        goto fail_cs;
+    pobj->host_idle = CreateEventA(NULL, FALSE, FALSE, NULL);
+    if (!pobj->host_idle)
+        goto fail_method_idle;
+    pobj->work_event = CreateEventA(NULL, FALSE, FALSE, NULL);
+    if (!pobj->work_event)
+        goto fail_host_idle;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                            (LPCSTR)(uintptr_t)&PipeASIOCreateInstance, &module))
+        goto fail_work_event;
+    pobj->module_pin = module;
+    pipeasio_object_created();
+    pobj->worker = CreateThread(NULL, 0, lifecycle_worker, pobj, 0, &pobj->worker_tid);
+    if (!pobj->worker)
+        goto fail_object;
+
     *ppobj = pobj;
     return S_OK;
+
+fail_object:
+    pipeasio_object_destroyed();
+    FreeLibrary(module);
+fail_work_event:
+    CloseHandle(pobj->work_event);
+fail_host_idle:
+    CloseHandle(pobj->host_idle);
+fail_method_idle:
+    CloseHandle(pobj->method_idle);
+fail_cs:
+    DeleteCriticalSection(&pobj->config_lock);
+fail_alloc:
+    HeapFree(GetProcessHeap(), 0, pobj);
+    return E_OUTOFMEMORY;
 }
