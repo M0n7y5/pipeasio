@@ -39,7 +39,7 @@ namespace Config
 pipeasio_config defaults();
 
 /* Parse a flat INI document. Pure: operates on the passed text only.
- * Lenient - optional [pipeasio] header, key = value lines, #/; comments,
+ * Lenient: optional [pipeasio] header, key = value lines, #/; comments,
  * whitespace trimmed. Unknown keys ignored, missing keys keep defaults,
  * out-of-range numerics fall back to defaults. */
 pipeasio_config parseIni(const QString &text);
@@ -50,7 +50,7 @@ QString serializeIni(const pipeasio_config &c);
 /* Absolute path to the config file (QStandardPaths ConfigLocation). */
 QString configPath();
 
-/* Read configPath() and parse it; defaults() when the file is missing. */
+/* Read configPath() and parse it. Returns defaults() when the file is missing. */
 pipeasio_config load();
 
 /* mkpath the directory and write serializeIni() to configPath(). */

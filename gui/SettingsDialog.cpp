@@ -37,6 +37,7 @@
 #include <QString>
 #include <QTabWidget>
 #include <QVBoxLayout>
+#include <utility>
 
 namespace
 {
@@ -55,7 +56,7 @@ const SampleRateItem kSampleRates[] = {
 
 } // namespace
 
-SettingsDialog::SettingsDialog(QWidget *parent) : QDialog(parent)
+SettingsDialog::SettingsDialog(QWidget *parent, SettingsDialogOptions options) : QDialog(parent)
 {
     setWindowTitle(QStringLiteral("PipeASIO Settings - " PIPEASIO_VERSION));
 
@@ -67,6 +68,9 @@ SettingsDialog::SettingsDialog(QWidget *parent) : QDialog(parent)
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel
                                                  | QDialogButtonBox::RestoreDefaults,
                                          this);
+    buttons->button(QDialogButtonBox::Apply)->setObjectName(QStringLiteral("applyButton"));
+    buttons->button(QDialogButtonBox::RestoreDefaults)
+            ->setObjectName(QStringLiteral("restoreDefaultsButton"));
     connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked, this,
             &SettingsDialog::onApply);
     connect(buttons, &QDialogButtonBox::rejected, this, &SettingsDialog::reject);
@@ -77,28 +81,50 @@ SettingsDialog::SettingsDialog(QWidget *parent) : QDialog(parent)
     layout->addWidget(tabs);
     layout->addWidget(buttons);
 
-    /* Populate device combos before applying the saved config so the saved
-     * device names can be matched and selected. */
-    const QList<DeviceEnumerator::Device> devices = DeviceEnumerator::enumerate();
-    m_outputDevice->addItem(QStringLiteral("Follow default"), QString());
-    m_inputDevice->addItem(QStringLiteral("Follow default"), QString());
-    for (const DeviceEnumerator::Device &d : devices)
-    {
-        const QString label = d.description.isEmpty() ? d.name : d.description;
-        if (d.isSink)
-            m_outputDevice->addItem(label, d.name);
-        else
-            m_inputDevice->addItem(label, d.name);
-    }
-
     const pipeasio_config cfg = Config::load();
+    m_pendingOutputDevice     = QString::fromUtf8(cfg.output_device);
+    m_pendingInputDevice      = QString::fromUtf8(cfg.input_device);
+    m_outputDevice->addItem(QStringLiteral("Loading devices..."), m_pendingOutputDevice);
+    m_inputDevice->addItem(QStringLiteral("Loading devices..."), m_pendingInputDevice);
+    m_outputDevice->setEnabled(false);
+    m_inputDevice->setEnabled(false);
     applyConfig(cfg);
 
-    connect(&m_monitor, &PipeWireMonitor::updated, this, &SettingsDialog::onMonitorUpdated);
-    /* Empty target => the monitor auto-discovers our node via the driver's
-     * "pipeasio.node" marker (the host names the node after its own exe). */
-    m_monitor.setTarget(cfg.node_name[0] ? QString::fromUtf8(cfg.node_name) : QString());
-    m_monitor.start();
+    m_deviceRequest = new DeviceEnumerator::Request(std::move(options.deviceRequest), this);
+    connect(m_deviceRequest, &DeviceEnumerator::Request::finished, this,
+            &SettingsDialog::onDevicesEnumerated);
+    m_deviceRequest->start();
+
+    if (options.monitorEnabled)
+    {
+        connect(&m_monitor, &PipeWireMonitor::updated, this, &SettingsDialog::onMonitorUpdated);
+        m_monitor.setTarget(cfg.node_name[0] ? QString::fromUtf8(cfg.node_name) : QString());
+        m_monitor.start();
+    }
+}
+
+/* Plain-text tooltips render as one long unwrapped line on most Linux
+ * styles. Wrap at word boundaries to a readable measure instead. */
+static QString
+wrapToolTip(const QString &tip, int width = 72)
+{
+    QStringList       lines;
+    QString           line;
+    const QStringList words = tip.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    for (const QString &word : words)
+    {
+        if (!line.isEmpty() && line.size() + 1 + word.size() > width)
+        {
+            lines += line;
+            line.clear();
+        }
+        if (!line.isEmpty())
+            line += QLatin1Char(' ');
+        line += word;
+    }
+    if (!line.isEmpty())
+        lines += line;
+    return lines.join(QLatin1Char('\n'));
 }
 
 QWidget *
@@ -111,25 +137,29 @@ SettingsDialog::buildSettingsTab()
      * label and the field, so hovering either explains the option. */
     auto addRow = [&](const QString &label, QWidget *field, const QString &tip)
     {
-        field->setToolTip(tip);
+        const QString wrapped = wrapToolTip(tip);
+        field->setToolTip(wrapped);
         auto *lbl = new QLabel(label, page);
-        lbl->setToolTip(tip);
+        lbl->setToolTip(wrapped);
         form->addRow(lbl, field);
     };
 
     m_inputs = new QSpinBox(page);
+    m_inputs->setObjectName(QStringLiteral("inputs"));
     m_inputs->setRange(0, 256);
     addRow(QStringLiteral("Inputs"), m_inputs,
            QStringLiteral("Number of capture (input) channels the driver exposes to the "
-                          "host. Applied when the driver next (re)starts."));
+                          "host. Applies on the next driver start."));
 
     m_outputs = new QSpinBox(page);
+    m_outputs->setObjectName(QStringLiteral("outputs"));
     m_outputs->setRange(0, 256);
     addRow(QStringLiteral("Outputs"), m_outputs,
            QStringLiteral("Number of playback (output) channels the driver exposes to the "
-                          "host. Applied when the driver next (re)starts."));
+                          "host. Applies on the next driver start."));
 
     m_bufferSize = new QComboBox(page);
+    m_bufferSize->setObjectName(QStringLiteral("bufferSize"));
     for (int sz : kBufferSizes)
         m_bufferSize->addItem(QString::number(sz), sz);
     addRow(QStringLiteral("Buffer size"), m_bufferSize,
@@ -138,53 +168,65 @@ SettingsDialog::buildSettingsTab()
 
     m_latency = new QLabel(page);
     addRow(QStringLiteral("Latency"), m_latency,
-           QStringLiteral("Length of one buffer (buffer size / sample rate) - the driver's "
+           QStringLiteral("Length of one buffer (buffer size / sample rate), the driver's "
                           "approximate one-way latency. Read-only."));
 
     m_sampleRate = new QComboBox(page);
+    m_sampleRate->setObjectName(QStringLiteral("sampleRate"));
     for (const SampleRateItem &it : kSampleRates)
         m_sampleRate->addItem(QString::fromUtf8(it.label), it.value);
     addRow(QStringLiteral("Sample rate"), m_sampleRate,
-           QStringLiteral("\"Follow PipeWire\" uses the graph's current rate; a fixed value "
-                          "pins the rate. Prefer Follow unless the host needs a specific rate."));
+           QStringLiteral("\"Follow PipeWire\" tracks the graph's current rate. Set a fixed "
+                          "value only if the host requires a specific rate."));
 
     m_outputDevice = new QComboBox(page);
+    m_outputDevice->setObjectName(QStringLiteral("outputDevice"));
     addRow(QStringLiteral("Output device"), m_outputDevice,
-           QStringLiteral("PipeWire sink to auto-connect outputs to. \"Follow default\" "
-                          "tracks the system default sink (e.g. when you switch to Bluetooth)."));
+           QStringLiteral("PipeWire sink used for automatic output connections. \"Follow "
+                          "default\" tracks the system default sink (e.g. when you switch to "
+                          "Bluetooth)."));
 
     m_inputDevice = new QComboBox(page);
+    m_inputDevice->setObjectName(QStringLiteral("inputDevice"));
     addRow(QStringLiteral("Input device"), m_inputDevice,
-           QStringLiteral("PipeWire source to auto-connect inputs from. \"Follow default\" "
-                          "tracks the system default source."));
+           QStringLiteral("PipeWire source used for automatic input connections. \"Follow "
+                          "default\" tracks the system default source."));
 
     m_autoConnect = new QCheckBox(page);
+    m_autoConnect->setObjectName(QStringLiteral("autoConnect"));
     addRow(QStringLiteral("Auto-connect"), m_autoConnect,
            QStringLiteral("Automatically connect the driver's ports to the selected (or "
                           "default) device. Turn off to wire connections yourself."));
 
     m_fixedBuffer = new QCheckBox(page);
+    m_fixedBuffer->setObjectName(QStringLiteral("fixedBuffer"));
     addRow(QStringLiteral("Fixed buffer size"), m_fixedBuffer,
            QStringLiteral("When on, PipeWire controls the buffer size and the host cannot "
                           "change it. When off, the host may set PipeWire's quantum."));
 
     m_followDeviceClock = new QCheckBox(page);
+    m_followDeviceClock->setObjectName(QStringLiteral("followDeviceClock"));
     addRow(QStringLiteral("Follow device clock (Bluetooth)"), m_followDeviceClock,
            QStringLiteral("Follow the target device's clock instead of forcing the graph "
-                          "quantum. Required for Bluetooth sinks (their clock can't be "
-                          "slaved); raises latency. Leave off for wired low-latency output."));
+                          "quantum. Required for Bluetooth sinks, whose clock cannot be "
+                          "slaved. Raises latency, so leave it off for wired output."));
 
     m_realtime = new QCheckBox(page);
-    addRow(QStringLiteral("Real-time audio thread"), m_realtime,
-           QStringLiteral("Raise the host callback thread to SCHED_FIFO priority 15. Disable "
-                          "only when testing scheduling-related xruns. Takes effect the next "
-                          "time the host starts the driver."));
+    m_realtime->setObjectName(QStringLiteral("realtime"));
+    addRow(QStringLiteral("Real-time audio thread (experimental)"), m_realtime,
+           QStringLiteral("Off by default. Raises only the thread that carries the host's "
+                          "bufferSwitch callback to SCHED_FIFO priority 15. It does not "
+                          "change the host's worker-thread priorities, so multi-threaded "
+                          "hosts under Wine "
+                          "(measured with FL Studio) can get far more xruns with this on. "
+                          "Applies the next time the host starts the driver."));
 
     m_nodeName = new QLineEdit(page);
+    m_nodeName->setObjectName(QStringLiteral("nodeName"));
     m_nodeName->setPlaceholderText(QStringLiteral("(derive from application name)"));
     addRow(QStringLiteral("Node name"), m_nodeName,
-           QStringLiteral("Override the PipeWire node/client name. Empty derives it from the "
-                          "host application's name."));
+           QStringLiteral("Override the PipeWire node/client name. Leave empty to use the "
+                          "host application name."));
 
     connect(m_bufferSize, &QComboBox::currentIndexChanged, this,
             &SettingsDialog::updateLatencyLabel);
@@ -202,47 +244,54 @@ SettingsDialog::buildMonitorTab()
 
     auto addRow = [&](const QString &label, QWidget *field, const QString &tip)
     {
-        field->setToolTip(tip);
+        const QString wrapped = wrapToolTip(tip);
+        field->setToolTip(wrapped);
         auto *lbl = new QLabel(label, page);
-        lbl->setToolTip(tip);
+        lbl->setToolTip(wrapped);
         form->addRow(lbl, field);
     };
 
     m_monQuantum = new QLabel(QStringLiteral("waiting for audio..."), page);
+    m_monQuantum->setObjectName(QStringLiteral("monQuantum"));
     addRow(QStringLiteral("Buffer / quantum"), m_monQuantum,
-           QStringLiteral("PipeWire processing block size (frames per cycle) the driver's "
-                          "node is currently running at."));
+           QStringLiteral("Current PipeWire quantum (frames per processing cycle)."));
 
     m_monRate = new QLabel(QStringLiteral("waiting for audio..."), page);
+    m_monRate->setObjectName(QStringLiteral("monRate"));
     addRow(QStringLiteral("Sample rate"), m_monRate,
-           QStringLiteral("Sample rate the driver's node is currently running at."));
+           QStringLiteral("Current node sample rate in Hz."));
 
     m_monLoad = new LoadHistogram(page);
+    m_monLoad->setObjectName(QStringLiteral("monLoad"));
     addRow(QStringLiteral("DSP load"), m_monLoad,
-           QStringLiteral("Rolling history of the share of each audio cycle this node "
-                          "spends processing (busy/quantum). Sustained high values risk "
-                          "dropouts."));
+           QStringLiteral("Share of each audio cycle the node spends processing "
+                          "(busy/quantum), shown as a rolling history. Sustained high "
+                          "values risk dropouts."));
 
     m_monXruns = new QLabel(QStringLiteral("waiting for audio..."), page);
+    m_monXruns->setObjectName(QStringLiteral("monXruns"));
     addRow(QStringLiteral("Xruns"), m_monXruns,
            QStringLiteral("Number of buffer under/overruns (dropouts) reported for this "
                           "node since it started."));
 
     m_monState = new QLabel(QStringLiteral("waiting for audio..."), page);
+    m_monState->setObjectName(QStringLiteral("monState"));
     addRow(QStringLiteral("State"), m_monState,
            QStringLiteral("PipeWire node state: R running, I idle, S suspended, E error."));
 
     m_monOutput = new QLabel(QStringLiteral("—"), page);
+    m_monOutput->setObjectName(QStringLiteral("monOutput"));
     m_monOutput->setWordWrap(true);
     addRow(QStringLiteral("Output device"), m_monOutput,
            QStringLiteral("The sink the driver's output ports currently feed, with its live "
-                          "format and state (and Bluetooth codec when applicable)."));
+                          "format and state (Bluetooth codec included when applicable)."));
 
     m_monInput = new QLabel(QStringLiteral("—"), page);
+    m_monInput->setObjectName(QStringLiteral("monInput"));
     m_monInput->setWordWrap(true);
     addRow(QStringLiteral("Input device"), m_monInput,
            QStringLiteral("The source currently feeding the driver's input ports, with its "
-                          "live format and state (and Bluetooth codec when applicable)."));
+                          "live format and state (Bluetooth codec included when applicable)."));
 
     return page;
 }
@@ -345,23 +394,28 @@ SettingsDialog::applyConfig(const pipeasio_config &c)
     }
     m_sampleRate->setCurrentIndex(srIdx >= 0 ? srIdx : 0);
 
-    const QString out    = QString::fromUtf8(c.output_device);
-    int           outIdx = m_outputDevice->findData(out);
-    if (outIdx < 0 && !out.isEmpty())
+    m_pendingOutputDevice = QString::fromUtf8(c.output_device);
+    m_pendingInputDevice  = QString::fromUtf8(c.input_device);
+    if (m_devicesLoading)
     {
-        m_outputDevice->addItem(out + QStringLiteral(" (unavailable)"), out);
-        outIdx = m_outputDevice->count() - 1;
+        m_outputDevice->setItemData(0, m_pendingOutputDevice);
+        m_inputDevice->setItemData(0, m_pendingInputDevice);
     }
-    m_outputDevice->setCurrentIndex(outIdx >= 0 ? outIdx : 0);
-
-    const QString in    = QString::fromUtf8(c.input_device);
-    int           inIdx = m_inputDevice->findData(in);
-    if (inIdx < 0 && !in.isEmpty())
+    else
     {
-        m_inputDevice->addItem(in + QStringLiteral(" (unavailable)"), in);
-        inIdx = m_inputDevice->count() - 1;
+        const auto select = [](QComboBox *combo, const QString &name)
+        {
+            int index = combo->findData(name);
+            if (index < 0 && !name.isEmpty())
+            {
+                combo->addItem(name + QStringLiteral(" (unavailable)"), name);
+                index = combo->count() - 1;
+            }
+            combo->setCurrentIndex(index >= 0 ? index : 0);
+        };
+        select(m_outputDevice, m_pendingOutputDevice);
+        select(m_inputDevice, m_pendingInputDevice);
     }
-    m_inputDevice->setCurrentIndex(inIdx >= 0 ? inIdx : 0);
 
     m_autoConnect->setChecked(c.auto_connect);
     m_fixedBuffer->setChecked(c.fixed_buffer_size);
@@ -370,6 +424,44 @@ SettingsDialog::applyConfig(const pipeasio_config &c)
     m_nodeName->setText(QString::fromUtf8(c.node_name));
 
     updateLatencyLabel();
+}
+void
+SettingsDialog::onDevicesEnumerated(bool success, const QList<DeviceEnumerator::Device> &devices,
+                                    const QString &error)
+{
+    (void)error;
+    m_devicesLoading = false;
+    m_outputDevice->clear();
+    m_inputDevice->clear();
+    m_outputDevice->addItem(QStringLiteral("Follow default"), QString());
+    m_inputDevice->addItem(QStringLiteral("Follow default"), QString());
+    if (success)
+    {
+        for (const DeviceEnumerator::Device &device : devices)
+        {
+            const QString label = device.description.isEmpty() ? device.name : device.description;
+            (device.isSink ? m_outputDevice : m_inputDevice)->addItem(label, device.name);
+        }
+    }
+
+    const auto finishCombo = [success](QComboBox *combo, const QString &pending)
+    {
+        int index = combo->findData(pending);
+        if (index < 0 && !pending.isEmpty())
+        {
+            combo->addItem(pending + QStringLiteral(" (unavailable)"), pending);
+            index = combo->count() - 1;
+        }
+        else if (!success && pending.isEmpty())
+        {
+            combo->addItem(QStringLiteral("PipeWire devices unavailable"), QString());
+            index = combo->count() - 1;
+        }
+        combo->setCurrentIndex(index >= 0 ? index : 0);
+        combo->setEnabled(true);
+    };
+    finishCombo(m_outputDevice, m_pendingOutputDevice);
+    finishCombo(m_inputDevice, m_pendingInputDevice);
 }
 
 void
@@ -391,9 +483,13 @@ SettingsDialog::onApply()
     cfg.follow_device_clock = m_followDeviceClock->isChecked();
     cfg.realtime            = m_realtime->isChecked();
 
-    const QByteArray out = m_outputDevice->currentData().toString().toUtf8();
+    const QString outputName
+            = m_devicesLoading ? m_pendingOutputDevice : m_outputDevice->currentData().toString();
+    const QByteArray out = outputName.toUtf8();
     qstrncpy(cfg.output_device, out.constData(), sizeof(cfg.output_device));
-    const QByteArray in = m_inputDevice->currentData().toString().toUtf8();
+    const QString inputName
+            = m_devicesLoading ? m_pendingInputDevice : m_inputDevice->currentData().toString();
+    const QByteArray in = inputName.toUtf8();
     qstrncpy(cfg.input_device, in.constData(), sizeof(cfg.input_device));
     const QByteArray node = m_nodeName->text().trimmed().toUtf8();
     qstrncpy(cfg.node_name, node.constData(), sizeof(cfg.node_name));
@@ -416,20 +512,47 @@ formatDevice(const QString &name, const QString &detail)
 void
 SettingsDialog::onMonitorUpdated(const NodeStats &stats)
 {
-    m_monOutput->setText(formatDevice(stats.outputDevice, stats.outputDeviceDetail));
-    m_monInput->setText(formatDevice(stats.inputDevice, stats.inputDeviceDetail));
-
+    /* Polling a live graph has one-frame artifacts: the node vanishes from a
+     * pw-top iteration while restaging, and a brief idle cycle reports
+     * quantum/rate 0. Hold the last good frame across the first transient of
+     * either kind. A persistent absence reverts to the waiting state (and
+     * clears the device rows). A persistent idle/suspended node renders its
+     * actual I/S state. */
     if (!stats.found)
     {
+        ++m_monMisses;
+        m_monIdleFrames = 0;
+        if (m_monHasData && m_monMisses < 2)
+            return; /* transient: keep the previous frame */
         const QString waiting = QStringLiteral("waiting for audio...");
         m_monQuantum->setText(waiting);
         m_monRate->setText(waiting);
         m_monXruns->setText(waiting);
         m_monState->setText(waiting);
         m_monLoad->setWaiting();
+        m_monOutput->setText(QStringLiteral("—"));
+        m_monInput->setText(QStringLiteral("—"));
         return;
     }
 
+    const bool idle = stats.quantum == 0 && stats.rate == 0;
+    if (idle)
+    {
+        ++m_monIdleFrames;
+        m_monMisses = 0;
+        if (m_monHasData && m_monIdleFrames < 2)
+            return; /* transient idle: keep the previous frame */
+    }
+    else
+    {
+        m_monMisses     = 0;
+        m_monIdleFrames = 0;
+    }
+
+    m_monHasData = true;
+
+    m_monOutput->setText(formatDevice(stats.outputDevice, stats.outputDeviceDetail));
+    m_monInput->setText(formatDevice(stats.inputDevice, stats.inputDeviceDetail));
     m_monQuantum->setText(QString::number(stats.quantum));
     m_monRate->setText(QString::number(stats.rate) + QStringLiteral(" Hz"));
     m_monXruns->setText(QString::number(stats.xruns));

@@ -1,7 +1,7 @@
 /*
  * LoadHistogram.hpp - a rolling DSP-load history graph for the Monitor tab.
  *
- * Each pushed sample (load in [0, 1]) adds a column at the right edge; older
+ * Each pushed sample (load in [0, 1]) adds a column at the right edge. Older
  * samples scroll left.  Bars are colour-coded green/amber/red by level, the
  * current value is shown as text, and when no audio is active the history
  * freezes (dimmed) behind a "waiting for audio..." overlay.

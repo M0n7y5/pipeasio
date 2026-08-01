@@ -19,6 +19,7 @@
  * this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 #include "Config.hpp"
+#include "pipeasio_parse.h"
 
 #include <QByteArray>
 #include <QDir>
@@ -37,32 +38,15 @@ namespace Config
 namespace
 {
 
-void
-setStr(char *dst, size_t cap, const QString &value)
+bool
+setStr(char *destination, size_t capacity, const QString &value)
 {
     const QByteArray utf8 = value.toUtf8();
-    const size_t     n    = qMin<size_t>(utf8.size(), cap - 1);
-    std::memcpy(dst, utf8.constData(), n);
-    dst[n] = '\0';
-}
-
-bool
-parseBool(const QString &raw, bool fallback)
-{
-    const QString v = raw.trimmed().toLower();
-    if (v == QLatin1String("1") || v == QLatin1String("true") || v == QLatin1String("on")
-        || v == QLatin1String("yes"))
-        return true;
-    if (v == QLatin1String("0") || v == QLatin1String("false") || v == QLatin1String("off")
-        || v == QLatin1String("no"))
+    if (utf8.size() < 0 || (size_t)utf8.size() >= capacity)
         return false;
-    return fallback;
-}
-
-bool
-isPowerOfTwo(int v)
-{
-    return v > 0 && (v & (v - 1)) == 0;
+    std::memcpy(destination, utf8.constData(), (size_t)utf8.size());
+    destination[utf8.size()] = '\0';
+    return true;
 }
 
 } // namespace
@@ -90,81 +74,85 @@ parseIni(const QString &text)
 {
     pipeasio_config c = defaults();
 
-    const QStringList lines = text.split(QLatin1Char('\n'));
+    const QStringList lines     = text.split(QLatin1Char('\n'));
+    bool              inSection = true;
     for (const QString &rawLine : lines)
     {
+        /* Match the C loader (src/config.c): fgets fills a
+         * PIPEASIO_CONFIG_LINE_MAX buffer and discards any line whose content
+         * plus its newline does not fit, i.e. content >= LINE_MAX - 1 bytes.
+         * The largest accepted line is LINE_MAX - 2 content bytes + newline. */
+        if (rawLine.toUtf8().size() >= PIPEASIO_CONFIG_LINE_MAX - 1)
+            continue;
         QString line = rawLine.trimmed();
-        if (line.isEmpty())
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#'))
+            || line.startsWith(QLatin1Char(';')))
             continue;
-        if (line.startsWith(QLatin1Char('#')) || line.startsWith(QLatin1Char(';')))
+        if (line.startsWith(QLatin1Char('[')))
+        {
+            const int close = line.indexOf(QLatin1Char(']'));
+            if (close >= 0)
+                inSection = line.mid(1, close - 1) == QLatin1String(PIPEASIO_CONFIG_SECTION);
             continue;
-        if (line.startsWith(QLatin1Char('['))) /* section header - single section */
+        }
+        if (!inSection)
             continue;
-
-        const int eq = line.indexOf(QLatin1Char('='));
-        if (eq < 0)
+        const int equals = line.indexOf(QLatin1Char('='));
+        if (equals < 0)
             continue;
-
-        const QString key   = line.left(eq).trimmed();
-        const QString value = line.mid(eq + 1).trimmed();
-
+        const QString    key   = line.left(equals).trimmed();
+        const QString    value = line.mid(equals + 1).trimmed();
+        const QByteArray bytes = value.toUtf8();
+        int              parsed;
+        bool             flag;
         if (key == QLatin1String(PIPEASIO_KEY_INPUTS))
         {
-            bool      ok = false;
-            const int v  = value.toInt(&ok);
-            if (ok && v >= 0)
-                c.inputs = v;
+            if (pipeasio_parse_int(bytes.constData(), 0, PIPEASIO_MAX_CHANNELS, &parsed))
+                c.inputs = parsed;
         }
         else if (key == QLatin1String(PIPEASIO_KEY_OUTPUTS))
         {
-            bool      ok = false;
-            const int v  = value.toInt(&ok);
-            if (ok && v >= 0)
-                c.outputs = v;
+            if (pipeasio_parse_int(bytes.constData(), 0, PIPEASIO_MAX_CHANNELS, &parsed))
+                c.outputs = parsed;
         }
         else if (key == QLatin1String(PIPEASIO_KEY_BUFFER_SIZE))
         {
-            bool      ok = false;
-            const int v  = value.toInt(&ok);
-            if (ok && isPowerOfTwo(v) && v >= PIPEASIO_MIN_BUFFER_SIZE
-                && v <= PIPEASIO_MAX_BUFFER_SIZE)
-                c.buffer_size = v;
+            if (pipeasio_parse_int(bytes.constData(), PIPEASIO_MIN_BUFFER_SIZE,
+                                   PIPEASIO_MAX_BUFFER_SIZE, &parsed)
+                && !(parsed & (parsed - 1)))
+                c.buffer_size = parsed;
         }
         else if (key == QLatin1String(PIPEASIO_KEY_FIXED_BUFFER_SIZE))
         {
-            c.fixed_buffer_size = parseBool(value, c.fixed_buffer_size);
+            if (pipeasio_parse_bool(bytes.constData(), &flag))
+                c.fixed_buffer_size = flag;
         }
         else if (key == QLatin1String(PIPEASIO_KEY_SAMPLE_RATE))
         {
-            bool      ok = false;
-            const int v  = value.toInt(&ok);
-            if (ok)
-                c.sample_rate = v < 0 ? 0 : v;
+            if (pipeasio_parse_int(bytes.constData(), 0, INT_MAX, &parsed))
+                c.sample_rate = parsed;
         }
         else if (key == QLatin1String(PIPEASIO_KEY_AUTO_CONNECT))
         {
-            c.auto_connect = parseBool(value, c.auto_connect);
+            if (pipeasio_parse_bool(bytes.constData(), &flag))
+                c.auto_connect = flag;
         }
         else if (key == QLatin1String(PIPEASIO_KEY_FOLLOW_DEVICE_CLOCK))
         {
-            c.follow_device_clock = parseBool(value, c.follow_device_clock);
+            if (pipeasio_parse_bool(bytes.constData(), &flag))
+                c.follow_device_clock = flag;
         }
         else if (key == QLatin1String(PIPEASIO_KEY_REALTIME))
         {
-            c.realtime = parseBool(value, c.realtime);
+            if (pipeasio_parse_bool(bytes.constData(), &flag))
+                c.realtime = flag;
         }
         else if (key == QLatin1String(PIPEASIO_KEY_OUTPUT_DEVICE))
-        {
             setStr(c.output_device, sizeof(c.output_device), value);
-        }
         else if (key == QLatin1String(PIPEASIO_KEY_INPUT_DEVICE))
-        {
             setStr(c.input_device, sizeof(c.input_device), value);
-        }
         else if (key == QLatin1String(PIPEASIO_KEY_NODE_NAME))
-        {
             setStr(c.node_name, sizeof(c.node_name), value);
-        }
         /* unknown keys ignored */
     }
 

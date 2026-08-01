@@ -23,6 +23,8 @@
 #include <QDialog>
 
 #include "PipeWireMonitor.hpp"
+#include "DeviceEnumerator.hpp"
+#include <QString>
 
 class QCheckBox;
 class QComboBox;
@@ -31,16 +33,24 @@ class QLineEdit;
 class LoadHistogram;
 class QSpinBox;
 
+struct SettingsDialogOptions
+{
+    DeviceEnumerator::RequestOptions deviceRequest;
+    bool                             monitorEnabled = true;
+};
+
 class SettingsDialog : public QDialog
 {
     Q_OBJECT
   public:
-    explicit SettingsDialog(QWidget *parent = nullptr);
+    explicit SettingsDialog(QWidget *parent = nullptr, SettingsDialogOptions options = {});
 
   private slots:
     void onApply();
     void onRestoreDefaults();
     void onMonitorUpdated(const NodeStats &stats);
+    void onDevicesEnumerated(bool success, const QList<DeviceEnumerator::Device> &devices,
+                             const QString &error);
 
   private:
     QWidget *buildSettingsTab();
@@ -52,27 +62,34 @@ class SettingsDialog : public QDialog
     int      currentSampleRate() const;
 
     /* Settings widgets */
-    QSpinBox  *m_inputs            = nullptr;
-    QSpinBox  *m_outputs           = nullptr;
-    QComboBox *m_bufferSize        = nullptr;
-    QLabel    *m_latency           = nullptr;
-    QComboBox *m_sampleRate        = nullptr;
-    QComboBox *m_outputDevice      = nullptr;
-    QComboBox *m_inputDevice       = nullptr;
-    QCheckBox *m_autoConnect       = nullptr;
-    QCheckBox *m_fixedBuffer       = nullptr;
-    QCheckBox *m_followDeviceClock = nullptr;
-    QCheckBox *m_realtime          = nullptr;
-    QLineEdit *m_nodeName          = nullptr;
+    QSpinBox                  *m_inputs            = nullptr;
+    QSpinBox                  *m_outputs           = nullptr;
+    QComboBox                 *m_bufferSize        = nullptr;
+    QLabel                    *m_latency           = nullptr;
+    QComboBox                 *m_sampleRate        = nullptr;
+    QComboBox                 *m_outputDevice      = nullptr;
+    QComboBox                 *m_inputDevice       = nullptr;
+    QCheckBox                 *m_autoConnect       = nullptr;
+    QCheckBox                 *m_fixedBuffer       = nullptr;
+    QCheckBox                 *m_followDeviceClock = nullptr;
+    QCheckBox                 *m_realtime          = nullptr;
+    QLineEdit                 *m_nodeName          = nullptr;
+    DeviceEnumerator::Request *m_deviceRequest     = nullptr;
+    bool                       m_devicesLoading    = true;
+    QString                    m_pendingOutputDevice;
+    QString                    m_pendingInputDevice;
 
     /* Monitor widgets */
-    QLabel        *m_monQuantum = nullptr;
-    QLabel        *m_monRate    = nullptr;
-    LoadHistogram *m_monLoad    = nullptr;
-    QLabel        *m_monXruns   = nullptr;
-    QLabel        *m_monState   = nullptr;
-    QLabel        *m_monOutput  = nullptr;
-    QLabel        *m_monInput   = nullptr;
+    QLabel        *m_monQuantum    = nullptr;
+    QLabel        *m_monRate       = nullptr;
+    LoadHistogram *m_monLoad       = nullptr;
+    QLabel        *m_monXruns      = nullptr;
+    QLabel        *m_monState      = nullptr;
+    QLabel        *m_monOutput     = nullptr;
+    QLabel        *m_monInput      = nullptr;
+    int            m_monMisses     = 0;     /* consecutive samples missing our node */
+    int            m_monIdleFrames = 0;     /* consecutive 0/0 (idle) samples */
+    bool           m_monHasData    = false; /* a good sample was rendered at least once */
 
     PipeWireMonitor m_monitor;
 };

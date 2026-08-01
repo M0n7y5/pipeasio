@@ -6,6 +6,11 @@ add_executable(pipeasio-settings
 target_include_directories(pipeasio-settings PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_compile_features(pipeasio-settings PRIVATE cxx_std_17)
 target_link_libraries(pipeasio-settings PRIVATE Qt6::Widgets)
+if(PIPEASIO_ASAN)
+    target_compile_options(pipeasio-settings PRIVATE
+        -fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer)
+    target_link_options(pipeasio-settings PRIVATE -fsanitize=address -fsanitize=undefined)
+endif()
 install(TARGETS pipeasio-settings RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # Desktop integration: menu entry + scalable icon (single source of truth is

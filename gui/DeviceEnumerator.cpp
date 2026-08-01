@@ -25,13 +25,15 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QProcess>
+#include <QTimer>
 #include <QHash>
 #include <QStringList>
+#include <utility>
 
 namespace DeviceEnumerator
 {
 
-QList<Device>
+std::optional<QList<Device>>
 parsePwDump(const QByteArray &json)
 {
     QList<Device> devices;
@@ -39,7 +41,7 @@ parsePwDump(const QByteArray &json)
     QJsonParseError     err{};
     const QJsonDocument doc = QJsonDocument::fromJson(json, &err);
     if (err.error != QJsonParseError::NoError || !doc.isArray())
-        return devices;
+        return std::nullopt;
 
     const QJsonArray arr = doc.array();
     for (const QJsonValue &v : arr)
@@ -131,8 +133,8 @@ prettyBtCodec(const QString &codec)
     return names.value(codec.toLower(), codec.toUpper());
 }
 
-/* Split a peer node into a display `*name` and a `*detail` line - codec (BT
- * only) / negotiated rate / channels+format / state - dropping attributes the
+/* Split a peer node into a display `*name` and a `*detail` line: codec (BT
+ * only) / negotiated rate / channels+format / state. Drops attributes the
  * graph does not expose (a suspended device has no negotiated Format). `info`
  * is the node's pw-dump "info" object. */
 static void
@@ -231,7 +233,7 @@ resolveConnections(const QByteArray &json)
         return conn;
 
     /* Pass 2: links touching our node. A link FROM our node (output.node ==
-     * ours) lands on a sink we play to; a link TO our node (input.node == ours)
+     * ours) lands on a sink we play to. A link TO our node (input.node == ours)
      * comes from a source we capture from. Distinct peers, link order kept. */
     QList<int> outIds, inIds;
     for (const QJsonValue &v : arr)
@@ -281,26 +283,82 @@ resolveConnections(const QByteArray &json)
     return conn;
 }
 
-QByteArray
-runPwDump()
+Request::Request(RequestOptions options, QObject *parent)
+    : QObject(parent), m_options(std::move(options))
 {
-    QProcess proc;
-    proc.start(QStringLiteral("pw-dump"), QStringList());
-    if (!proc.waitForStarted(3000))
-        return {};
-    if (!proc.waitForFinished(5000))
-    {
-        proc.kill();
-        proc.waitForFinished(1000);
-        return {};
-    }
-    return proc.readAllStandardOutput();
 }
 
-QList<Device>
-enumerate()
+Request::~Request()
 {
-    return parsePwDump(runPwDump());
+    m_done = true;
+    if (m_timer)
+        m_timer->stop();
+    if (!m_process)
+        return;
+    disconnect(m_process, nullptr, this, nullptr);
+    if (m_process->state() != QProcess::NotRunning)
+    {
+        m_process->kill();
+        m_process->waitForFinished(500);
+    }
+}
+
+void
+Request::start()
+{
+    if (m_process || m_done)
+        return;
+    m_process = new QProcess(this);
+    m_timer   = new QTimer(this);
+    m_timer->setSingleShot(true);
+    connect(m_process, &QObject::destroyed, this, [this] { m_process = nullptr; });
+    connect(m_process, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError error)
+            {
+                if (error == QProcess::FailedToStart)
+                    finish(false, {}, QStringLiteral("Failed to start pw-dump"));
+            });
+    connect(m_process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
+            [this](int exitCode, QProcess::ExitStatus status)
+            {
+                if (status != QProcess::NormalExit || exitCode != 0)
+                {
+                    finish(false, {}, QStringLiteral("pw-dump exited unsuccessfully"));
+                    return;
+                }
+                auto devices = parsePwDump(m_process->readAllStandardOutput());
+                if (!devices)
+                {
+                    finish(false, {}, QStringLiteral("pw-dump returned invalid JSON"));
+                    return;
+                }
+                finish(true, std::move(*devices), {});
+            });
+    connect(m_timer, &QTimer::timeout, this,
+            [this] { finish(false, {}, QStringLiteral("pw-dump timed out")); });
+    m_process->start(m_options.program, m_options.arguments);
+    m_timer->start(m_options.timeoutMs > 0 ? m_options.timeoutMs : 1);
+}
+
+void
+Request::finish(bool success, QList<Device> devices, QString error)
+{
+    if (m_done)
+        return;
+    m_done = true;
+    if (m_timer)
+        m_timer->stop();
+    if (m_process)
+    {
+        disconnect(m_process, nullptr, this, nullptr);
+        connect(m_process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), m_process,
+                &QObject::deleteLater);
+        if (m_process->state() == QProcess::NotRunning)
+            m_process->deleteLater();
+        else if (!success)
+            m_process->kill();
+    }
+    emit finished(success, devices, error);
 }
 
 } // namespace DeviceEnumerator

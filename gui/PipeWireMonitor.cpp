@@ -32,7 +32,7 @@ namespace
 {
 
 /* pw-dump cadence: refresh the connected sink/source every Nth poll. pw-top
- * runs every poll for fast stats; graph topology changes rarely. */
+ * runs every poll for fast stats. Graph topology changes rarely. */
 constexpr int kDumpEvery = 5;
 
 int
@@ -104,7 +104,7 @@ parsePwTop(const QByteArray &out, const QString &nodeNameSubstr)
         const QStringList tok
                 = line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
         /* Fixed columns S ID QUANT RATE WAIT BUSY W/Q B/Q ERR occupy indices
-         * 0..8; everything from index 9 on is the variable-width FORMAT, an
+         * 0..8. Everything from index 9 on is the variable-width FORMAT, an
          * optional +/=/* link marker, and the NAME (which may contain spaces).
          * Substring-match the configured node name against that trailing run. */
         if (tok.size() < 10)
@@ -140,7 +140,7 @@ PipeWireMonitor::~PipeWireMonitor() = default;
 void
 PipeWireMonitor::setTarget(const QString &nodeNameSubstr)
 {
-    /* An explicit (configured) name disables auto-discovery; empty re-enables it. */
+    /* An explicit (configured) name disables auto-discovery. Empty re-enables it. */
     m_target       = nodeNameSubstr;
     m_autoDiscover = nodeNameSubstr.isEmpty();
 }
@@ -169,7 +169,7 @@ PipeWireMonitor::stop()
 void
 PipeWireMonitor::poll()
 {
-    if (m_busy) /* skip overlapping ticks; the previous cycle is still running */
+    if (m_busy) /* skip a tick while the previous cycle is still running */
         return;
     m_busy = true;
     startTop();
@@ -196,8 +196,8 @@ PipeWireMonitor::onTopFinished()
 
     const NodeStats st = parsePwTop(m_lastTop, m_target);
     /* Dump the graph when we still need to discover our node (the host names it
-     * after its own exe; we resolve it via the "pipeasio.node" marker) OR when a
-     * connection refresh is due - the same pw-dump yields the sink/source our
+     * after its own exe and we resolve it via the "pipeasio.node" marker) OR when a
+     * connection refresh is due. The same pw-dump yields the sink/source our
      * ports are linked to. Between dumps, reuse the cached connection strings. */
     ++m_pollsSinceDump;
     const bool needDiscover = m_autoDiscover && !st.found;

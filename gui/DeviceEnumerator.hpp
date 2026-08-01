@@ -25,20 +25,33 @@
 
 #include <QByteArray>
 #include <QList>
+#include <QObject>
+#include <QStringList>
+#include <QPointer>
+#include <optional>
 #include <QString>
+class QProcess;
+class QTimer;
 
 namespace DeviceEnumerator
 {
+
+struct RequestOptions
+{
+    QString     program = QStringLiteral("pw-dump");
+    QStringList arguments;
+    int         timeoutMs = 8000;
+};
 
 struct Device
 {
     QString name;           /* node.name */
     QString description;    /* node.description (fallback node.nick / node.name) */
-    bool    isSink = false; /* true: Audio/Sink (output); false: Audio/Source */
+    bool    isSink = false; /* true: Audio/Sink (output), false: Audio/Source */
 };
 
-/* Parse `pw-dump` JSON into a device list. Pure. */
-QList<Device> parsePwDump(const QByteArray &json);
+/* Invalid JSON and non-array top levels return std::nullopt. */
+std::optional<QList<Device>> parsePwDump(const QByteArray &json);
 
 /* node.name of our own filter node (tagged "pipeasio.node"="1" by the driver),
  * or "" if no such node is present.  Pure. */
@@ -47,7 +60,7 @@ QString findOwnNode(const QByteArray &json);
 /* What our own filter node (tagged "pipeasio.node"="1") is wired to in the
  * PipeWire graph: the sink our outputs feed and the source feeding our inputs.
  * Each side's `*Detail` carries the peer's codec/format/state for a second
- * display line (empty when unknown, or when several peers share a side - then
+ * display line (empty when unknown, or when several peers share a side and
  * the name string already lists them). Empty name == nothing connected. Pure. */
 struct Connections
 {
@@ -58,10 +71,25 @@ struct Connections
 };
 Connections resolveConnections(const QByteArray &json);
 
-/* Run `pw-dump` and return its stdout (empty on failure). */
-QByteArray runPwDump();
+class Request final : public QObject
+{
+    Q_OBJECT
+  public:
+    explicit Request(RequestOptions options = {}, QObject *parent = nullptr);
+    ~Request() override;
 
-/* runPwDump() + parsePwDump(). */
-QList<Device> enumerate();
+    void start();
+
+  signals:
+    void finished(bool success, const QList<Device> &devices, const QString &error);
+
+  private:
+    void finish(bool success, QList<Device> devices, QString error);
+
+    RequestOptions     m_options;
+    QPointer<QProcess> m_process;
+    QTimer            *m_timer = nullptr;
+    bool               m_done  = false;
+};
 
 } // namespace DeviceEnumerator
