@@ -8,22 +8,73 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Real-time audio thread** setting. The `realtime` key defaults to
-  enabled; disabling it leaves the native callback thread or WoW64 pump at
-  `SCHED_OTHER`. `PIPEASIO_RT_PRIORITY=off|on` overrides the setting for
-  launcher tests. Added for [#4](https://github.com/M0n7y5/pipeasio/issues/4)
-  diagnostics, not as a fix.
+- **Real-time audio thread** setting. The `realtime` key is experimental and
+  defaults to disabled; enabling it raises the native callback thread or WoW64
+  pump to `SCHED_FIFO` 15. Because only that one thread is elevated,
+  multi-threaded hosts under Wine (measured with FL Studio) can see far more
+  xruns with it on. `PIPEASIO_RT_PRIORITY=off|on` overrides the setting. Added
+  for [#4](https://github.com/M0n7y5/pipeasio/issues/4) diagnostics, not as a
+  fix.
 - CI now builds and tests against the pinned Steam Runtime 4 SDK and asserts
   that its PipeWire version is exactly 1.4.2.
 - The release workflow checks that every `pw_` and `spa_` symbol imported by
   the shipped 64-bit and WoW64 Unix libraries exists in Steam Runtime 4's
   PipeWire 1.4.2 library.
+- Native and WoW64 integration tests now check the scheduling policy of the
+  callback thread and of an ordinary worker it hands off to, across three legs:
+  shipped defaults, `realtime = 1`, and `realtime = 1` with
+  `PIPEASIO_RT_PRIORITY=off`. Each thread stamps its own Linux `comm` from
+  inside a live `bufferSwitch` and the runner reads `/proc/<pid>/task`.
+- Real-time integration legs measure the user-visible per-node `pw-top` ERR
+  counter from one long-lived batch stream (tracked by PipeWire node ID). A
+  positive-control callback stall, armed only after the node is profiled,
+  proves ERR can move; the clean policy legs stay stall-free and assert the
+  window delta stays within `PROBE_XRUN_TOLERANCE`.
+- A deterministic interleave test parks a method leaver between its gate check
+  and its decrement, and releases it only once `CreateBuffers`' gate drain is
+  asleep (a drain-wait handshake, not a timing assumption); the sliced drain
+  must still complete promptly instead of stalling for the full timeout.
+- Probe runners scrub ambient `PIPEASIO_*` and probe-control environment so a
+  polluted caller environment cannot change probe behavior; orchestrating
+  scripts pass their deliberate values through an explicit keep list.
 
 ### Fixed
 
 - WoW64 configuration now starts from defaults before the Unix call. A missing
   Unix library or ABI mismatch can no longer leave the PE driver reading an
   uninitialised settings struct.
+- Concurrent `Stop()` calls and overlapping restart now use generation-based
+  completion instead of a resettable shared event, preventing stale or lost
+  wakeups across `Stop`/`Start` cycles.
+- The config watcher context is refcounted and stays attached to the driver
+  until its thread has exited, and the final teardown joins the thread.
+  A timed-out join can no longer free state the watcher still reads, and no
+  watcher thread can outlive the driver object.
+- A failed `DisposeBuffers` (for example a gate drain timeout while a modal
+  `ControlPanel` is open) now restores `Prepared` and returns an error instead
+  of reporting success while leaving the backend, callbacks, and buffers
+  untouched.
+- WoW64 auto-connect no longer requires the device's port count to equal the
+  configured channel count; the marshalled endpoint list is a usable prefix,
+  matching the native path.
+- `pipeasio-register` now passes `/s` to `wine regsvr32`, so registration no
+  longer blocks on a modal success dialog during unattended runs.
+- The settings panel's Monitor tab holds the last good sample for one frame
+  when the node briefly vanishes from a `pw-top` iteration or reports a
+  transient idle cycle, instead of flashing zeros or "waiting for audio...".
+  A persistent idle/suspended node now renders its actual I/S state, and the
+  device rows clear once the node is gone.
+- Settings panel tooltips now word-wrap to readable lines instead of
+  rendering as one long single line.
+- The INI line-length guard in the settings panel now matches the driver's C
+  loader exactly; a line of exactly 1023 bytes is no longer accepted by the
+  panel but ignored by the driver.
+- Gate drains now re-check the admission count in bounded slices instead of
+  relying solely on the idle event, eliminating a false 10-second timeout when
+  a leaver's signal was lost.
+- The probe's concurrent-`Stop` test pre-creates its stop threads parked on a
+  start event; slow thread creation under Wine+ASan can no longer consume the
+  blocked callback's budget and produce false failures.
 - The native and WoW64 links now use the exact PipeWire library selected by
   `pkg-config`. This prevents headers from a custom prefix being combined with
   the system PipeWire library.

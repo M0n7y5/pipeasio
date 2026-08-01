@@ -405,8 +405,9 @@ and are the usual causes of trouble elsewhere:
   PipeWire 0.3.45. What does raise latency is the daemon clamping the forced
   quantum to `clock.min-quantum` / `clock.max-quantum`, at any version; the
   driver logs a warning naming both when that happens.
-- **Real-time priority.** The driver requests `SCHED_FIFO` priority 15 by default.
-  See [Performance](#performance) for access requirements.
+- **Real-time priority.** The driver runs at normal scheduling by default;
+  `SCHED_FIFO` priority 15 is opt-in. See [Performance](#performance) for
+  access requirements.
 
 ## Configuration
 
@@ -475,13 +476,19 @@ name).
 Env: `PIPEASIO_CLIENT_NAME`.
 
 ### realtime
-Default 1 (on). The thread carrying the host's `bufferSwitch` callback uses
-`SCHED_FIFO` priority 15. Set this to 0 to leave that thread at `SCHED_OTHER`.
-The setting covers both the native PipeWire data loop and the WoW64 PE pump.
+Default 0 (off), experimental. When enabled, the thread carrying the host's
+`bufferSwitch` callback uses `SCHED_FIFO` priority 15, covering both the native
+PipeWire data loop and the WoW64 PE pump.
 
-This switch is intended for testing scheduling-related xruns reported in
-[#4](https://github.com/M0n7y5/pipeasio/issues/4). It takes effect the next time
-the host starts the driver.
+Only that one thread is elevated. A host that dispatches DSP work from the
+callback to its own worker threads leaves those workers at `SCHED_OTHER`, and
+the resulting priority asymmetry can make things much worse: measured on FL
+Studio 2025 under Wine at 64 frames / 48 kHz, enabling this produced roughly 39x
+more xruns on the PipeASIO node than leaving it off.
+
+Useful as a diagnostic for the scheduling-related xruns in
+[#4](https://github.com/M0n7y5/pipeasio/issues/4), not as a fix for them. It
+takes effect the next time the host starts the driver.
 
 Env: `PIPEASIO_RT_PRIORITY` (`off`/`on`). The environment overrides the file.
 
@@ -489,15 +496,16 @@ Env: `PIPEASIO_RT_PRIORITY` (`off`/`on`). The environment overrides the file.
 
 A few knobs affect xrun-free, low-latency operation:
 
-- Real-time scheduling. The driver requests `SCHED_FIFO` priority 15 by default
-  (the previous native/WoW64 defaults were 77/80). It must stay below the
-  PipeWire daemon's data loop: RTKit caps that loop at 20 on stock desktops,
-  while PAM/realtime-group setups may run it higher, where either value is
-  below the daemon. On other distributions you usually set real-time access
-  up yourself; the driver does not use RTKit. Without the grant the threads
-  fall back to normal scheduling and small buffers become far more xrun-prone.
-  Verify with `ulimit -r` (at least 15 for the default; use a higher limit only
-  if you pin `loop.rt-prio`).
+- Real-time scheduling. The callback thread runs at normal scheduling by
+  default; `SCHED_FIFO` is opt-in via [`realtime`](#realtime), and on
+  multi-threaded hosts it often costs more xruns than it saves. When you do opt
+  in, the requested priority is 15 (the previous native/WoW64 defaults were
+  77/80). It must stay below the PipeWire daemon's data loop: RTKit caps that
+  loop at 20 on stock desktops, while PAM/realtime-group setups may run it
+  higher, where either value is below the daemon. On other distributions you
+  usually set real-time access up yourself; the driver does not use RTKit.
+  Without the grant the thread stays at normal scheduling. Verify with
+  `ulimit -r` (at least 15; use a higher limit only if you pin `loop.rt-prio`).
 - Channel count. Every input and output is a PipeWire port the graph must
   schedule. Defaults are 2 in / 2 out. Raise `inputs` / `outputs` only to what you
   route. Fewer ports mean a smaller graph and less overhead.
