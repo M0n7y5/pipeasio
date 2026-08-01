@@ -28,7 +28,7 @@ export PATH="${HOME}/.local/bin:${PATH}"
 #   name | image | install_cmd | flags_script | assert_lto
 #
 # install_cmd   package install as root inside the box
-# flags_script  path relative to repo root; prints `export CFLAGS=...` lines
+# flags_script  path relative to repo root, prints `export CFLAGS=...` lines
 # assert_lto    "yes" => fail if CFLAGS lacks -flto (Fedora / issue #6)
 # ---------------------------------------------------------------------------
 DISTRO_TABLE="
@@ -128,7 +128,7 @@ ensure_box() {
 }
 
 # Run a command as root inside the box.  Prefer passwordless sudo (distrobox
-# default); fall back to distrobox enter --root when sudo is unavailable.
+# default). Fall back to distrobox enter --root when sudo is unavailable.
 enter_root() {
     local name="$1"
     shift
@@ -199,7 +199,7 @@ declare -a results_note=()
 failures=0
 
 run_one() {
-    # Errexit comes from the caller's subshell; do not set -e here (bash set
+    # Errexit comes from the caller's subshell. Do not set -e here (bash set
     # is global and would re-arm the parent before rc is captured).
     local distro="$1"
     local name image install_cmd flags_script assert_lto box bdir

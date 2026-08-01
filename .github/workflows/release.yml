@@ -41,13 +41,6 @@ jobs:
       - name: Stage install tree
         run: DESTDIR="$PWD/stage" cmake --install build --prefix /usr
 
-      # The shipped .so halves are built against Arch's PipeWire, which is
-      # newer than the 1.4.2 floor, so "it compiled" proves nothing about what
-      # they import.  Check the staged artifacts themselves against the exact
-      # libpipewire Proton's steamrt4 runtime loads: every pw_/spa_ symbol they
-      # reference must exist there, or the release stops.  This is what makes
-      # the floor claim in BUILD-INFO.txt true for the binaries in the tarball,
-      # not just for the separate binary the CI floor job builds.
       - name: Verify the artifacts import no PipeWire newer than the floor
         run: |
           set -euo pipefail
@@ -56,25 +49,14 @@ jobs:
           curl -fsSL -o "$work/pw.deb" \
             "https://repo.steampowered.com/steamrt4/apt/pool/main/p/pipewire/${deb}"
           ( cd "$work" && ar x pw.deb && tar xf data.tar.* )
-          floor_lib="$(find "$work" -name 'libpipewire-0.3.so.0.*' | head -1)"
-          test -n "$floor_lib" || { echo "::error::no libpipewire in ${deb}"; exit 1; }
-          echo "floor library: ${floor_lib##*/}"
-          nm -D --defined-only "$floor_lib" | awk '{print $3}' | sort -u > "$work/floor"
-          rc=0
-          for so in stage/usr/lib/wine/x86_64-unix/pipeasio64.dll.so \
-                    stage/usr/lib/wine/x86_64-unix/pipeasio32.so; do
-            test -f "$so" || continue
-            nm -D --undefined-only "$so" | awk '{print $NF}' | sed 's/@.*//' \
-              | grep -E '^(pw|spa)_' | sort -u > "$work/used"
-            missing="$(comm -23 "$work/used" "$work/floor")"
-            if [ -n "$missing" ]; then
-              rc=1
-              echo "::error::${so##*/} imports PipeWire symbols absent from 1.4.2: $(echo "$missing" | tr '\n' ' ')"
-            else
-              echo "${so##*/}: $(wc -l < "$work/used") PipeWire imports, all present in 1.4.2"
-            fi
-          done
-          exit "$rc"
+          floor_lib=("$work"/usr/lib/*/libpipewire-0.3.so.0.*)
+          test -f "${floor_lib[0]}" || {
+            echo "::error::no libpipewire in ${deb}"
+            exit 1
+          }
+          tests/distro/check_pipewire_imports.sh "${floor_lib[0]}" \
+            stage/usr/lib/wine/x86_64-unix/pipeasio64.dll.so \
+            stage/usr/lib/wine/x86_64-unix/pipeasio32.so
 
       - name: Write BUILD-INFO.txt
         run: |

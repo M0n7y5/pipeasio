@@ -34,28 +34,36 @@ jobs:
       - name: Install toolchain (with 32-bit glibc for the ABI layout assert)
         run: |
           printf '[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
-          pacman -Syu --noconfirm gcc cmake ninja pkgconf git wine libpipewire pipewire qt6-base mingw-w64-gcc lib32-glibc
+          pacman -Syu --noconfirm gcc cmake ninja pkgconf git curl wine libpipewire pipewire qt6-base mingw-w64-gcc lib32-glibc
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Configure (BUILD_WOW64_32=ON)
         run: cmake -B build32 -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_WOW64_32=ON -DWINE_LIB_ROOT=/usr/lib/wine
       - name: Build (64-bit + 32-bit WoW64)
         run: cmake --build build32
+      - name: Audit PipeWire imports against 1.4.2
+        run: |
+          set -euo pipefail
+          deb='libpipewire-0.3-0t64_1.4.2-1%2Bsteamrt4.1%2Bbsrt4.2_amd64.deb'
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          curl -fsSL -o "$work/pw.deb" \
+            "https://repo.steampowered.com/steamrt4/apt/pool/main/p/pipewire/${deb}"
+          ( cd "$work" && ar x pw.deb && tar xf data.tar.* )
+          floor_lib=("$work"/usr/lib/*/libpipewire-0.3.so.0.*)
+          test -f "${floor_lib[0]}" || {
+            echo "::error::no libpipewire in ${deb}"
+            exit 1
+          }
+          tests/distro/check_pipewire_imports.sh "${floor_lib[0]}" \
+            build32/pipeasio64.dll.so build32/pipeasio32.so
       - name: Test
         run: ctest --test-dir build32 --output-on-failure
       - name: Show test log on failure
         if: failure()
         run: cat build32/Testing/Temporary/LastTest.log || true
 
-  # Minimum supported PipeWire (1.4.2).  The image is the official Steam
-  # Runtime 4 SDK: the build environment for the steamrt4 runtime that Proton
-  # 11+ executes in, not that runtime itself.  Both ship the same
-  # libpipewire-0.3 1.4.2-1+steamrt4.1+bsrt4.2, so building here pins the
-  # version the driver will meet at run time.  It is pinned by digest rather
-  # than a moving tag, and libpipewire comes preinstalled, so no apt
-  # resolution can drift the version under test.  The assert is the real
-  # guard: if a re-pinned or rebuilt SDK ever moves off 1.4.2 this job fails
-  # loudly instead of quietly passing against a floor nobody claims.
+  # Pinned Steam Runtime 4 SDK. Its PipeWire 1.4.2 must match the floor.
   build-steamrt4:
     name: build (Steam Runtime 4, PipeWire floor)
     runs-on: ubuntu-latest
@@ -77,7 +85,7 @@ jobs:
           have="$(pkg-config --modversion libpipewire-0.3)"
           echo "libpipewire-0.3: ${have} (floor: ${want})"
           test "${have}" = "${want}" || {
-            echo "::error::Steam Runtime 4 now ships libpipewire ${have}, not the ${want} floor this job exists to prove. Re-pin the container digest, or move the floor in CMakeLists.txt, README.md and docs/index.html."
+            echo "::error::Expected PipeWire ${want}, got ${have}; update the image digest or project floor."
             exit 1
           }
       - name: Checkout
@@ -86,6 +94,10 @@ jobs:
         run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SETTINGS_PANEL=OFF
       - name: Build
         run: cmake --build build
+      - name: Audit PipeWire imports against 1.4.2
+        run: |
+          floor_lib="$(pkg-config --variable=libdir libpipewire-0.3)/libpipewire-0.3.so.0"
+          tests/distro/check_pipewire_imports.sh "$floor_lib" build/pipeasio64.dll.so
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Show test log on failure
