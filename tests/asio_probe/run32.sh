@@ -55,6 +55,8 @@ if grep -q '__asan_init' <<<"$_imports"; then
     _sanitize_asan_options="abort_on_error=1:halt_on_error=1:print_stacktrace=1:detect_leaks=0:symbolize=1:verify_asan_link_order=0"
     _sanitize_ubsan_options="halt_on_error=1:print_stacktrace=1"
 fi
+# CMake substitutes this operand.
+# shellcheck disable=SC2050
 if [[ "@PIPEASIO_ASAN@" == "ON" && "$_sanitized" != 1 ]]; then
     echo "[run32] sanitizer build expected an instrumented installed driver" >&2
     exit 1

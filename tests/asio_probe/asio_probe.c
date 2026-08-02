@@ -677,6 +677,19 @@ main(void)
     LONG rc = asio->lpVtbl->Init(asio, NULL);
     if (rc != 1)
     { /* IASIO::init returns ASIOTrue (=1) on success */
+        struct
+        {
+            char  text[124];
+            DWORD guard;
+        } errmsg = { { 0 }, 0x50415349u };
+        asio->lpVtbl->GetErrorMessage(asio, errmsg.text);
+        if (errmsg.guard != 0x50415349u)
+        {
+            asio->lpVtbl->Release(asio);
+            CoUninitialize();
+            return die("GetErrorMessage overrun", (LONG)errmsg.guard);
+        }
+        fprintf(stderr, "[probe] Init failed: %s\n", errmsg.text);
         asio->lpVtbl->Release(asio);
         CoUninitialize();
         return die("Init", rc);

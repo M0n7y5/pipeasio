@@ -38,7 +38,10 @@ export PIPEASIO_ROOT PIPEASIO_PREFIX
 for tool in wine pw-cli; do
     command -v "$tool" >/dev/null || { echo "[run] SKIP: $tool not found"; exit 77; }
 done
-pw-cli info 0 >/dev/null 2>&1 || { echo "[run] SKIP: no PipeWire daemon"; exit 77; }
+# run_err.sh deliberately uses an unreachable PipeWire remote.
+if [[ "${PROBE_EXPECT_DEAD_DAEMON:-0}" != 1 ]]; then
+    pw-cli info 0 >/dev/null 2>&1 || { echo "[run] SKIP: no PipeWire daemon"; exit 77; }
+fi
 [[ -f "${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio64.dll.so" ]] \
     || { echo "[run] SKIP: driver not installed under $PIPEASIO_ROOT (cmake --install)"; exit 77; }
 
@@ -70,6 +73,8 @@ if grep -q '__asan_init' <<<"$_imports"; then
     _sanitize_asan_options="abort_on_error=1:halt_on_error=1:print_stacktrace=1:detect_leaks=0:symbolize=1:verify_asan_link_order=0"
     _sanitize_ubsan_options="halt_on_error=1:print_stacktrace=1"
 fi
+# CMake substitutes this operand.
+# shellcheck disable=SC2050
 if [[ "@PIPEASIO_ASAN@" == "ON" && "$_sanitized" != 1 ]]; then
     echo "[run] sanitizer build expected an instrumented installed driver" >&2
     exit 1

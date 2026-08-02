@@ -20,6 +20,7 @@
 /* ABI layout guard for include/pipeasio_unix_abi.h. */
 #include <stddef.h>
 
+#include "audio.h"
 #include "pipeasio_unix_abi.h"
 
 #ifndef EXPECTED_POINTER_SIZE
@@ -44,6 +45,14 @@ CHECK(PAU_SET_REALTIME == 28, "call enum drift - PAU_SET_REALTIME must stay appe
 CHECK(PAU_CALL_COUNT == 29, "call count drift - update both unix call tables");
 CHECK(PAU_CB_BUFFER_SWITCH == 0, "callback kind drift");
 CHECK(PAU_CB_RESERVED_3 == 3, "callback kind drift");
+
+/* audio_open status values cross the PE/unixlib boundary in pa_open_params. */
+CHECK(AUDIO_STATUS_OK == 0, "audio status ABI drift");
+CHECK(AUDIO_STATUS_ERROR == 1, "audio status ABI drift");
+CHECK(AUDIO_STATUS_NO_MEMORY == 2, "audio status ABI drift");
+CHECK(AUDIO_STATUS_NO_CONTEXT == 3, "audio status ABI drift");
+CHECK(AUDIO_STATUS_NO_DAEMON == 4, "audio status ABI drift");
+CHECK(AUDIO_STATUS_NO_UNIXLIB == 5, "audio status ABI drift");
 
 CHECK(sizeof(pa_i64) == 8, "pa_i64 size");
 CHECK(offsetof(pa_i64, lo) == 0, "pa_i64 lo offset");

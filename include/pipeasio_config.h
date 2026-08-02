@@ -27,6 +27,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* --- Product version (driver log + settings-panel title) ------------------ */
 #define PIPEASIO_VERSION "1.3.0"
@@ -59,9 +60,15 @@
 #define PIPEASIO_DEFAULT_FOLLOW_DEVICE_CLOCK false
 #define PIPEASIO_DEFAULT_REALTIME false
 
-/* --- Bounds (mirror src/asio.c's PIPEASIO_{MINIMUM,MAXIMUM}_BUFFERSIZE) --- */
+/* --- Buffer-size bounds accepted by every driver path --------------------- */
 #define PIPEASIO_MIN_BUFFER_SIZE 16
 #define PIPEASIO_MAX_BUFFER_SIZE 8192
+
+static inline bool
+pipeasio_buffer_size_supported(int64_t frames)
+{
+    return frames >= PIPEASIO_MIN_BUFFER_SIZE && frames <= PIPEASIO_MAX_BUFFER_SIZE;
+}
 
 /* Upper bound on channel counts (matches the GUI spinbox range); guards the
  * IOChannel and callback-buffer sizing against absurd config/env values. */

@@ -54,6 +54,11 @@ configure_file(
     COPYONLY
 )
 configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/run_err.sh"
+    "${CMAKE_CURRENT_BINARY_DIR}/run_err.sh"
+    COPYONLY
+)
+configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/run_stop_interleave.sh.in"
     "${CMAKE_CURRENT_BINARY_DIR}/run_stop_interleave.sh"
     @ONLY
@@ -104,6 +109,19 @@ if(PIPEASIO_ASAN)
     set_tests_properties(asio_stop_interleave PROPERTIES FIXTURES_REQUIRED sanitizer_artifacts)
 endif()
 
+add_test(NAME asio_probe_err
+    COMMAND "${CMAKE_CURRENT_BINARY_DIR}/run_err.sh"
+            "${CMAKE_CURRENT_BINARY_DIR}/run.sh")
+set_tests_properties(asio_probe_err PROPERTIES
+    SKIP_RETURN_CODE 77
+    TIMEOUT 300
+    RESOURCE_LOCK wineprefix
+    LABELS "integration;wine;pipewire;diagnostics")
+if(PIPEASIO_ASAN)
+    set_property(TEST asio_probe_err APPEND PROPERTY LABELS pipeasio-sanitize)
+    set_tests_properties(asio_probe_err PROPERTIES FIXTURES_REQUIRED sanitizer_artifacts)
+endif()
+
 # Deterministic method_gate lost-wakeup: a leaver decrements without signaling
 # while CreateBuffers drains; the sliced drain must still complete promptly.
 add_test(NAME asio_gate_interleave
@@ -148,6 +166,19 @@ if(BUILD_WOW64_32)
         if(PIPEASIO_ASAN)
             set_property(TEST asio_probe32 APPEND PROPERTY LABELS pipeasio-sanitize)
             set_tests_properties(asio_probe32 PROPERTIES
+                FIXTURES_REQUIRED sanitizer_artifacts)
+        endif()
+        add_test(NAME asio_probe32_err
+            COMMAND "${CMAKE_CURRENT_BINARY_DIR}/run_err.sh"
+                    "${CMAKE_CURRENT_BINARY_DIR}/run32.sh")
+        set_tests_properties(asio_probe32_err PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 300
+            RESOURCE_LOCK wineprefix
+            LABELS "integration;wine;pipewire;wow64;diagnostics")
+        if(PIPEASIO_ASAN)
+            set_property(TEST asio_probe32_err APPEND PROPERTY LABELS pipeasio-sanitize)
+            set_tests_properties(asio_probe32_err PROPERTIES
                 FIXTURES_REQUIRED sanitizer_artifacts)
         endif()
         add_test(NAME asio_probe32_rt

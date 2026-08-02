@@ -30,39 +30,7 @@
 #include "windef.h"
 #include "winbase.h"
 #endif
-#include "wine/debug.h"
-
-#include <stdlib.h> /* getenv for PIPEASIO_DEBUG */
-
-/* Raw stderr logging. TRACE is gated by PIPEASIO_DEBUG. */
-#undef TRACE
-#undef WARN
-#undef ERR
-static inline int
-pipeasio_log_on(void)
-{
-    static int on = -1;
-    if (on < 0)
-        on = getenv("PIPEASIO_DEBUG") ? 1 : 0;
-    return on;
-}
-#define PIPEASIO_LOG(pfx, fmt, ...)                                                                \
-    do                                                                                             \
-    {                                                                                              \
-        char _buf[1024];                                                                           \
-        int  _n = snprintf(_buf, sizeof _buf, pfx fmt, ##__VA_ARGS__);                             \
-        if (_n > 0)                                                                                \
-            (void)write(STDERR_FILENO, _buf,                                                       \
-                        (size_t)_n < sizeof _buf ? (size_t)_n : sizeof _buf - 1);                  \
-    } while (0)
-#define TRACE(fmt, ...)                                                                            \
-    do                                                                                             \
-    {                                                                                              \
-        if (pipeasio_log_on())                                                                     \
-            PIPEASIO_LOG("[pipeasio] ", fmt, ##__VA_ARGS__);                                       \
-    } while (0)
-#define WARN(fmt, ...) PIPEASIO_LOG("[pipeasio] WARN: ", fmt, ##__VA_ARGS__)
-#define ERR(fmt, ...) PIPEASIO_LOG("[pipeasio] ERR: ", fmt, ##__VA_ARGS__)
+#include "pipeasio_log.h"
 
 /* Printed by audio_open to identify the loaded binary. */
 #define PIPEASIO_BUILD_TAG __DATE__ " " __TIME__
@@ -88,8 +56,6 @@ pipeasio_log_on(void)
 #include <pmmintrin.h> /* _MM_SET_DENORMALS_ZERO_MODE */
 #include <xmmintrin.h> /* _MM_SET_FLUSH_ZERO_MODE */
 
-WINE_DEFAULT_DEBUG_CHANNEL(asio);
-
 /* RT/data-loop thread id for diagnostics. */
 static unsigned long
 audio_current_thread_id(void)
@@ -103,7 +69,12 @@ audio_current_thread_id(void)
 
 /* Defaults before host negotiation and graph callbacks. */
 #define AUDIO_DEFAULT_SAMPLE_RATE 48000u
-#define AUDIO_DEFAULT_BUFFER_SIZE 1024u
+
+/* Bound untrusted PipeWire registry data retained by the host. */
+#define AUDIO_REGISTRY_MAX_NODES 1024u
+#define AUDIO_REGISTRY_MAX_PORTS 4096u
+#define AUDIO_REGISTRY_PROPERTY_MAX 1024u
+#define AUDIO_REGISTRY_METADATA_MAX 4096u
 
 /* Keep native and WoW64 scheduling values in sync. */
 #define AUDIO_RT_PRIO_MIN PIPEASIO_RT_PRIO_MIN
@@ -362,6 +333,7 @@ struct audio_client
     struct audio_node_info **nodes;
     uint32_t                 n_nodes;
     uint32_t                 cap_nodes;
+    bool                     node_limit_warned;
 
     /* Discovered remote ports.  Each entry is a heap audio_port_t with
      * pw_node_id / pw_port_id / name / type / flags filled in. The
@@ -369,6 +341,7 @@ struct audio_client
     audio_port_t    **discovered;
     uint32_t          n_discovered;
     uint32_t          cap_discovered;
+    bool              port_limit_warned;
     struct pw_proxy **links;
     uint32_t          n_links;
     uint32_t          cap_links;
@@ -456,18 +429,22 @@ audio_client_t *
 audio_open(const char *client_name, uint32_t options, uint32_t *status)
 {
     (void)options;
+    uint32_t err = AUDIO_STATUS_ERROR;
     if (status)
-        *status = 0;
+        *status = AUDIO_STATUS_OK;
     audio_client_t *c = calloc(1, sizeof(*c));
     if (!c)
     {
         if (status)
-            *status = 1;
+            *status = AUDIO_STATUS_NO_MEMORY;
         return NULL;
     }
     c->name = strdup(client_name ? client_name : "PipeASIO");
     if (!c->name)
+    {
+        err = AUDIO_STATUS_NO_MEMORY;
         goto fail_alloc;
+    }
     atomic_init(&c->sample_rate, AUDIO_DEFAULT_SAMPLE_RATE);
     atomic_init(&c->last_clock_nsec, 0);
     atomic_init(&c->observed_quantum, 0);
@@ -480,7 +457,7 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
     atomic_init(&c->diagnostic_cycle, 0);
     atomic_init(&c->diagnostic_thread, 0);
     c->debug_enabled       = getenv("PIPEASIO_DEBUG") != NULL;
-    c->buffer_size         = AUDIO_DEFAULT_BUFFER_SIZE;
+    c->buffer_size         = PIPEASIO_DEFAULT_BUFFER_SIZE;
     c->our_node_id         = SPA_ID_INVALID;
     c->default_metadata_id = SPA_ID_INVALID;
 #ifndef PIPEASIO_AUDIO_UNIXLIB
@@ -493,6 +470,7 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
     if (!c->loop)
     {
         ERR("pw_thread_loop_new(%s) failed\n", c->name);
+        err = AUDIO_STATUS_NO_CONTEXT;
         goto fail_alloc;
     }
 
@@ -500,6 +478,7 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
     if (!c->ctx)
     {
         ERR("pw_context_new failed\n");
+        err = AUDIO_STATUS_NO_CONTEXT;
         goto fail_loop;
     }
 
@@ -523,6 +502,7 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
     if (pw_thread_loop_start(c->loop) < 0)
     {
         ERR("pw_thread_loop_start failed\n");
+        err = AUDIO_STATUS_NO_CONTEXT;
         goto fail_ctx;
     }
 
@@ -532,6 +512,7 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
     {
         pw_thread_loop_unlock(c->loop);
         ERR("pw_context_connect failed (is the PipeWire daemon running?)\n");
+        err = AUDIO_STATUS_NO_DAEMON;
         goto fail_started;
     }
     c->diagnostic_event
@@ -573,7 +554,7 @@ fail_alloc:
     free(c->name);
     free(c);
     if (status)
-        *status = 1;
+        *status = err;
     return NULL;
 }
 
@@ -1446,7 +1427,7 @@ audio_on_process(void *userdata, struct spa_io_position *position)
 
     /* Follow-device mode: remember the device-dictated quantum so the ASIO
      * side can settle its buffer size to it (read by audio_observed_quantum). */
-    if (c->follow_device && quantum)
+    if (c->follow_device && pipeasio_buffer_size_supported(quantum))
         atomic_store(&c->observed_quantum, quantum);
 
     if (quantum && quantum != c->buffer_size && !c->quantum_warned)
@@ -1562,7 +1543,15 @@ audio_find_node(audio_client_t *c, uint32_t id)
 static char *
 audio_dup_or_null(const char *s)
 {
-    return s ? strdup(s) : NULL;
+    return s && strnlen(s, AUDIO_REGISTRY_PROPERTY_MAX + 1) <= AUDIO_REGISTRY_PROPERTY_MAX
+                   ? strdup(s)
+                   : NULL;
+}
+
+static bool
+audio_registry_property_valid(const char *value)
+{
+    return !value || strnlen(value, AUDIO_REGISTRY_PROPERTY_MAX + 1) <= AUDIO_REGISTRY_PROPERTY_MAX;
 }
 
 static void
@@ -1572,7 +1561,9 @@ audio_cache_node(audio_client_t *c, uint32_t id, const struct spa_dict *props)
     const char *media_class = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
     const char *description = spa_dict_lookup(props, PW_KEY_NODE_DESCRIPTION);
     const char *nick        = spa_dict_lookup(props, PW_KEY_NODE_NICK);
-    if (!node_name)
+    if (!node_name || !audio_registry_property_valid(node_name)
+        || !audio_registry_property_valid(media_class)
+        || !audio_registry_property_valid(description) || !audio_registry_property_valid(nick))
         return;
 
     /* Cache our own DSP/filter node even though it has no Audio media.class. */
@@ -1592,6 +1583,16 @@ audio_cache_node(audio_client_t *c, uint32_t id, const struct spa_dict *props)
     /* Skip duplicates (shouldn't happen but be defensive). */
     if (audio_find_node(c, id))
         return;
+    if (c->n_nodes >= AUDIO_REGISTRY_MAX_NODES)
+    {
+        if (!c->node_limit_warned)
+        {
+            WARN("registry node cache limit reached (%u); ignoring excess nodes\n",
+                 AUDIO_REGISTRY_MAX_NODES);
+            c->node_limit_warned = true;
+        }
+        return;
+    }
 
     struct audio_node_info *n = calloc(1, sizeof(*n));
     if (!n)
@@ -1611,8 +1612,10 @@ audio_cache_node(audio_client_t *c, uint32_t id, const struct spa_dict *props)
 
     if (c->n_nodes == c->cap_nodes)
     {
-        uint32_t                 new_cap = c->cap_nodes ? c->cap_nodes * 2 : 16;
-        struct audio_node_info **grown   = realloc(c->nodes, new_cap * sizeof(*grown));
+        uint32_t new_cap = c->cap_nodes ? c->cap_nodes * 2 : 16;
+        if (new_cap > AUDIO_REGISTRY_MAX_NODES)
+            new_cap = AUDIO_REGISTRY_MAX_NODES;
+        struct audio_node_info **grown = realloc(c->nodes, new_cap * sizeof(*grown));
         if (!grown)
         {
             free(n->node_name);
@@ -1722,8 +1725,11 @@ audio_cache_port(audio_client_t *client, uint32_t id, const struct spa_dict *pro
     const char *monitor       = spa_dict_lookup(props, PW_KEY_PORT_MONITOR);
     uint32_t    node_id;
     uint32_t    port_id;
-    if (!audio_parse_id(node_id_value, &node_id) || !audio_parse_id(port_id_value, &port_id)
-        || !port_name || !direction)
+    if (!audio_registry_property_valid(node_id_value)
+        || !audio_registry_property_valid(port_id_value)
+        || !audio_registry_property_valid(port_name) || !audio_registry_property_valid(direction)
+        || !audio_registry_property_valid(monitor) || !audio_parse_id(node_id_value, &node_id)
+        || !audio_parse_id(port_id_value, &port_id) || !port_name || !direction)
         return;
     if (client->our_node_id != SPA_ID_INVALID && node_id == client->our_node_id)
     {
@@ -1743,6 +1749,16 @@ audio_cache_port(audio_client_t *client, uint32_t id, const struct spa_dict *pro
     struct audio_node_info *node = audio_find_node(client, node_id);
     if (!node)
         return;
+    if (client->n_discovered >= AUDIO_REGISTRY_MAX_PORTS)
+    {
+        if (!client->port_limit_warned)
+        {
+            WARN("registry port cache limit reached (%u); ignoring excess ports\n",
+                 AUDIO_REGISTRY_MAX_PORTS);
+            client->port_limit_warned = true;
+        }
+        return;
+    }
     audio_port_t *port = calloc(1, sizeof(*port));
     if (!port)
         return;
@@ -1766,8 +1782,10 @@ audio_cache_port(audio_client_t *client, uint32_t id, const struct spa_dict *pro
     atomic_init(&port->cycle_buffer, NULL);
     if (client->n_discovered == client->cap_discovered)
     {
-        uint32_t       capacity = client->cap_discovered ? client->cap_discovered * 2u : 32u;
-        audio_port_t **ports    = realloc(client->discovered, (size_t)capacity * sizeof(*ports));
+        uint32_t capacity = client->cap_discovered ? client->cap_discovered * 2u : 32u;
+        if (capacity > AUDIO_REGISTRY_MAX_PORTS)
+            capacity = AUDIO_REGISTRY_MAX_PORTS;
+        audio_port_t **ports = realloc(client->discovered, (size_t)capacity * sizeof(*ports));
         if (!ports)
         {
             audio_free_discovered_port(port);
@@ -1789,7 +1807,7 @@ audio_on_metadata_property(void *userdata, uint32_t subject, const char *key, co
     char            name[256] = "";
     (void)subject;
     (void)type;
-    if (!key)
+    if (!key || strnlen(key, AUDIO_REGISTRY_PROPERTY_MAX + 1) > AUDIO_REGISTRY_PROPERTY_MAX)
         return 0;
     if (!strcmp(key, "default.audio.sink"))
         destination = client->default_sink_name;
@@ -1798,7 +1816,12 @@ audio_on_metadata_property(void *userdata, uint32_t subject, const char *key, co
     else
         return 0;
     if (value)
-        spa_json_str_object_find(value, strlen(value), "name", name, sizeof(name));
+    {
+        size_t value_length = strnlen(value, AUDIO_REGISTRY_METADATA_MAX + 1);
+        if (value_length > AUDIO_REGISTRY_METADATA_MAX)
+            return 0;
+        spa_json_str_object_find(value, value_length, "name", name, sizeof(name));
+    }
     memcpy(destination, name, sizeof(name));
     audio_refresh_defaults(client);
     return 0;
@@ -1814,7 +1837,8 @@ audio_cache_metadata(audio_client_t *client, uint32_t id, uint32_t version,
                      const struct spa_dict *props)
 {
     const char *name = spa_dict_lookup(props, PW_KEY_METADATA_NAME);
-    if (!name || strcmp(name, "default") || client->default_metadata)
+    if (!name || !audio_registry_property_valid(name) || strcmp(name, "default")
+        || client->default_metadata)
         return;
     client->default_metadata
             = pw_registry_bind(client->registry, id, PW_TYPE_INTERFACE_Metadata, version, 0);

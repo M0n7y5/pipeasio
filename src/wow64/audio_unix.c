@@ -406,9 +406,11 @@ wow64_open(void *args)
 {
     pa_open_params *p = args;
     client_ctx     *cc;
-    uint32_t        status = 0;
+    uint32_t        status = AUDIO_STATUS_OK;
 
     PAU_CHECK(p);
+    if (!memchr(p->name, '\0', sizeof p->name))
+        return STATUS_INVALID_PARAMETER;
     cc = calloc(1, sizeof *cc);
     if (!cc)
         return STATUS_NO_MEMORY;

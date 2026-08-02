@@ -20,6 +20,7 @@
 /* Raw stderr logging shared by native and WoW64 PE builds. */
 #pragma once
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -38,10 +39,14 @@ extern int _write(int fd, const void *buf, unsigned int count);
 static inline int
 pipeasio_log_on(void)
 {
-    static int on = -1;
-    if (on < 0)
-        on = getenv("PIPEASIO_DEBUG") ? 1 : 0;
-    return on;
+    static atomic_int on    = -1;
+    int               value = atomic_load_explicit(&on, memory_order_relaxed);
+    if (value < 0)
+    {
+        value = getenv("PIPEASIO_DEBUG") ? 1 : 0;
+        atomic_store_explicit(&on, value, memory_order_relaxed);
+    }
+    return value;
 }
 #define PIPEASIO_LOG(pfx, fmt, ...)                                                                \
     do                                                                                             \

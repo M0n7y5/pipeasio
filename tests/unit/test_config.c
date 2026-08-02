@@ -18,15 +18,15 @@
 
 static char g_tmp[256];
 
-static void
+static bool
 setup_tmpdir(void)
 {
-    snprintf(g_tmp, sizeof g_tmp, "/tmp/pipeasio_cfgtest_%d", (int)getpid());
-    mkdir(g_tmp, 0700);
+    snprintf(g_tmp, sizeof g_tmp, "/tmp/pipeasio_cfgtest_XXXXXX");
+    if (!mkdtemp(g_tmp))
+        return false;
     char sub[320];
     snprintf(sub, sizeof sub, "%s/%s", g_tmp, PIPEASIO_CONFIG_DIR);
-    mkdir(sub, 0700);
-    setenv("XDG_CONFIG_HOME", g_tmp, 1);
+    return mkdir(sub, 0700) == 0 && setenv("XDG_CONFIG_HOME", g_tmp, 1) == 0;
 }
 
 static void
@@ -59,7 +59,20 @@ remove_cfg(void)
 int
 main(void)
 {
-    setup_tmpdir();
+    if (!setup_tmpdir())
+    {
+        fputs("could not create private config test directory\n", stderr);
+        return 1;
+    }
+
+    TEST_GROUP("shared buffer bounds")
+    {
+        EXPECT_TRUE(!pipeasio_buffer_size_supported(PIPEASIO_MIN_BUFFER_SIZE - 1));
+        EXPECT_TRUE(pipeasio_buffer_size_supported(PIPEASIO_MIN_BUFFER_SIZE));
+        EXPECT_TRUE(pipeasio_buffer_size_supported(PIPEASIO_MAX_BUFFER_SIZE));
+        EXPECT_TRUE(!pipeasio_buffer_size_supported((int64_t)PIPEASIO_MAX_BUFFER_SIZE + 1));
+        EXPECT_TRUE(!pipeasio_buffer_size_supported(INT64_MAX));
+    }
 
     /* No file => defaults, and the loader reports "not found". */
     remove_cfg();
@@ -95,6 +108,7 @@ main(void)
                   "sample_rate = 48000\n"
                   "auto_connect = 0\n"
                   "follow_device_clock = 1\n"
+                  "realtime = 1\n"
                   "output_device = alsa_output.pci-0000_12_00.6.analog-stereo\n"
                   "input_device = alsa_input.usb-mic\n"
                   "node_name = MyDAW\n");
@@ -108,6 +122,7 @@ main(void)
         EXPECT_EQ(c.sample_rate, 48000);
         EXPECT_EQ(c.auto_connect, 0);
         EXPECT_EQ(c.follow_device_clock, 1);
+        EXPECT_EQ(c.realtime, 1);
         EXPECT_TRUE(strcmp(c.output_device, "alsa_output.pci-0000_12_00.6.analog-stereo") == 0);
         EXPECT_TRUE(strcmp(c.input_device, "alsa_input.usb-mic") == 0);
         EXPECT_TRUE(strcmp(c.node_name, "MyDAW") == 0);
@@ -253,5 +268,9 @@ main(void)
     }
 
     remove_cfg();
+    char sub[320];
+    snprintf(sub, sizeof sub, "%s/%s", g_tmp, PIPEASIO_CONFIG_DIR);
+    rmdir(sub);
+    rmdir(g_tmp);
     return test_report();
 }

@@ -169,14 +169,14 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
     if (!ensure_unixlib())
     {
         if (status)
-            *status = 1;
+            *status = AUDIO_STATUS_NO_UNIXLIB;
         return NULL;
     }
     ctx = calloc(1, sizeof *ctx);
     if (!ctx)
     {
         if (status)
-            *status = 1;
+            *status = AUDIO_STATUS_NO_MEMORY;
         return NULL;
     }
 
@@ -192,7 +192,7 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
     {
         free(ctx);
         if (status)
-            *status = p.status ? p.status : 1;
+            *status = p.status ? p.status : AUDIO_STATUS_ERROR;
         return NULL;
     }
     memcpy(ctx->client_name, p.name, strlen(p.name) + 1);

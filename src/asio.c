@@ -28,6 +28,7 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <limits.h>
 #ifndef PIPEASIO_WOW64_PE
 #include <unistd.h>
@@ -44,6 +45,7 @@
 #include "wine/debug.h"
 #endif
 #include "pipeasio_log.h"
+#include "pipeasio_guids.h"
 
 #include <objbase.h>
 #include <mmsystem.h>
@@ -84,9 +86,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(asio);
 
 #define MAX_ENVIRONMENT_SIZE 64
 #define PIPEASIO_MAX_NAME_LENGTH 32
-#define PIPEASIO_MINIMUM_BUFFERSIZE 16
-#define PIPEASIO_MAXIMUM_BUFFERSIZE 8192
-#define PIPEASIO_PREFERRED_BUFFERSIZE 1024
+#define PIPEASIO_ERROR_MESSAGE_SIZE 124
 
 /* i386 ASIO uses MS thiscall. GCC needs a trampoline. */
 #if defined(PIPEASIO_WOW64_PE) /* i386 PE / COFF (MinGW) */
@@ -292,7 +292,7 @@ typedef struct IPipeASIOImpl
     /* Live-config watcher: polls config.ini, asks the host to reset on change.
      * Heap ctx shared with the watcher thread. See struct config_watch. */
     struct config_watch   *config_watch;
-    CRITICAL_SECTION       config_lock;      /* guards staged_cfg */
+    CRITICAL_SECTION       config_lock;      /* guards staged_cfg + last_error */
     struct pipeasio_config staged_cfg;       /* watcher -> apply handoff */
     _Atomic bool           config_pending;   /* staged_cfg has a fresh reload */
     _Atomic LONG           follower_quantum; /* last observed device quantum */
@@ -316,6 +316,9 @@ typedef struct IPipeASIOImpl
     int  pipeasio_sample_rate; /* 0 = follow graph */
     char pipeasio_output_device[PIPEASIO_DEVICE_NAME_MAX];
     char pipeasio_input_device[PIPEASIO_DEVICE_NAME_MAX];
+
+    /* ASIODriverInfo.errorMessage is exactly 124 bytes in the ASIO SDK. */
+    char pipeasio_last_error[PIPEASIO_ERROR_MESSAGE_SIZE];
 
     /* PipeWire client + discovered device ports */
     audio_client_t *audio_client;
@@ -414,10 +417,6 @@ static bool         wait_stop_generation(IPipeASIOImpl *This, uint32_t observed)
 static LONG         stop_admitted(IPipeASIOImpl *This);
 extern void         pipeasio_object_created(void);
 extern void         pipeasio_object_destroyed(void);
-
-/* {2d3ca9e2-1193-4c5d-b5fd-38798f3dc074} */
-static GUID const CLSID_PipeASIO
-        = { 0x2d3ca9e2, 0x1193, 0x4c5d, { 0xb5, 0xfd, 0x38, 0x79, 0x8f, 0x3d, 0xc0, 0x74 } };
 
 static const IPipeASIOVtbl PipeASIO_Vtbl = { (void *)QueryInterface,
                                              (void *)AddRef,
@@ -710,6 +709,10 @@ pipeasio_host_call_end(pipeasio_host_call_token *token)
     pipeasio_gate_leave(&This->host_gate);
 }
 
+/* Prevent an inlined SysV TLS lookup from clobbering Windows-ABI `This`. */
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
 bool
 pipeasio_host_call_is_reentrant(void *owner)
 {
@@ -1046,6 +1049,9 @@ Release(LPPIPEASIO iface)
         if (!reentrant)
             DuplicateHandle(GetCurrentProcess(), This->worker, GetCurrentProcess(), &completion,
                             SYNCHRONIZE, FALSE, 0);
+
+        /* Keep the object alive while publishing the final Destroying wake. */
+        atomic_fetch_add_explicit(&This->lifecycle_waiters, 1, memory_order_acq_rel);
         atomic_exchange_explicit(&This->host_driver_state, Destroying, memory_order_acq_rel);
         pipeasio_gate_close_permanently(&This->method_gate);
         pipeasio_gate_close_permanently(&This->host_gate);
@@ -1053,6 +1059,7 @@ Release(LPPIPEASIO iface)
         SetEvent(This->host_idle);
         WakeByAddressAll((void *)&This->stop_generation);
         SetEvent(This->work_event);
+        atomic_fetch_sub_explicit(&This->lifecycle_waiters, 1, memory_order_release);
         if (completion)
         {
             WaitForSingleObject(completion, 10000);
@@ -1151,6 +1158,30 @@ lifecycle_worker(void *arg)
     }
 }
 
+static void
+clear_last_error(IPipeASIOImpl *This)
+{
+    EnterCriticalSection(&This->config_lock);
+    This->pipeasio_last_error[0] = '\0';
+    LeaveCriticalSection(&This->config_lock);
+}
+
+static void
+set_last_error(IPipeASIOImpl *This, const char *fmt, ...)
+{
+    char    message[sizeof This->pipeasio_last_error] = { 0 };
+    va_list args;
+
+    va_start(args, fmt);
+    vsnprintf(message, sizeof message, fmt, args);
+    va_end(args);
+    message[sizeof message - 1] = '\0';
+
+    EnterCriticalSection(&This->config_lock);
+    memcpy(This->pipeasio_last_error, message, sizeof message);
+    LeaveCriticalSection(&This->config_lock);
+}
+
 /* sysRef is 0 on OS/X; on Windows it is the application's main window handle.
  * Returns 0 on error, 1 on success. */
 
@@ -1161,7 +1192,7 @@ Init(LPPIPEASIO iface, void *sysRef)
     IPipeASIOImpl      *This = (IPipeASIOImpl *)iface;
     method_token        token;
     pipeasio_gate_owner owner;
-    uint32_t            audio_status = 0;
+    uint32_t            audio_status = AUDIO_STATUS_OK;
     INT                 expected     = Loaded;
     int                 total;
 
@@ -1174,21 +1205,51 @@ Init(LPPIPEASIO iface, void *sysRef)
         return 0;
     }
 
+    clear_last_error(This);
     owner = next_gate_owner(This);
     if (!pipeasio_gate_close(&This->method_gate, owner)
         || !drain_gate(This, &This->method_gate, This->method_idle, 1)
         || !pipeasio_gate_reopen(&This->method_gate, owner))
+    {
+        set_last_error(This, "could not acquire the driver method gate");
         goto fail;
+    }
 
     configure_driver(This);
     This->sys_ref = sysRef;
     total         = This->pipeasio_number_inputs + This->pipeasio_number_outputs;
     if (total <= 0 || total > PIPEASIO_MAX_CHANNELS * 2)
+    {
+        set_last_error(This, "invalid channel configuration: %d inputs + %d outputs",
+                       This->pipeasio_number_inputs, This->pipeasio_number_outputs);
         goto fail;
+    }
 
     This->audio_client = audio_open(This->client_name, AUDIO_NULL_OPTION, &audio_status);
     if (!This->audio_client)
+    {
+        switch (audio_status)
+        {
+        case AUDIO_STATUS_NO_UNIXLIB:
+            set_last_error(This, "the 64-bit unixlib is unavailable; 32-bit hosts need Wine's "
+                                 "new WoW64 mode (Wine 11 / Proton 11)");
+            break;
+        case AUDIO_STATUS_NO_DAEMON:
+            set_last_error(This, "cannot connect to the PipeWire daemon (is it running and "
+                                 "visible inside the Proton container?)");
+            break;
+        case AUDIO_STATUS_NO_CONTEXT:
+            set_last_error(This, "failed to set up the PipeWire context (broken installation?)");
+            break;
+        case AUDIO_STATUS_NO_MEMORY:
+            set_last_error(This, "out of memory");
+            break;
+        default:
+            set_last_error(This, "failed to initialize the PipeWire client; check the Wine log");
+            break;
+        }
         goto fail;
+    }
 
     audio_set_forced_rate(This->audio_client, (audio_nframes_t)This->pipeasio_sample_rate);
     audio_set_follow_device(This->audio_client, This->pipeasio_follow_device_clock);
@@ -1206,7 +1267,10 @@ Init(LPPIPEASIO iface, void *sysRef)
     This->input_channel = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
                                     (size_t)total * sizeof(*This->input_channel));
     if (!This->input_channel)
+    {
+        set_last_error(This, "out of memory allocating channel buffers");
         goto fail;
+    }
     This->output_channel = This->input_channel + This->pipeasio_number_inputs;
 
     for (int i = 0; i < This->pipeasio_number_inputs; ++i)
@@ -1217,7 +1281,10 @@ Init(LPPIPEASIO iface, void *sysRef)
                 = audio_port_register(This->audio_client, This->input_channel[i].port_name,
                                       AUDIO_PORT_IS_INPUT, (uint32_t)i);
         if (!This->input_channel[i].port)
+        {
+            set_last_error(This, "failed to register PipeWire input port %d", i + 1);
             goto fail;
+        }
     }
     for (int i = 0; i < This->pipeasio_number_outputs; ++i)
     {
@@ -1227,16 +1294,25 @@ Init(LPPIPEASIO iface, void *sysRef)
                 = audio_port_register(This->audio_client, This->output_channel[i].port_name,
                                       AUDIO_PORT_IS_OUTPUT, (uint32_t)i);
         if (!This->output_channel[i].port)
+        {
+            set_last_error(This, "failed to register PipeWire output port %d", i + 1);
             goto fail;
+        }
     }
     if (!audio_set_process_callback(This->audio_client, process_callback, This)
         || !audio_set_sample_rate_callback(This->audio_client, sample_rate_callback, This))
+    {
+        set_last_error(This, "failed to install PipeWire callbacks; check the Wine log");
         goto fail;
+    }
 
     expected = Initializing;
     if (!atomic_compare_exchange_strong_explicit(&This->host_driver_state, &expected, Initialized,
                                                  memory_order_release, memory_order_acquire))
+    {
+        set_last_error(This, "driver state changed during initialization");
         goto fail;
+    }
     method_end(&token);
     return 1;
 
@@ -1294,9 +1370,18 @@ GetErrorMessage(LPPIPEASIO iface, char *string)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
     method_token   token;
+    char           message[sizeof This->pipeasio_last_error];
+
     if (!string || !method_begin(This, true, &token))
         return;
-    strcpy(string, "PipeASIO does not return error messages\n");
+    EnterCriticalSection(&This->config_lock);
+    memcpy(message, This->pipeasio_last_error, sizeof message);
+    LeaveCriticalSection(&This->config_lock);
+    if (message[0])
+        lstrcpynA(string, message, PIPEASIO_ERROR_MESSAGE_SIZE);
+    else
+        lstrcpynA(string, "operation failed before any detail was recorded; check the Wine log",
+                  PIPEASIO_ERROR_MESSAGE_SIZE);
     method_end(&token);
 }
 
@@ -1314,8 +1399,10 @@ Start(LPPIPEASIO iface)
 
     if (!method_begin(This, false, &token))
         return -1000;
+    clear_last_error(This);
     if (pipeasio_host_call_is_reentrant(This))
     {
+        set_last_error(This, "Start cannot run from an ASIO host callback");
         method_end(&token);
         return -1000;
     }
@@ -1335,6 +1422,7 @@ Start(LPPIPEASIO iface)
         if (expected != Stopping)
         {
             ReleaseSRWLockExclusive(&This->lifecycle_lock);
+            set_last_error(This, "driver buffers are not prepared");
             method_end(&token);
             return -1000;
         }
@@ -1352,6 +1440,7 @@ Start(LPPIPEASIO iface)
         atomic_fetch_sub_explicit(&This->lifecycle_waiters, 1, memory_order_release);
         if (!completed)
         {
+            set_last_error(This, "timed out waiting for the previous Stop");
             method_end(&token);
             return -1000;
         }
@@ -1363,7 +1452,10 @@ Start(LPPIPEASIO iface)
         || !pipeasio_gate_reopen(&This->method_gate, owner)
         || !claim_closed_gate(&This->host_gate, owner)
         || !drain_gate(This, &This->host_gate, This->host_idle, 0))
+    {
+        set_last_error(This, "could not acquire the driver callback gates");
         goto fail;
+    }
 
     samples = (size_t)(This->pipeasio_number_inputs + This->pipeasio_number_outputs) * 2
               * (size_t)This->host_current_buffersize;
@@ -1382,17 +1474,24 @@ Start(LPPIPEASIO iface)
         if (!pipeasio_wow64_bind_rt(This->audio_client, This->callback_audio_buffer,
                                     This->host_current_buffersize, This->pipeasio_number_inputs,
                                     This->pipeasio_number_outputs, in_active, out_active))
+        {
+            set_last_error(This, "failed to bind the WoW64 callback buffer");
             goto fail;
+        }
     }
 #endif
 
     if (!pipeasio_gate_reopen(&This->host_gate, owner))
+    {
+        set_last_error(This, "could not open the driver callback gate");
         goto fail;
+    }
     expected = Starting;
     if (!atomic_compare_exchange_strong_explicit(&This->host_driver_state, &expected, Running,
                                                  memory_order_release, memory_order_acquire))
     {
         pipeasio_gate_close(&This->host_gate, owner);
+        set_last_error(This, "driver state changed while starting");
         goto fail;
     }
     method_end(&token);
@@ -1605,8 +1704,8 @@ GetBufferSize(LPPIPEASIO iface, LONG *minSize, LONG *maxSize, LONG *preferredSiz
     }
     else
     {
-        *minSize       = PIPEASIO_MINIMUM_BUFFERSIZE;
-        *maxSize       = PIPEASIO_MAXIMUM_BUFFERSIZE;
+        *minSize       = PIPEASIO_MIN_BUFFER_SIZE;
+        *maxSize       = PIPEASIO_MAX_BUFFER_SIZE;
         *preferredSize = pref;
         *granularity   = -1;
     }
@@ -1859,47 +1958,59 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
         method_end(&token);
         return -1000;
     }
+    clear_last_error(This);
     owner = next_gate_owner(This);
     if (!pipeasio_gate_close(&This->method_gate, owner)
         || !drain_gate(This, &This->method_gate, This->method_idle, 1)
         || !pipeasio_gate_reopen(&This->method_gate, owner))
     {
+        set_last_error(This, "could not acquire the driver method gate");
         error = -1000;
         goto fail;
     }
 
     if (!bufferInfo || !callbacks || numChannels < 0
         || numChannels > This->pipeasio_number_inputs + This->pipeasio_number_outputs)
+    {
+        set_last_error(This, "invalid CreateBuffers arguments");
         goto fail;
+    }
     table_bytes = (size_t)numChannels * sizeof(*bufferInfo);
     if (numChannels)
     {
         tables = HeapAlloc(GetProcessHeap(), 0, table_bytes * 2);
         if (!tables)
         {
+            set_last_error(This, "out of memory validating channel descriptors");
             error = -994;
             goto fail;
         }
         original = tables;
         result   = tables + numChannels;
         memcpy(original, bufferInfo, table_bytes);
-        memcpy(result, bufferInfo, table_bytes);
+        memcpy(result, original, table_bytes);
     }
 
     for (LONG i = 0; i < numChannels; ++i)
     {
-        LONG channel = bufferInfo[i].channelNumber;
-        if (bufferInfo[i].isInputType)
+        LONG channel = original[i].channelNumber;
+        if (original[i].isInputType)
         {
             if (channel < 0 || channel >= This->pipeasio_number_inputs || input_active[channel])
+            {
+                set_last_error(This, "invalid or duplicate input channel %ld", (long)channel);
                 goto fail;
+            }
             input_active[channel] = true;
             ++active_inputs;
         }
         else
         {
             if (channel < 0 || channel >= This->pipeasio_number_outputs || output_active[channel])
+            {
+                set_last_error(This, "invalid or duplicate output channel %ld", (long)channel);
                 goto fail;
+            }
             output_active[channel] = true;
             ++active_outputs;
         }
@@ -1909,18 +2020,25 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
     old_buffer_size = This->host_current_buffersize;
     if (This->pipeasio_fixed_buffersize || This->pipeasio_follow_device_clock)
     {
-        if (bufferSize != This->host_current_buffersize)
+        if (bufferSize != This->host_current_buffersize
+            || !pipeasio_buffer_size_supported(bufferSize))
+        {
+            set_last_error(This, "unsupported fixed/follower buffer size %ld", (long)bufferSize);
             goto fail;
+        }
     }
     else
     {
-        if (bufferSize < PIPEASIO_MINIMUM_BUFFERSIZE || bufferSize > PIPEASIO_MAXIMUM_BUFFERSIZE
-            || (bufferSize & (bufferSize - 1)) != 0)
+        if (!pipeasio_buffer_size_supported(bufferSize) || (bufferSize & (bufferSize - 1)) != 0)
+        {
+            set_last_error(This, "unsupported buffer size %ld", (long)bufferSize);
             goto fail;
+        }
         This->host_current_buffersize = bufferSize;
     }
     if (!audio_set_buffer_size(This->audio_client, (audio_nframes_t)bufferSize))
     {
+        set_last_error(This, "the PipeWire graph rejected buffer size %ld", (long)bufferSize);
         error = -999;
         goto fail_restore_size;
     }
@@ -1931,6 +2049,7 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
     if (!audio_bytes
         || !(audio_buffer = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, audio_bytes)))
     {
+        set_last_error(This, "out of memory allocating %ld-sample buffers", (long)bufferSize);
         error = -994;
         goto fail_restore_size;
     }
@@ -1951,10 +2070,9 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
 
     for (LONG i = 0; i < numChannels; ++i)
     {
-        LONG            channel    = bufferInfo[i].channelNumber;
-        audio_sample_t *base       = bufferInfo[i].isInputType
-                                             ? This->input_channel[channel].audio_buffer
-                                             : This->output_channel[channel].audio_buffer;
+        LONG            channel = original[i].channelNumber;
+        audio_sample_t *base = original[i].isInputType ? This->input_channel[channel].audio_buffer
+                                                       : This->output_channel[channel].audio_buffer;
         result[i].audioBufferStart = base;
         result[i].audioBufferEnd   = base + bufferSize;
     }
@@ -1964,12 +2082,15 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
                                 This->pipeasio_number_inputs, This->pipeasio_number_outputs,
                                 input_active, output_active))
     {
+        set_last_error(This, "failed to bind the WoW64 callback buffer");
         error = -1000;
         goto fail_internal;
     }
 #endif
     if (!audio_activate(This->audio_client))
     {
+        set_last_error(This, "could not activate the PipeWire stream (device busy or "
+                             "disconnected?)");
         error = -1000;
         goto fail_internal;
     }
@@ -1988,6 +2109,7 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
                 AUDIO_PORT_IS_INPUT);
         if (!input_endpoints || !output_endpoints)
         {
+            set_last_error(This, "could not enumerate audio device ports; check the Wine log");
             error = -1000;
             goto fail_internal;
         }
@@ -2002,6 +2124,8 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
             if (!audio_port_get_name(This->input_channel[i].port, local_name, sizeof local_name)
                 || !audio_connect(This->audio_client, input_endpoints[i], local_name))
             {
+                set_last_error(This, "failed to connect input channel %d to the audio device",
+                               i + 1);
                 error = -1000;
                 goto fail_internal;
             }
@@ -2013,6 +2137,8 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
             if (!audio_port_get_name(This->output_channel[i].port, local_name, sizeof local_name)
                 || !audio_connect(This->audio_client, local_name, output_endpoints[i]))
             {
+                set_last_error(This, "failed to connect output channel %d to the audio device",
+                               i + 1);
                 error = -1000;
                 goto fail_internal;
             }
@@ -2057,6 +2183,7 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
     if (!claim_closed_gate(&This->host_gate, owner)
         || !pipeasio_gate_reopen(&This->host_gate, owner))
     {
+        set_last_error(This, "could not publish callbacks through the host gate");
         error = -1000;
         goto fail_internal_published;
     }
@@ -2071,6 +2198,7 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
         || !drain_gate(This, &This->host_gate, This->host_idle, 0)
         || atomic_load_explicit(&This->host_driver_state, memory_order_acquire) != Preparing)
     {
+        set_last_error(This, "buffer preparation was interrupted");
         error = -1000;
         goto fail_internal_published;
     }
@@ -2086,6 +2214,7 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
     {
         if (caller_written)
             memcpy(bufferInfo, original, table_bytes);
+        set_last_error(This, "driver state changed during buffer preparation");
         error = -1000;
         goto fail_internal_published;
     }
@@ -2479,8 +2608,8 @@ configure_driver(IPipeASIOImpl *This)
         This->pipeasio_follow_device_clock = flag ? TRUE : FALSE;
     if (read_environment("PIPEASIO_PREFERRED_BUFFERSIZE", environment_variable,
                          sizeof(environment_variable))
-        && pipeasio_parse_int(environment_variable, PIPEASIO_MINIMUM_BUFFERSIZE,
-                              PIPEASIO_MAXIMUM_BUFFERSIZE, &parsed)
+        && pipeasio_parse_int(environment_variable, PIPEASIO_MIN_BUFFER_SIZE,
+                              PIPEASIO_MAX_BUFFER_SIZE, &parsed)
         && !(parsed & (parsed - 1)))
         This->pipeasio_preferred_buffersize = parsed;
     if (read_environment("PIPEASIO_SAMPLE_RATE", environment_variable, sizeof(environment_variable))

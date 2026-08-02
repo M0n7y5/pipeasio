@@ -33,6 +33,7 @@ seconds="${PROBE_SECONDS:-3}"
 : "${PIPEASIO_ROOT:=$HOME/.local}"
 : "${PIPEWIRE_DEBUG:=2}"
 : "${WINEDEBUG:=-all,+pipeasio,err+all}"
+err_log="$PROBE_PREFIX/probe.err"
 
 # Run the probe unless told to inspect the previous core.
 if [[ "$mode" != "last" ]]; then
@@ -56,7 +57,7 @@ if [[ "$mode" != "last" ]]; then
     export PIPEASIO_CONNECT_TO_HARDWARE=off
 
     echo "[gdb] running probe (${seconds}s, expect it to crash)..."
-    wine "$probe" "$seconds" 2>/tmp/probe.err >/dev/null || true
+    wine "$probe" "$seconds" 2>"$err_log" >/dev/null || true
     sleep 1  # let systemd-coredump finish writing the core
 fi
 
@@ -69,8 +70,8 @@ crash_pid="$(coredumpctl list 2>/dev/null \
     | awk '/SIGABRT.*wine-preloader/ {pid=$5} END {print pid}')"
 if [[ -z "$crash_pid" ]]; then
     echo "[gdb] no SIGABRT core under wine-preloader.  Did the probe crash?"
-    echo "[gdb] (last 5 lines of /tmp/probe.err:)"
-    tail -5 /tmp/probe.err 2>/dev/null
+    echo "[gdb] (last 5 lines of $err_log:)"
+    tail -5 "$err_log" 2>/dev/null
     exit 1
 fi
 
