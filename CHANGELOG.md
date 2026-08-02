@@ -35,6 +35,19 @@ follow [Semantic Versioning](https://semver.org/).
   test with a stubbed `wine`.
 - `install_manifest.txt` now records the `pipeasio.dll` and `pipeasio.dll.so`
   symlinks, so the documented uninstall removes them.
+- Final COM release now synchronizes with the lifecycle worker before object
+  teardown, closing a Stop/Release use-after-free window. The TLS reentrancy
+  walk stays outside Wine's mixed-ABI COM methods, avoiding a codegen-sensitive
+  failed-init release crash. `GetErrorMessage()` now reports a bounded,
+  actionable backend error instead of a generic failure.
+- Buffer preparation now snapshots caller-owned channel descriptors before
+  validation, centralizes the accepted frame bounds, and rejects invalid
+  PipeWire quantum and WoW64 name values before they cross allocation or ABI
+  boundaries. PipeWire registry object counts and property lengths are capped
+  so an untrusted graph peer cannot grow the host cache indefinitely.
+- The settings panel now shares the driver's canonical defaults and rejects
+  multiline or unterminated device and node names before writing the INI file,
+  preventing injected configuration entries.
 
 ## [1.3.0] - 2026-08-01
 
