@@ -79,6 +79,8 @@ if grep -q '__asan_init' <<<"$_imports"; then
     _sanitize_asan_options="abort_on_error=1:halt_on_error=1:print_stacktrace=1:detect_leaks=0:symbolize=1:verify_asan_link_order=0"
     _sanitize_ubsan_options="halt_on_error=1:print_stacktrace=1"
 fi
+# CMake substitutes this operand.
+# shellcheck disable=SC2050
 if [[ "@PIPEASIO_ASAN@" == "ON" && "$_sanitized" != 1 ]]; then
     echo "[loop] sanitizer build expected an instrumented installed driver" >&2
     exit 1
@@ -111,6 +113,8 @@ export PIPEASIO_NUMBER_INPUTS=2
 export PIPEASIO_NUMBER_OUTPUTS=2
 
 # --- loopback plumbing -------------------------------------------------------
+# Called by the EXIT trap.
+# shellcheck disable=SC2329
 cleanup() {
     [[ -n "${linker_pid:-}" ]] && kill "$linker_pid" 2>/dev/null || true
     [[ -n "${sink_pid:-}"   ]] && kill "$sink_pid"   2>/dev/null || true

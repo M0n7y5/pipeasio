@@ -168,7 +168,7 @@ fi
 
 if [ ${code} -eq 0 ]; then
     >&2 echo "[${me}] registered in ${WINEPREFIX}"
-    if [ "${prefix#${HOME}/}" != "${prefix}" ]; then
+    if [ "${prefix#"${HOME}"/}" != "${prefix}" ]; then
         >&2 echo "[${me}] for Proton/Faugus, set WINEDLLPATH=${prefix} in the launcher env."
     elif [ -n "${wine_libdir}" ] && [ "${prefix}" != "${wine_libdir}" ]; then
         # Registration succeeded, but the host will launch without this
