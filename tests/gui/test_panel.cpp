@@ -22,13 +22,14 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QPushButton>
+#include <QTemporaryDir>
 #include <QTimer>
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <unistd.h> /* getpid */
+#include <unistd.h>
 
 extern "C"
 {
@@ -84,9 +85,12 @@ test_config_roundtrip()
 static void
 test_cross_language()
 {
-    QString tmp = QStringLiteral("/tmp/pipeasio_paneltest_%1").arg(getpid());
-    QDir().mkpath(tmp + "/" + QLatin1String(PIPEASIO_CONFIG_DIR));
-    qputenv("XDG_CONFIG_HOME", tmp.toUtf8());
+    QTemporaryDir tmp;
+    CHECK(tmp.isValid());
+    if (!tmp.isValid())
+        return;
+    QDir().mkpath(tmp.path() + "/" + QLatin1String(PIPEASIO_CONFIG_DIR));
+    qputenv("XDG_CONFIG_HOME", tmp.path().toUtf8());
 
     pipeasio_config c     = Config::defaults();
     c.inputs              = 10;
@@ -115,6 +119,13 @@ test_cross_language()
     CHECK(std::strcmp(d.output_device, "sink.test") == 0);
     CHECK(d.input_device[0] == '\0');
     CHECK(std::strcmp(d.node_name, "Bar") == 0);
+
+    /* Reject INI injection through discovered PipeWire names. */
+    std::strcpy(c.output_device, "sink.test\nbuffer_size = 16");
+    CHECK(!Config::save(c));
+    CHECK(pipeasio_config_load(&d));
+    CHECK(d.buffer_size == 2048);
+    CHECK(std::strcmp(d.output_device, "sink.test") == 0);
 }
 
 /* The panel parser must draw the same max-line boundary as the driver's C

@@ -49,23 +49,28 @@ setStr(char *destination, size_t capacity, const QString &value)
     return true;
 }
 
+bool
+isSingleLine(const char *value, size_t capacity)
+{
+    if (!value)
+        return false;
+    for (size_t i = 0; i < capacity; ++i)
+    {
+        if (value[i] == '\0')
+            return true;
+        if (value[i] == '\r' || value[i] == '\n')
+            return false;
+    }
+    return false;
+}
+
 } // namespace
 
 pipeasio_config
 defaults()
 {
     pipeasio_config c;
-    c.inputs              = PIPEASIO_DEFAULT_INPUTS;
-    c.outputs             = PIPEASIO_DEFAULT_OUTPUTS;
-    c.buffer_size         = PIPEASIO_DEFAULT_BUFFER_SIZE;
-    c.fixed_buffer_size   = PIPEASIO_DEFAULT_FIXED_BUFFER_SIZE;
-    c.sample_rate         = PIPEASIO_DEFAULT_SAMPLE_RATE;
-    c.auto_connect        = PIPEASIO_DEFAULT_AUTO_CONNECT;
-    c.follow_device_clock = PIPEASIO_DEFAULT_FOLLOW_DEVICE_CLOCK;
-    c.realtime            = PIPEASIO_DEFAULT_REALTIME;
-    c.output_device[0]    = '\0';
-    c.input_device[0]     = '\0';
-    c.node_name[0]        = '\0';
+    pipeasio_config_defaults(&c);
     return c;
 }
 
@@ -202,6 +207,11 @@ load()
 bool
 save(const pipeasio_config &c)
 {
+    if (!isSingleLine(c.output_device, sizeof c.output_device)
+        || !isSingleLine(c.input_device, sizeof c.input_device)
+        || !isSingleLine(c.node_name, sizeof c.node_name))
+        return false;
+
     const QString path = configPath();
     QDir().mkpath(QFileInfo(path).absolutePath());
 
