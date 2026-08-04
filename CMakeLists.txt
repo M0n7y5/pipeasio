@@ -1,4 +1,33 @@
 cmake_minimum_required(VERSION 3.20)
+
+# Driver files install into the Wine arch layout under this root. The default
+# follows the install prefix; set an absolute path when the target Wine keeps
+# its libraries elsewhere (Debian/Ubuntu: /usr/lib/x86_64-linux-gnu/wine,
+# WineHQ: /opt/wine-<branch>/lib/wine).
+# Validated before project(): the guard must fire even where toolchain probing
+# cannot run (the wine_install_root_relative CTest configures in a bare
+# environment, so no generator or compiler may exist yet).
+# STRING, not PATH: CMake would normalize a relative PATH value to absolute
+# against the cwd, hiding the mistake from the IS_ABSOLUTE guard below.
+set(PIPEASIO_WINE_INSTALL_ROOT "" CACHE STRING
+    "absolute install root for driver files (default <prefix>/lib/wine)")
+if(PIPEASIO_WINE_INSTALL_ROOT)
+    # A relative value would split the install: install(FILES) would resolve
+    # it under the prefix while install(CODE) resolved it against the install
+    # process, landing symlinks and manifest entries elsewhere.
+    if(NOT IS_ABSOLUTE "${PIPEASIO_WINE_INSTALL_ROOT}")
+        message(FATAL_ERROR
+            "PIPEASIO_WINE_INSTALL_ROOT must be an absolute path "
+            "(got '${PIPEASIO_WINE_INSTALL_ROOT}'; e.g. "
+            "/usr/lib/x86_64-linux-gnu/wine).")
+    endif()
+    set(PA_WINE_DEST "${PIPEASIO_WINE_INSTALL_ROOT}")
+    set(PA_WINE_DEST_ABS "${PIPEASIO_WINE_INSTALL_ROOT}")
+else()
+    set(PA_WINE_DEST "lib/wine")
+    # Stays a deferred reference: install(CODE) expands it at install time.
+    set(PA_WINE_DEST_ABS "\${CMAKE_INSTALL_PREFIX}/lib/wine")
+endif()
 project(pipeasio C)
 
 set(CMAKE_C_STANDARD 11)
@@ -22,31 +51,6 @@ message(STATUS "Found libpipewire-0.3 ${PIPEWIRE_VERSION} (minimum 1.4.2)")
 # Ahead of WineDLL: the SDK probe requires unixlib.h only when this is on.
 option(BUILD_WOW64_32 "Build the experimental 32-bit WoW64 PE front end + unixlib" OFF)
 
-# Driver files install into the Wine arch layout under this root. The default
-# follows the install prefix; set an absolute path when the target Wine keeps
-# its libraries elsewhere (Debian/Ubuntu: /usr/lib/x86_64-linux-gnu/wine,
-# WineHQ: /opt/wine-<branch>/lib/wine).
-# STRING, not PATH: CMake would normalize a relative PATH value to absolute
-# against the cwd, hiding the mistake from the IS_ABSOLUTE guard below.
-set(PIPEASIO_WINE_INSTALL_ROOT "" CACHE STRING
-    "absolute install root for driver files (default <prefix>/lib/wine)")
-if(PIPEASIO_WINE_INSTALL_ROOT)
-    # A relative value would split the install: install(FILES) would resolve
-    # it under the prefix while install(CODE) resolved it against the install
-    # process, landing symlinks and manifest entries elsewhere.
-    if(NOT IS_ABSOLUTE "${PIPEASIO_WINE_INSTALL_ROOT}")
-        message(FATAL_ERROR
-            "PIPEASIO_WINE_INSTALL_ROOT must be an absolute path "
-            "(got '${PIPEASIO_WINE_INSTALL_ROOT}'; e.g. "
-            "/usr/lib/x86_64-linux-gnu/wine).")
-    endif()
-    set(PA_WINE_DEST "${PIPEASIO_WINE_INSTALL_ROOT}")
-    set(PA_WINE_DEST_ABS "${PIPEASIO_WINE_INSTALL_ROOT}")
-else()
-    set(PA_WINE_DEST "lib/wine")
-    # Stays a deferred reference: install(CODE) expands it at install time.
-    set(PA_WINE_DEST_ABS "\${CMAKE_INSTALL_PREFIX}/lib/wine")
-endif()
 
 include(WineDLL)
 

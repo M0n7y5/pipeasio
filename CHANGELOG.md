@@ -4,6 +4,15 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- The `PIPEASIO_WINE_INSTALL_ROOT` absolute-path guard now runs before
+  `project()`, so the `wine_install_root_relative` test passes in containers
+  without `make`: the inner configure previously aborted during toolchain
+  probing before the guard could print its message.
+
 ## [1.4.0] - 2026-08-04
 
 ### Added
