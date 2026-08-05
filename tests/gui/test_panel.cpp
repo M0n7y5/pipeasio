@@ -196,6 +196,47 @@ test_parse_pwdump()
     CHECK(sawSource);
 }
 
+/* The latency readout in "Follow PipeWire" mode uses the settings metadata's
+ * clock rate (issue #20): clock.force-rate wins when nonzero, else clock.rate;
+ * values may be JSON numbers or strings; no settings object -> 0. */
+static void
+test_graph_clock_rate()
+{
+    const QByteArray followDefault
+            = "[\n"
+              "  {\"id\":31,\"type\":\"PipeWire:Interface:Metadata\",\"props\":"
+              "{\"metadata.name\":\"settings\"},\"metadata\":[\n"
+              "    {\"subject\":0,\"key\":\"log.level\",\"value\":2},\n"
+              "    {\"subject\":0,\"key\":\"clock.rate\",\"value\":44100},\n"
+              "    {\"subject\":0,\"key\":\"clock.force-rate\",\"value\":0}\n"
+              "  ]}\n"
+              "]\n";
+    CHECK(DeviceEnumerator::graphClockRate(followDefault) == 44100);
+
+    const QByteArray forced
+            = "[\n"
+              "  {\"id\":31,\"type\":\"PipeWire:Interface:Metadata\",\"props\":"
+              "{\"metadata.name\":\"settings\"},\"metadata\":[\n"
+              "    {\"subject\":0,\"key\":\"clock.rate\",\"value\":\"48000\"},\n"
+              "    {\"subject\":0,\"key\":\"clock.force-rate\",\"value\":\"96000\"}\n"
+              "  ]}\n"
+              "]\n";
+    CHECK(DeviceEnumerator::graphClockRate(forced) == 96000);
+
+    /* Another metadata object (e.g. "default") must not match. */
+    const QByteArray wrongObject
+            = "[\n"
+              "  {\"id\":30,\"type\":\"PipeWire:Interface:Metadata\",\"props\":"
+              "{\"metadata.name\":\"default\"},\"metadata\":[\n"
+              "    {\"subject\":0,\"key\":\"clock.rate\",\"value\":88200}\n"
+              "  ]}\n"
+              "]\n";
+    CHECK(DeviceEnumerator::graphClockRate(wrongObject) == 0);
+
+    CHECK(DeviceEnumerator::graphClockRate("[]") == 0);
+    CHECK(DeviceEnumerator::graphClockRate("not json") == 0);
+}
+
 static void
 test_parse_pwtop()
 {
@@ -600,6 +641,7 @@ main(int argc, char **argv)
     test_cross_language();
     test_line_length_boundary();
     test_parse_pwdump();
+    test_graph_clock_rate();
     test_parse_pwtop();
     test_find_own_node();
     test_resolve_connections();

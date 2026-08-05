@@ -57,6 +57,10 @@ std::optional<QList<Device>> parsePwDump(const QByteArray &json);
  * or "" if no such node is present.  Pure. */
 QString findOwnNode(const QByteArray &json);
 
+/* Current graph sample rate from the "settings" metadata (clock.force-rate
+ * when nonzero, else clock.rate), or 0 when unknown.  Pure. */
+int graphClockRate(const QByteArray &json);
+
 /* What our own filter node (tagged "pipeasio.node"="1") is wired to in the
  * PipeWire graph: the sink our outputs feed and the source feeding our inputs.
  * Each side's `*Detail` carries the peer's codec/format/state for a second
@@ -80,6 +84,14 @@ class Request final : public QObject
 
     void start();
 
+    /* Graph clock rate parsed from the same pw-dump snapshot; valid after
+     * finished(success == true), 0 when unknown. */
+    int
+    graphRate() const
+    {
+        return m_graphRate;
+    }
+
   signals:
     void finished(bool success, const QList<Device> &devices, const QString &error);
 
@@ -88,8 +100,9 @@ class Request final : public QObject
 
     RequestOptions     m_options;
     QPointer<QProcess> m_process;
-    QTimer            *m_timer = nullptr;
-    bool               m_done  = false;
+    QTimer            *m_timer     = nullptr;
+    bool               m_done      = false;
+    int                m_graphRate = 0;
 };
 
 } // namespace DeviceEnumerator

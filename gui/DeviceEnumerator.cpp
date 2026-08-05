@@ -114,6 +114,49 @@ findOwnNode(const QByteArray &json)
     return {};
 }
 
+int
+graphClockRate(const QByteArray &json)
+{
+    QJsonParseError     err{};
+    const QJsonDocument doc = QJsonDocument::fromJson(json, &err);
+    if (err.error != QJsonParseError::NoError || !doc.isArray())
+        return 0;
+
+    int              rate = 0;
+    const QJsonArray arr  = doc.array();
+    for (const QJsonValue &v : arr)
+    {
+        if (!v.isObject())
+            continue;
+        const QJsonObject obj = v.toObject();
+        if (obj.value(QStringLiteral("type")).toString()
+            != QLatin1String("PipeWire:Interface:Metadata"))
+            continue;
+        if (obj.value(QStringLiteral("props"))
+                    .toObject()
+                    .value(QStringLiteral("metadata.name"))
+                    .toString()
+            != QLatin1String("settings"))
+            continue;
+        const QJsonArray metadata = obj.value(QStringLiteral("metadata")).toArray();
+        for (const QJsonValue &mv : metadata)
+        {
+            const QJsonObject entry = mv.toObject();
+            const QString     key   = entry.value(QStringLiteral("key")).toString();
+            /* pw-dump serialises numeric-looking values as JSON numbers, but
+             * accept strings too (matches the findOwnNode caveat above). */
+            const QJsonValue value = entry.value(QStringLiteral("value"));
+            const int        n     = value.isString() ? value.toString().toInt() : value.toInt();
+            if (key == QLatin1String("clock.force-rate") && n > 0)
+                return n;
+            if (key == QLatin1String("clock.rate") && n > 0)
+                rate = n;
+        }
+        break;
+    }
+    return rate;
+}
+
 static QString
 prettyBtCodec(const QString &codec)
 {
@@ -326,12 +369,14 @@ Request::start()
                     finish(false, {}, QStringLiteral("pw-dump exited unsuccessfully"));
                     return;
                 }
-                auto devices = parsePwDump(m_process->readAllStandardOutput());
+                const QByteArray output  = m_process->readAllStandardOutput();
+                auto             devices = parsePwDump(output);
                 if (!devices)
                 {
                     finish(false, {}, QStringLiteral("pw-dump returned invalid JSON"));
                     return;
                 }
+                m_graphRate = graphClockRate(output);
                 finish(true, std::move(*devices), {});
             });
     connect(m_timer, &QTimer::timeout, this,

@@ -76,6 +76,7 @@ class SettingsDialog : public QDialog
     QLineEdit                 *m_nodeName          = nullptr;
     DeviceEnumerator::Request *m_deviceRequest     = nullptr;
     bool                       m_devicesLoading    = true;
+    int                        m_graphRate         = 0; /* pw-dump settings clock rate */
     QString                    m_pendingOutputDevice;
     QString                    m_pendingInputDevice;
 

@@ -369,10 +369,12 @@ SettingsDialog::currentSampleRate() const
 void
 SettingsDialog::updateLatencyLabel()
 {
-    const int    buffer = currentBufferSize();
-    const int    sr     = currentSampleRate();
-    const int    rate   = sr > 0 ? sr : 48000;
-    const double ms     = buffer * 1000.0 / rate;
+    const int buffer = currentBufferSize();
+    const int sr     = currentSampleRate();
+    /* "Follow PipeWire" (0): use the graph's actual clock rate when pw-dump
+     * resolved it, so the readout doesn't lie at non-48k rates (issue #20). */
+    const int    rate = sr > 0 ? sr : (m_graphRate > 0 ? m_graphRate : 48000);
+    const double ms   = buffer * 1000.0 / rate;
     m_latency->setText(QString::number(ms, 'f', 1) + QStringLiteral(" ms"));
 }
 
@@ -431,6 +433,7 @@ SettingsDialog::onDevicesEnumerated(bool success, const QList<DeviceEnumerator::
 {
     (void)error;
     m_devicesLoading = false;
+    m_graphRate      = m_deviceRequest ? m_deviceRequest->graphRate() : 0;
     m_outputDevice->clear();
     m_inputDevice->clear();
     m_outputDevice->addItem(QStringLiteral("Follow default"), QString());
@@ -462,6 +465,7 @@ SettingsDialog::onDevicesEnumerated(bool success, const QList<DeviceEnumerator::
     };
     finishCombo(m_outputDevice, m_pendingOutputDevice);
     finishCombo(m_inputDevice, m_pendingInputDevice);
+    updateLatencyLabel();
 }
 
 void

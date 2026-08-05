@@ -837,7 +837,12 @@ main(void)
     fprintf(stderr, "[probe] Future timecode: enable=%ld can=%ld -> %s\n", (long)f_en, (long)f_can,
             future_ok ? "denied (ok)" : "UNEXPECTED");
 
-    /* Count process cycles for N seconds. */
+    /* Count process cycles for N seconds.  Sample position and wall clock
+     * around the window: the measured sample cadence must match the rate the
+     * driver reports while Running (issue #20 regression guard). */
+    w_int64_t rate_pos0 = { 0, 0 }, rate_stamp0 = { 0, 0 };
+    DWORD     rate_t0  = GetTickCount();
+    LONG      rate_rc0 = asio->lpVtbl->GetSamplePosition(asio, &rate_pos0, &rate_stamp0);
     for (int t = 0; t < seconds; t++)
     {
         LONG before = g_cycles;
@@ -847,11 +852,32 @@ main(void)
                 (long)g_cycles, (long)delta);
     }
     /* hi stays zero in a short run. lo must advance. */
+    DWORD     rate_ms = GetTickCount() - rate_t0;
     w_int64_t spos = { 0, 0 }, stamp = { 0, 0 };
     rc          = asio->lpVtbl->GetSamplePosition(asio, &spos, &stamp);
     int spos_ok = (rc == 0 && spos.hi == 0 && spos.lo > 0);
     fprintf(stderr, "[probe] GetSamplePosition: rc=%ld hi=%lu lo=%lu -> %s\n", (long)rc,
             (unsigned long)spos.hi, (unsigned long)spos.lo, spos_ok ? "ok" : "BAD");
+
+    /* Reported/post-activation rate must equal the measured graph rate.  5%
+     * discriminates 44.1k from 48k (8.8% apart) with margin over Sleep and
+     * GetTickCount jitter.  The deliberate xrun-stall leg skews the cadence,
+     * so it skips the check. */
+    double running_rate = 0.0;
+    asio->lpVtbl->GetSampleRate(asio, &running_rate);
+    int rate_ok = 1;
+    if (!xrun_arm && rate_rc0 == 0 && rc == 0 && rate_ms > 0 && running_rate > 0.0)
+    {
+        double measured = ((double)spos.lo - (double)rate_pos0.lo) * 1000.0 / (double)rate_ms;
+        double diff = measured > running_rate ? measured - running_rate : running_rate - measured;
+        rate_ok     = diff <= running_rate * 0.05;
+        fprintf(stderr, "[probe] rate: reported=%.0f measured=%.0f over %lums -> %s\n",
+                running_rate, measured, (unsigned long)rate_ms, rate_ok ? "ok" : "BAD");
+    }
+    else
+        fprintf(stderr, "[probe] rate: check skipped (stall leg or position unavailable)\n");
+    if (running_rate > 0.0)
+        rate = running_rate; /* pass criterion below uses the Running rate */
 
     int  concurrent_stop_ok = getenv("PROBE_STOP_INTERLEAVE") ? run_forced_stop_interleave(asio)
                                                               : run_concurrent_stop(asio);
@@ -954,8 +980,9 @@ main(void)
 
     /* Lower-bound pass criterion. run32.sh is stricter in practice. */
     LONG expected = (LONG)((rate / prefBs) * seconds);
-    LONG ok = (g_cycles >= expected / 2) && future_ok && spos_ok && contract_ok && thread_ok
-              && stop_ok && first_index_ok && concurrent_stop_ok && restart_ok && rt_worker_ok;
+    LONG ok       = (g_cycles >= expected / 2) && future_ok && spos_ok && contract_ok && thread_ok
+                    && stop_ok && first_index_ok && concurrent_stop_ok && restart_ok && rt_worker_ok
+                    && rate_ok;
     fprintf(stderr, "[probe] expected ~%ld cycles, got %ld -> %s\n", (long)expected, (long)g_cycles,
             ok ? "PASS" : "FAIL");
     return ok ? 0 : 2;

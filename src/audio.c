@@ -23,6 +23,7 @@
 #include "audio.h"
 #include "pipeasio_config.h"
 #include "pipeasio_offsets.h"
+#include "pipeasio_parse.h"
 #include "pipeasio_pw_buffer.h"
 #include "pipeasio_rt_priority.h"
 #ifndef PIPEASIO_AUDIO_UNIXLIB
@@ -296,6 +297,7 @@ struct audio_client
     _Atomic uint64_t   last_clock_nsec;
     bool               debug_enabled;
     bool               quantum_warned;
+    bool               rate_announced; /* process announced a rate this activation */
     uint64_t           cycle_count;
     struct spa_source *diagnostic_event;
     _Atomic uint32_t   diagnostic_kind;
@@ -328,6 +330,15 @@ struct audio_client
     uint64_t default_source_fingerprint;
     bool     default_sink_resolved;
     bool     default_source_resolved;
+
+    /* "settings" metadata object -> the graph's clock rate, so a follow-graph
+     * (forced_rate == 0) driver reports the real rate to the host before the
+     * first process cycle instead of AUDIO_DEFAULT_SAMPLE_RATE (issue #20). */
+    struct pw_metadata *settings_metadata;
+    struct spa_hook     settings_metadata_listener;
+    uint32_t            settings_metadata_id;
+    _Atomic uint32_t    graph_rate;       /* settings clock.rate, 0 = unknown */
+    _Atomic uint32_t    graph_force_rate; /* settings clock.force-rate, 0 = none */
     /* Discovered remote nodes (hardware + apps) - cached for assembling
      * full port names ("node:port") and for audio_connect lookups. */
     struct audio_node_info **nodes;
@@ -385,15 +396,12 @@ typedef audio_port_t *audio_port_ref_t;
 
 static void audio_on_state_changed(void *userdata, enum pw_filter_state old,
                                    enum pw_filter_state state, const char *error);
-static void audio_on_io_changed(void *userdata, void *port_data, uint32_t id, void *area,
-                                uint32_t size);
 
 static void audio_on_process(void *userdata, struct spa_io_position *position);
 
 static const struct pw_filter_events audio_filter_events = {
     PW_VERSION_FILTER_EVENTS,
     .state_changed = audio_on_state_changed,
-    .io_changed    = audio_on_io_changed,
 
     .process = audio_on_process,
 };
@@ -421,6 +429,7 @@ static void audio_teardown_filter(audio_client_t *c);
 static void audio_sync(audio_client_t *c);
 static void audio_adopt_own_ports(audio_client_t *c);
 static void audio_refresh_defaults(audio_client_t *c);
+static void audio_adopt_graph_rate(audio_client_t *c);
 static void audio_diagnostic_event(void *data, uint64_t count);
 
 /* Lifecycle. */
@@ -448,6 +457,8 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
     atomic_init(&c->sample_rate, AUDIO_DEFAULT_SAMPLE_RATE);
     atomic_init(&c->last_clock_nsec, 0);
     atomic_init(&c->observed_quantum, 0);
+    atomic_init(&c->graph_rate, 0);
+    atomic_init(&c->graph_force_rate, 0);
     atomic_init(&c->default_changed, false);
     atomic_init(&c->diagnostic_kind, 0);
     atomic_init(&c->diagnostic_quantum, 0);
@@ -456,10 +467,11 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
     atomic_init(&c->diagnostic_rate_denom, 0);
     atomic_init(&c->diagnostic_cycle, 0);
     atomic_init(&c->diagnostic_thread, 0);
-    c->debug_enabled       = getenv("PIPEASIO_DEBUG") != NULL;
-    c->buffer_size         = PIPEASIO_DEFAULT_BUFFER_SIZE;
-    c->our_node_id         = SPA_ID_INVALID;
-    c->default_metadata_id = SPA_ID_INVALID;
+    c->debug_enabled        = getenv("PIPEASIO_DEBUG") != NULL;
+    c->buffer_size          = PIPEASIO_DEFAULT_BUFFER_SIZE;
+    c->our_node_id          = SPA_ID_INVALID;
+    c->default_metadata_id  = SPA_ID_INVALID;
+    c->settings_metadata_id = SPA_ID_INVALID;
 #ifndef PIPEASIO_AUDIO_UNIXLIB
     atomic_init(&c->rt.ready, false);
 #endif
@@ -529,9 +541,10 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
 
     pw_thread_loop_unlock(c->loop);
     audio_sync(c);
-    /* A second sync drains the "default" metadata's initial property burst:
-     * the object is bound during the first sync's global emission, so its
-     * default.audio.sink/source values only land on the next round-trip. */
+    /* A second sync drains the initial property burst of the "default" and
+     * "settings" metadata objects: they are bound during the first sync's
+     * global emission, so their values (default.audio.sink/source, the graph
+     * clock rate) only land on the next round-trip. */
     audio_sync(c);
     audio_refresh_defaults(c);
     c->defaults_baselined = true;
@@ -582,6 +595,12 @@ audio_close(audio_client_t *c)
             spa_hook_remove(&c->default_metadata_listener);
             pw_proxy_destroy((struct pw_proxy *)c->default_metadata);
             c->default_metadata = NULL;
+        }
+        if (c->settings_metadata)
+        {
+            spa_hook_remove(&c->settings_metadata_listener);
+            pw_proxy_destroy((struct pw_proxy *)c->settings_metadata);
+            c->settings_metadata = NULL;
         }
         if (c->registry)
         {
@@ -679,6 +698,7 @@ audio_activate(audio_client_t *c)
         return false;
     }
     c->quantum_warned = false;
+    c->rate_announced = false;
     c->cycle_count    = 0;
     atomic_store_explicit(&c->diagnostic_kind, 0, memory_order_release);
 
@@ -894,6 +914,23 @@ audio_set_buffer_size(audio_client_t *c, audio_nframes_t nframes)
     return true;
 }
 
+/* Follow-graph mode: adopt the settings metadata's clock rate while the
+ * filter is inactive, so audio_get_sample_rate reports the real graph rate
+ * before the first process cycle.  A running filter learns the authoritative
+ * rate from the position io in audio_on_process, which also notifies the
+ * host through sample_rate_cb - never override that path from here. */
+static void
+audio_adopt_graph_rate(audio_client_t *c)
+{
+    if (c->forced_rate || c->active)
+        return;
+    uint32_t rate = atomic_load_explicit(&c->graph_force_rate, memory_order_acquire);
+    if (!rate)
+        rate = atomic_load_explicit(&c->graph_rate, memory_order_acquire);
+    if (rate)
+        atomic_store_explicit(&c->sample_rate, rate, memory_order_release);
+}
+
 void
 audio_set_forced_rate(audio_client_t *c, audio_nframes_t rate)
 {
@@ -902,6 +939,8 @@ audio_set_forced_rate(audio_client_t *c, audio_nframes_t rate)
     c->forced_rate = rate;
     if (rate)
         atomic_store_explicit(&c->sample_rate, rate, memory_order_release);
+    else
+        audio_adopt_graph_rate(c);
 }
 
 void
@@ -1341,27 +1380,6 @@ audio_on_state_changed(void *userdata, enum pw_filter_state old, enum pw_filter_
         pw_thread_loop_signal(c->loop, false);
 }
 
-static void
-audio_on_io_changed(void *userdata, void *port_data, uint32_t id, void *area, uint32_t size)
-{
-    audio_client_t *c = userdata;
-    (void)port_data;
-    if (id == SPA_IO_Position && area && size >= sizeof(struct spa_io_position))
-    {
-        const struct spa_io_position *pos = area;
-        /* spa_fraction (num, denom): for an audio graph num=1 and denom is
-         * the sample rate in Hz, so we just take denom. */
-        audio_nframes_t old_rate = atomic_load_explicit(&c->sample_rate, memory_order_relaxed);
-        audio_nframes_t new_rate = pos->clock.rate.denom ? pos->clock.rate.denom : old_rate;
-        if (new_rate && new_rate != old_rate)
-        {
-            atomic_store_explicit(&c->sample_rate, new_rate, memory_order_release);
-            if (c->sample_rate_cb)
-                c->sample_rate_cb(new_rate, c->sample_rate_cb_arg);
-        }
-    }
-}
-
 enum
 {
     AUDIO_DIAGNOSTIC_QUANTUM = 1u,
@@ -1434,6 +1452,26 @@ audio_on_process(void *userdata, struct spa_io_position *position)
     {
         c->quantum_warned = true;
         audio_signal_diagnostic(c, AUDIO_DIAGNOSTIC_QUANTUM, quantum, position);
+    }
+
+    /* The running position io is the authoritative sample rate: settings
+     * metadata is only a pre-activation estimate the daemon may refuse to
+     * honor (clock.allowed-rates, another node pinning the graph).  Announce
+     * on the FIRST cycle of every activation - not just on change - so a
+     * correction that lands before the host publishes its callbacks or
+     * reaches Running is never lost (issue #20).  This thread is the bridged
+     * RT thread, the only one allowed to call back into the ASIO host. */
+    if (position && position->clock.rate.denom)
+    {
+        const audio_nframes_t rate = position->clock.rate.denom;
+        if (!c->rate_announced
+            || rate != atomic_load_explicit(&c->sample_rate, memory_order_relaxed))
+        {
+            c->rate_announced = true;
+            atomic_store_explicit(&c->sample_rate, rate, memory_order_release);
+            if (c->sample_rate_cb)
+                c->sample_rate_cb(rate, c->sample_rate_cb_arg);
+        }
     }
     if (c->debug_enabled)
     {
@@ -1809,6 +1847,21 @@ audio_on_metadata_property(void *userdata, uint32_t subject, const char *key, co
     (void)type;
     if (!key || strnlen(key, AUDIO_REGISTRY_PROPERTY_MAX + 1) > AUDIO_REGISTRY_PROPERTY_MAX)
         return 0;
+    if (!strcmp(key, "clock.rate") || !strcmp(key, "clock.force-rate"))
+    {
+        /* "settings" metadata: plain integer values ("48000"); a removed
+         * key (value == NULL) means "no rate forced" / unknown. */
+        int parsed = 0;
+        if (value && !pipeasio_parse_int(value, 0, INT_MAX, &parsed))
+            return 0;
+        if (!strcmp(key, "clock.rate"))
+            atomic_store_explicit(&client->graph_rate, (uint32_t)parsed, memory_order_release);
+        else
+            atomic_store_explicit(&client->graph_force_rate, (uint32_t)parsed,
+                                  memory_order_release);
+        audio_adopt_graph_rate(client);
+        return 0;
+    }
     if (!strcmp(key, "default.audio.sink"))
         destination = client->default_sink_name;
     else if (!strcmp(key, "default.audio.source"))
@@ -1837,16 +1890,28 @@ audio_cache_metadata(audio_client_t *client, uint32_t id, uint32_t version,
                      const struct spa_dict *props)
 {
     const char *name = spa_dict_lookup(props, PW_KEY_METADATA_NAME);
-    if (!name || !audio_registry_property_valid(name) || strcmp(name, "default")
-        || client->default_metadata)
+    if (!name || !audio_registry_property_valid(name))
         return;
-    client->default_metadata
-            = pw_registry_bind(client->registry, id, PW_TYPE_INTERFACE_Metadata, version, 0);
-    if (!client->default_metadata)
-        return;
-    client->default_metadata_id = id;
-    pw_metadata_add_listener(client->default_metadata, &client->default_metadata_listener,
-                             &audio_metadata_events, client);
+    if (!strcmp(name, "default") && !client->default_metadata)
+    {
+        client->default_metadata
+                = pw_registry_bind(client->registry, id, PW_TYPE_INTERFACE_Metadata, version, 0);
+        if (!client->default_metadata)
+            return;
+        client->default_metadata_id = id;
+        pw_metadata_add_listener(client->default_metadata, &client->default_metadata_listener,
+                                 &audio_metadata_events, client);
+    }
+    else if (!strcmp(name, "settings") && !client->settings_metadata)
+    {
+        client->settings_metadata
+                = pw_registry_bind(client->registry, id, PW_TYPE_INTERFACE_Metadata, version, 0);
+        if (!client->settings_metadata)
+            return;
+        client->settings_metadata_id = id;
+        pw_metadata_add_listener(client->settings_metadata, &client->settings_metadata_listener,
+                                 &audio_metadata_events, client);
+    }
 }
 
 bool
@@ -1885,6 +1950,16 @@ audio_on_registry_global_remove(void *userdata, uint32_t id)
         client->default_sink_name[0]   = '\0';
         client->default_source_name[0] = '\0';
         audio_refresh_defaults(client);
+        return;
+    }
+    if (id == client->settings_metadata_id)
+    {
+        spa_hook_remove(&client->settings_metadata_listener);
+        pw_proxy_destroy((struct pw_proxy *)client->settings_metadata);
+        client->settings_metadata    = NULL;
+        client->settings_metadata_id = SPA_ID_INVALID;
+        /* Keep the last known graph rate - better than snapping back to the
+         * 48 kHz default while the daemon restarts its metadata object. */
         return;
     }
     for (uint32_t i = 0; i < client->n_ports; ++i)

@@ -300,10 +300,15 @@ typedef struct IPipeASIOImpl
     _Atomic INT            host_driver_state;
     _Atomic uint64_t       host_num_samples;
     _Atomic uint32_t       host_sample_rate;
-    TimeInformation        host_time;
-    BOOL                   host_time_info_mode;
-    _Atomic uint64_t       host_time_stamp;
-    LONG                   host_version;
+    /* Last rate the host has observed (GetSampleRate / accepted SetSampleRate /
+     * a delivered sampleRateChanged).  Diverges from host_sample_rate when the
+     * graph's real rate lands while callbacks are unpublished or the state is
+     * not Running; the process callback delivers the missed notification. */
+    _Atomic uint32_t host_announced_rate;
+    TimeInformation  host_time;
+    BOOL             host_time_info_mode;
+    _Atomic uint64_t host_time_stamp;
+    LONG             host_version;
 
     /* PipeASIO configuration options */
     int  pipeasio_number_inputs;
@@ -1744,7 +1749,9 @@ GetSampleRate(LPPIPEASIO iface, double *sampleRate)
     if (!method_begin(This, false, &token))
         return -1000;
     uint32_t current = atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
-    *sampleRate      = (double)current;
+    /* The host now knows this value - no pending sampleRateChanged for it. */
+    atomic_store_explicit(&This->host_announced_rate, current, memory_order_release);
+    *sampleRate = (double)current;
     method_end(&token);
     return current ? 0 : -995;
 }
@@ -1763,6 +1770,8 @@ SetSampleRate(LPPIPEASIO iface, double sampleRate)
         return -1000;
     uint32_t current = atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
     result           = sampleRate == (double)current ? 0 : -995;
+    if (result == 0)
+        atomic_store_explicit(&This->host_announced_rate, current, memory_order_release);
     method_end(&token);
     return result;
 }
@@ -2458,6 +2467,18 @@ process_callback(audio_nframes_t nframes, void *arg)
 
     if (admitted)
     {
+        /* Deliver a sampleRateChanged the SAMPLE_RATE path could not: the
+         * backend announces the measured graph rate on the first process
+         * cycle after activation (CreateBuffers), when the driver is not yet
+         * Running, so only the host_sample_rate store survived (issue #20).
+         * Tell the host before it processes the first buffer at that rate. */
+        uint32_t rate = atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
+        if (rate != atomic_load_explicit(&This->host_announced_rate, memory_order_acquire))
+        {
+            atomic_store_explicit(&This->host_announced_rate, rate, memory_order_release);
+            pipeasio_host_call_sample_rate(&token, rate);
+        }
+
         /* Read only while admitted: Start writes host_buffer_index after
          * draining the host gate, which rejected callbacks are not part of. */
         half = This->host_buffer_index;
@@ -2494,9 +2515,14 @@ sample_rate_callback(audio_nframes_t nframes, void *arg)
 {
     IPipeASIOImpl           *This = (IPipeASIOImpl *)arg;
     pipeasio_host_call_token token;
+    /* The store must survive pre-publication activation: the filter runs
+     * from CreateBuffers, before callbacks are published or the state is
+     * Running, and the backend will not repeat a stable rate.  GetSampleRate
+     * must report the measured graph rate regardless of delivery. */
+    atomic_store_explicit(&This->host_sample_rate, nframes, memory_order_release);
     if (pipeasio_host_call_begin(This, PIPEASIO_HOST_SAMPLE_RATE, &token))
     {
-        atomic_store_explicit(&This->host_sample_rate, nframes, memory_order_release);
+        atomic_store_explicit(&This->host_announced_rate, nframes, memory_order_release);
         pipeasio_host_call_sample_rate(&token, nframes);
     }
     pipeasio_host_call_end(&token);
@@ -2650,6 +2676,7 @@ PipeASIOCreateInstance(REFIID riid, LPVOID *ppobj)
     atomic_init(&pobj->host_callbacks, NULL);
     atomic_init(&pobj->host_num_samples, 0);
     atomic_init(&pobj->host_sample_rate, 0);
+    atomic_init(&pobj->host_announced_rate, 0);
     atomic_init(&pobj->host_time_stamp, 0);
     atomic_init(&pobj->config_pending, false);
     atomic_init(&pobj->follower_quantum, 0);
