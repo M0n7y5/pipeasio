@@ -158,6 +158,29 @@ jobs:
               } >> "$GITHUB_ENV"
               echo "CFLAGS=$CFLAGS"
               echo "LDFLAGS=$LDFLAGS"
+          # Debian stable: same dpkg toolchain as Ubuntu but older Wine and a
+          # PipeWire at the project's 1.4.2 floor - the layout reported broken
+          # in issue #20's follow-up (test hosts vs libwine-dev header split).
+          - name: debian
+            image: debian:stable
+            install: >-
+              export DEBIAN_FRONTEND=noninteractive;
+              apt-get update -qq &&
+              apt-get install -y --no-install-recommends
+              cmake ninja-build gcc g++ pkg-config
+              wine64-tools libwine-dev libpipewire-0.3-dev pipewire
+              dpkg-dev git ca-certificates
+            flags: |
+              set -euo pipefail
+              export DEB_BUILD_MAINT_OPTIONS=hardening=+all
+              CFLAGS="$(dpkg-buildflags --get CFLAGS) $(dpkg-buildflags --get CPPFLAGS)"
+              LDFLAGS="$(dpkg-buildflags --get LDFLAGS)"
+              {
+                echo "CFLAGS=$CFLAGS"
+                echo "LDFLAGS=$LDFLAGS"
+              } >> "$GITHUB_ENV"
+              echo "CFLAGS=$CFLAGS"
+              echo "LDFLAGS=$LDFLAGS"
     steps:
       - name: Install toolchain
         run: ${{ matrix.install }}
