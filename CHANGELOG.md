@@ -4,6 +4,29 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.4.2] - 2026-08-05
+
+### Fixed
+
+- Building from source on Debian works out of the box
+  ([#20](https://github.com/M0n7y5/pipeasio/issues/20) follow-up). The
+  `asio_probe` / `asio_loopback` test hosts failed with `windows.h: No such
+  file or directory` because winegcc compiled them without the probed Wine
+  SDK include dirs, and stock Debian could not even configure because its
+  Wine tools are named `winebuild-stable` / `winegcc-stable` (the unsuffixed
+  copies live off-PATH in `/usr/lib/wine`). Include propagation and tool
+  discovery now handle the Debian and WineHQ `/opt` layouts.
+- The `asio_probe_rt` test failed instead of skipping on machines where a
+  PipeWire daemon is reachable but Wine or the installed driver is absent
+  (e.g. a distrobox sharing the host PipeWire socket).
+
+### Added
+
+- Debian stable joined the CI build matrix and the `tests/distro` harness:
+  the driver and both Wine test hosts now build against Debian's real
+  hardening flags, Wine tool naming, and the PipeWire 1.4.2 floor on every
+  push.
+
 ## [1.4.1] - 2026-08-05
 
 ### Fixed
@@ -446,7 +469,8 @@ the driver loads inside the Steam Runtime container that Proton uses.
 - Hardened channel-count limits from both the INI and the environment overrides,
   and tightened COM teardown and several NULL and error paths.
 
-[Unreleased]: https://github.com/M0n7y5/pipeasio/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/M0n7y5/pipeasio/compare/v1.4.2...HEAD
+[1.4.2]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.4.2
 [1.4.1]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.4.1
 [1.4.0]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.4.0
 [1.3.0]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.3.0
