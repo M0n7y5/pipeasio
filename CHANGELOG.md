@@ -4,6 +4,25 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.4.1] - 2026-08-05
+
+### Fixed
+
+- "Follow PipeWire" sample rate no longer sticks to 48 kHz
+  ([#20](https://github.com/M0n7y5/pipeasio/issues/20)). The driver now reads
+  the graph's clock rate from the PipeWire `settings` metadata
+  (`clock.force-rate`, else `clock.rate`) before the stream runs, and while
+  running treats the position clock as authoritative: the measured rate always
+  reaches `GetSampleRate()`, and a `sampleRateChanged` that could not be
+  delivered while the driver was still preparing is sent on the first running
+  cycle. Hosts such as Adobe Audition no longer run at 48 kHz timing while the
+  graph plays at another rate (sped-up or slowed-down playback).
+- The settings panel's latency readout resolves the graph's actual clock rate
+  when "Follow PipeWire" is selected instead of assuming 48 kHz.
+- The ASIO probe now fails when the reported sample rate diverges from the
+  measured sample cadence by more than 5%, so a rate misreport can no longer
+  hide inside the cycle-count tolerance.
+
 ## [1.4.0] - 2026-08-04
 
 ### Added
@@ -427,7 +446,8 @@ the driver loads inside the Steam Runtime container that Proton uses.
 - Hardened channel-count limits from both the INI and the environment overrides,
   and tightened COM teardown and several NULL and error paths.
 
-[Unreleased]: https://github.com/M0n7y5/pipeasio/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/M0n7y5/pipeasio/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.4.1
 [1.4.0]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.4.0
 [1.3.0]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.3.0
 [1.2.3]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.2.3
