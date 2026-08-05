@@ -363,6 +363,18 @@ helper_mode(const QStringList &arguments)
                    stdout);
         return 0;
     }
+    if (mode == QStringLiteral("--devices-44k"))
+    {
+        std::fputs("[{\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
+                   "{\"media.class\":\"Audio/Sink\",\"node.name\":\"saved.sink\","
+                   "\"node.description\":\"Saved Sink\"}}},"
+                   "{\"id\":31,\"type\":\"PipeWire:Interface:Metadata\",\"props\":"
+                   "{\"metadata.name\":\"settings\"},\"metadata\":["
+                   "{\"subject\":0,\"key\":\"clock.rate\",\"type\":\"\",\"value\":44100},"
+                   "{\"subject\":0,\"key\":\"clock.force-rate\",\"type\":\"\",\"value\":0}]}]",
+                   stdout);
+        return 0;
+    }
     if (mode == QStringLiteral("--empty"))
     {
         std::fputs("[]", stdout);
@@ -528,6 +540,34 @@ test_dialog_loading_state()
     }
 }
 
+/* Issue #20 follow-up: with "Follow PipeWire" selected the latency readout
+ * must use the graph clock rate from the pw-dump snapshot, not 48 kHz. */
+static void
+test_latency_follows_graph_rate()
+{
+    CHECK(Config::save(Config::defaults())); /* sample_rate=0, buffer 1024 */
+
+    SettingsDialogOptions options;
+    options.monitorEnabled          = false;
+    options.deviceRequest.program   = QCoreApplication::applicationFilePath();
+    options.deviceRequest.arguments = { QStringLiteral("--devices-44k") };
+    options.deviceRequest.timeoutMs = 1000;
+
+    SettingsDialog dialog(nullptr, options);
+    auto          *output  = dialog.findChild<QComboBox *>(QStringLiteral("outputDevice"));
+    auto          *latency = dialog.findChild<QLabel *>(QStringLiteral("latency"));
+    auto          *rate    = dialog.findChild<QComboBox *>(QStringLiteral("sampleRate"));
+    CHECK(output && latency && rate);
+    CHECK(rate->currentData().toInt() == 0); /* "Follow PipeWire" */
+    CHECK(wait_until_enabled(output));
+    /* 1024 * 1000 / 44100 = 23.2 ms; the pre-fix label showed 21.3 (48 kHz). */
+    CHECK(latency->text() == QStringLiteral("23.2 ms"));
+
+    /* A fixed rate still wins over the graph rate. */
+    rate->setCurrentIndex(rate->findData(96000));
+    CHECK(latency->text() == QStringLiteral("10.7 ms"));
+}
+
 static void
 test_tooltip_wrapping()
 {
@@ -647,6 +687,7 @@ main(int argc, char **argv)
     test_resolve_connections();
     test_async_enumerator();
     test_dialog_loading_state();
+    test_latency_follows_graph_rate();
     test_tooltip_wrapping();
     test_monitor_transient_hold();
 

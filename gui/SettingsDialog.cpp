@@ -167,6 +167,7 @@ SettingsDialog::buildSettingsTab()
                           "more CPU and a higher risk of dropouts (xruns)."));
 
     m_latency = new QLabel(page);
+    m_latency->setObjectName(QStringLiteral("latency"));
     addRow(QStringLiteral("Latency"), m_latency,
            QStringLiteral("Length of one buffer (buffer size / sample rate), the driver's "
                           "approximate one-way latency. Read-only."));
