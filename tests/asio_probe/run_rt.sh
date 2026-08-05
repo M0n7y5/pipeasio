@@ -274,7 +274,23 @@ positive_control_xrun() {
         sleep 0.05
     done
     if ! grep -q 'Start OK' "$log" 2>/dev/null; then
+        local rc=
+        if kill -0 "$probe_pid" 2>/dev/null; then
+            kill "$probe_pid" 2>/dev/null || true
+            wait "$probe_pid" 2>/dev/null || true
+        else
+            # Propagate the runner's own SKIP (77: no wine, no installed
+            # driver) instead of failing - a daemon can be reachable while
+            # the Wine side is absent (e.g. a distrobox sharing the host
+            # PipeWire socket).
+            wait "$probe_pid" 2>/dev/null && rc=0 || rc=$?
+        fi
+        probe_pid=
         cat "$log"
+        if [[ "${rc:-}" == 77 ]]; then
+            echo "[rt] positive-control: runner preconditions unmet -> SKIP" >&2
+            exit 77
+        fi
         echo "[rt] positive-control: probe never reached Start" >&2
         return 1
     fi
