@@ -1,6 +1,19 @@
 # Wine PE probe host.
 
-find_program(WINEGCC winegcc REQUIRED)
+# Same tool-name variants as cmake/WineDLL.cmake (cache-shared when in-tree).
+find_program(WINEGCC
+    NAMES winegcc winegcc-stable winegcc-development winegcc-staging
+    PATHS /usr/lib/wine /opt/wine-devel/bin /opt/wine-stable/bin /opt/wine-staging/bin
+    REQUIRED)
+
+# winegcc compiles this host from source, so it needs the same probed Wine SDK
+# include dirs the driver objects get: its builtin header path misses layouts
+# like Debian's libwine-dev split or a WineHQ /opt SDK ("windows.h: No such
+# file or directory").  Empty when the probe used winegcc's own prefix.
+set(_probe_wine_includes "")
+foreach(_dir IN LISTS WINE_INCLUDE_DIRS)
+    list(APPEND _probe_wine_includes "-I${_dir}")
+endforeach()
 
 set(PROBE_SRC  "${CMAKE_CURRENT_SOURCE_DIR}/asio_probe.c")
 set(PROBE_OUT  "${CMAKE_CURRENT_BINARY_DIR}/asio_probe.exe.so")
@@ -26,6 +39,7 @@ add_wine_dll(
 add_custom_command(
     OUTPUT  "${PROBE_OUT}"
     COMMAND ${WINEGCC} -m64 -mno-cygwin -mconsole
+                       ${_probe_wine_includes}
                        -O0 -g -Wall -Wextra
                        "${PROBE_SRC}"
                        -lole32

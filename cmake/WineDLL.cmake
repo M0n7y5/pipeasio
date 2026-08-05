@@ -17,8 +17,19 @@
 #   lib/wine/x86_64-windows/${NAME}.dll  + pipeasio.dll  symlink
 #   lib/wine/x86_64-unix/${NAME}.dll.so  + pipeasio.dll.so  symlink
 
-find_program(WINEBUILD winebuild REQUIRED)
-find_program(WINEGCC   winegcc   REQUIRED)
+# Debian ships the tools as winebuild-stable / winegcc-stable on PATH (the
+# unsuffixed names sit off-PATH in /usr/lib/wine); Debian's wine-development
+# branch suffixes -development; WineHQ /opt packages keep unsuffixed tools in
+# their own prefix.  Plain names win when several are present (issue #20
+# follow-up: Debian could not even configure without hand edits).
+set(_wine_tool_paths /usr/lib/wine
+    /opt/wine-devel/bin /opt/wine-stable/bin /opt/wine-staging/bin)
+find_program(WINEBUILD
+    NAMES winebuild winebuild-stable winebuild-development winebuild-staging
+    PATHS ${_wine_tool_paths} REQUIRED)
+find_program(WINEGCC
+    NAMES winegcc winegcc-stable winegcc-development winegcc-staging
+    PATHS ${_wine_tool_paths} REQUIRED)
 
 # Probe for Wine include directories.  An SDK root R holds "wine/debug.h" plus
 # the Win32 headers, under "R/wine/windows" (Arch, Fedora, winehq, upstream
