@@ -349,7 +349,7 @@ wow64_rt_process(audio_nframes_t nframes, void *arg)
             if (cc->out_port[i])
                 audio_port_publish_output(cc->out_port[i], NULL, nframes, false, false);
         pthread_mutex_unlock(&cc->prod_mutex);
-        return 0;
+        return 1; /* no host buffer bound: nothing consumed this cycle */
     }
     for (uint32_t i = 0; i < cc->n_in; ++i)
         if (cc->in_active[i] && cc->in_port[i])
@@ -382,7 +382,7 @@ wow64_rt_process(audio_nframes_t nframes, void *arg)
         cc->half = !half;
     bridge_complete_locked(cc);
     pthread_mutex_unlock(&cc->prod_mutex);
-    return 0;
+    return admitted ? 0 : 1;
 }
 
 static int
@@ -589,6 +589,20 @@ wow64_default_changed(void *args)
     if (!cc)
         return STATUS_INVALID_HANDLE;
     p->result = audio_default_changed(cc->client) ? 1 : 0;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+wow64_latency_changed(void *args)
+{
+    pa_simple_params *p = args;
+    client_ctx       *cc;
+
+    PAU_CHECK(p);
+    cc = cc_get(p->client);
+    if (!cc)
+        return STATUS_INVALID_HANDLE;
+    p->result = audio_latency_changed(cc->client) ? 1 : 0;
     return STATUS_SUCCESS;
 }
 
@@ -954,7 +968,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] = {
     wow64_default_changed,
     wow64_port_register,
     wow64_port_unregister,
-    wow64_reserved,
+    wow64_latency_changed,
     wow64_reserved,
     wow64_reserved,
     wow64_port_latency_range,
@@ -988,7 +1002,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] = {
     wow64_default_changed,
     wow64_port_register,
     wow64_port_unregister,
-    wow64_reserved,
+    wow64_latency_changed,
     wow64_reserved,
     wow64_reserved,
     wow64_port_latency_range,

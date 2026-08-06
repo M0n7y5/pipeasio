@@ -60,8 +60,10 @@
 #define PIPEASIO_DEFAULT_FOLLOW_DEVICE_CLOCK false
 #define PIPEASIO_DEFAULT_REALTIME false
 
-/* --- Buffer-size bounds accepted by every driver path --------------------- */
-#define PIPEASIO_MIN_BUFFER_SIZE 16
+/* --- Buffer-size bounds accepted by every driver path ---------------------
+ * Hosts choke on ASIO buffers below 32 (Max/MSP crashes outright) and RS_ASIO
+ * rounds every request to a multiple of 32 anyway. */
+#define PIPEASIO_MIN_BUFFER_SIZE 32
 #define PIPEASIO_MAX_BUFFER_SIZE 8192
 
 static inline bool

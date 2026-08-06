@@ -49,7 +49,7 @@ enum pa_call
     PAU_DEFAULT_CHANGED,
     PAU_PORT_REGISTER,
     PAU_PORT_UNREGISTER,
-    PAU_RESERVED_12,
+    PAU_LATENCY_CHANGED, /* was PAU_RESERVED_12; pa_simple_params, result = bool */
     PAU_RESERVED_13,
     PAU_RESERVED_14,
     PAU_PORT_LATENCY_RANGE,

@@ -59,6 +59,9 @@ typedef enum
 
 /* Callback signatures */
 
+/* Returns 0 when the ASIO host consumed the cycle, nonzero when it did not (no
+ * buffers, or stopped).  The backend uses this to tell a real xrun apart from
+ * the idle cycles of a deliberate Stop. */
 typedef int (*audio_process_cb)(audio_nframes_t nframes, void *arg);
 typedef int (*audio_sample_rate_cb)(audio_nframes_t nframes, void *arg);
 
@@ -138,6 +141,12 @@ bool audio_port_publish_output(audio_port_t *port, const audio_sample_t *source,
  * the "default" metadata switches to a different node after the initial fill).
  * Lets the ASIO side trigger a reconnect when the user follows the default. */
 bool audio_default_changed(audio_client_t *client);
+/* Returns and clears the "a peer moved its SPA_PARAM_Latency" flag. The ASIO
+ * side relays it as kAsioLatenciesChanged so a host re-reads GetLatencies
+ * instead of compensating with a stale figure. */
+bool audio_latency_changed(audio_client_t *client);
+/* Combined graph latency for one direction, in samples: our own buffer period
+ * plus whatever the connected device chain reports. */
 void audio_port_get_latency_range(audio_port_t *port, uint32_t mode, audio_latency_range_t *range);
 
 /* Callbacks */

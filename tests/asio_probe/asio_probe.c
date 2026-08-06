@@ -713,8 +713,42 @@ main(void)
     asio->lpVtbl->GetSampleRate(asio, &rate);
     fprintf(stderr, "[probe] current sample rate: %.0f\n", rate);
 
-    /* CanSampleRate(48000)? if not, fall through with current rate */
-    rc = asio->lpVtbl->CanSampleRate(asio, 48000.0);
+    /* Rate capability contract.  The live rate must always be offered, and
+     * pathological values refused without crashing (hosts really do ask:
+     * FlexASIO issue #135 came from Audio Precision APx500).  Any rate reported
+     * available must also be settable. */
+    int                 rate_caps_ok = (asio->lpVtbl->CanSampleRate(asio, rate) == 0);
+    static const double bogus[]      = { 0.0, -1.0, 1.0e9, 12345.0 };
+    for (size_t i = 0; i < sizeof bogus / sizeof bogus[0]; i++)
+        if (asio->lpVtbl->CanSampleRate(asio, bogus[i]) == 0)
+        {
+            fprintf(stderr, "[probe] CanSampleRate(%.0f) wrongly accepted\n", bogus[i]);
+            rate_caps_ok = 0;
+        }
+    double alt           = rate == 48000.0 ? 44100.0 : 48000.0;
+    int    alt_available = (asio->lpVtbl->CanSampleRate(asio, alt) == 0);
+    fprintf(stderr, "[probe] rate caps: live=%.0f ok alt=%.0f %s -> %s\n", rate, alt,
+            alt_available ? "available" : "unavailable", rate_caps_ok ? "ok" : "BAD");
+
+    /* Opt-in end-to-end rate switch (PROBE_SET_RATE=44100).  Left off by
+     * default so the standard run keeps measuring the graph's own rate. */
+    const char *set_rate = getenv("PROBE_SET_RATE");
+    if (set_rate && *set_rate)
+    {
+        double want = atof(set_rate);
+        LONG   src  = asio->lpVtbl->SetSampleRate(asio, want);
+        double back = 0.0;
+        asio->lpVtbl->GetSampleRate(asio, &back);
+        fprintf(stderr, "[probe] SetSampleRate(%.0f): rc=%ld GetSampleRate=%.0f -> %s\n", want,
+                (long)src, back, (src == 0 && back == want) ? "ok" : "BAD");
+        if (src != 0 || back != want)
+            rate_caps_ok = 0;
+        rate = back;
+    }
+
+    /* CanSampleRate(48000)? if not, fall through with current rate.  Skipped
+     * when PROBE_SET_RATE already chose one, so it is not undone here. */
+    rc = (set_rate && *set_rate) ? -1 : asio->lpVtbl->CanSampleRate(asio, 48000.0);
     if (rc == 0)
     {
         rc = asio->lpVtbl->SetSampleRate(asio, 48000.0);
@@ -859,6 +893,17 @@ main(void)
     fprintf(stderr, "[probe] GetSamplePosition: rc=%ld hi=%lu lo=%lu -> %s\n", (long)rc,
             (unsigned long)spos.hi, (unsigned long)spos.lo, spos_ok ? "ok" : "BAD");
 
+    /* Re-query GetLatencies now the graph has settled.  The first reading runs
+     * before PipeWire has pushed each peer's SPA_PARAM_Latency, so it can only
+     * show our own buffer period; once linked to a real device the figure must
+     * grow, and never drop below one buffer period either way. */
+    LONG inLat2 = 0, outLat2 = 0;
+    LONG lat_rc     = asio->lpVtbl->GetLatencies(asio, &inLat2, &outLat2);
+    int  latency_ok = (lat_rc == 0 && inLat2 >= prefBs && outLat2 >= prefBs && inLat2 >= inLat
+                       && outLat2 >= outLat);
+    fprintf(stderr, "[probe] latencies settled: in=%ld out=%ld (was in=%ld out=%ld) -> %s\n",
+            (long)inLat2, (long)outLat2, (long)inLat, (long)outLat, latency_ok ? "ok" : "BAD");
+
     /* Reported/post-activation rate must equal the measured graph rate.  5%
      * discriminates 44.1k from 48k (8.8% apart) with margin over Sleep and
      * GetTickCount jitter.  The deliberate xrun-stall leg skews the cadence,
@@ -982,7 +1027,7 @@ main(void)
     LONG expected = (LONG)((rate / prefBs) * seconds);
     LONG ok       = (g_cycles >= expected / 2) && future_ok && spos_ok && contract_ok && thread_ok
                     && stop_ok && first_index_ok && concurrent_stop_ok && restart_ok && rt_worker_ok
-                    && rate_ok;
+                    && rate_ok && latency_ok && rate_caps_ok;
     fprintf(stderr, "[probe] expected ~%ld cycles, got %ld -> %s\n", (long)expected, (long)g_cycles,
             ok ? "PASS" : "FAIL");
     return ok ? 0 : 2;

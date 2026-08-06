@@ -41,6 +41,7 @@
 #include <pipewire/extensions/metadata.h>
 #include <spa/utils/json.h>
 #include <spa/param/audio/format-utils.h>
+#include <spa/param/latency-utils.h>
 #include <spa/pod/builder.h>
 
 #include <errno.h>
@@ -307,6 +308,16 @@ struct audio_client
     _Atomic uint32_t   diagnostic_rate_denom;
     _Atomic uint64_t   diagnostic_cycle;
     _Atomic uint64_t   diagnostic_thread;
+    _Atomic uint32_t   xrun_count;          /* cycles we missed, this activation */
+    uint64_t           last_clock_position; /* previous cycle's clock.position */
+    uint32_t           last_clock_id;       /* timeline the position belongs to */
+
+    /* Latency the connected device chain reports, per direction, in samples.
+     * Written on the filter loop from a peer's SPA_PARAM_Latency, read by
+     * GetLatencies on a COM thread, hence atomic.  Indexed
+     * [AUDIO_CAPTURE_LATENCY, AUDIO_PLAYBACK_LATENCY]. */
+    _Atomic uint32_t device_latency[2];
+    _Atomic bool     latency_changed;
 
     /* Registry walker */
 
@@ -368,13 +379,12 @@ struct audio_node_info
 
 struct audio_port
 {
-    audio_client_t       *client;
-    char                 *name;
-    char                 *port_name;
-    char                 *node_name;
-    uint32_t              port_id;
-    uint64_t              flags;
-    audio_latency_range_t latency[2]; /* [CAPTURE, PLAYBACK] */
+    audio_client_t *client;
+    char           *name;
+    char           *port_name;
+    char           *node_name;
+    uint32_t        port_id;
+    uint64_t        flags;
 
     /* PipeWire port handle */
 
@@ -399,11 +409,14 @@ static void audio_on_state_changed(void *userdata, enum pw_filter_state old,
 
 static void audio_on_process(void *userdata, struct spa_io_position *position);
 
+static void audio_on_param_changed(void *userdata, void *port_data, uint32_t id,
+                                   const struct spa_pod *param);
+
 static const struct pw_filter_events audio_filter_events = {
     PW_VERSION_FILTER_EVENTS,
     .state_changed = audio_on_state_changed,
-
-    .process = audio_on_process,
+    .param_changed = audio_on_param_changed,
+    .process       = audio_on_process,
 };
 
 /* Core and registry event forward declarations. */
@@ -715,10 +728,20 @@ audio_activate(audio_client_t *c)
         ERR("pw_properties_new (filter) failed\n");
         goto fail;
     }
+    /* Force pins the value we want, lock stops another client moving it while we
+     * run.  We are scheduled synchronously, so a quantum we did not ask for is a
+     * glitch we cannot absorb.  Follow-device mode takes the device's quantum on
+     * purpose and locks neither. */
     if (!c->follow_device)
+    {
         pw_properties_setf(filter_props, PW_KEY_NODE_FORCE_QUANTUM, "%u", (unsigned)bsize_samples);
+        pw_properties_set(filter_props, PW_KEY_NODE_LOCK_QUANTUM, "true");
+    }
     if (c->forced_rate)
+    {
         pw_properties_setf(filter_props, PW_KEY_NODE_FORCE_RATE, "%u", (unsigned)c->forced_rate);
+        pw_properties_set(filter_props, PW_KEY_NODE_LOCK_RATE, "true");
+    }
     audio_nframes_t sample_rate = atomic_load_explicit(&c->sample_rate, memory_order_acquire);
     pw_properties_setf(filter_props, PW_KEY_NODE_LATENCY, "%u/%u", (unsigned)bsize_samples,
                        (unsigned)sample_rate);
@@ -780,7 +803,13 @@ audio_activate(audio_client_t *c)
         *(audio_port_ref_t *)p->pw_filter_port = p;
     }
 
-    if (pw_filter_connect(c->filter, PW_FILTER_FLAG_NONE, NULL, 0) < 0)
+    /* CUSTOM_LATENCY is the only way a filter is told what its peers report.
+     * Without it pw_filter swallows every SPA_PARAM_Latency (filter.c sets
+     * emit=false) and runs default_latency(), which only recombines what we
+     * published ourselves.  With the flag the values reach
+     * audio_on_param_changed and GetLatencies can report the real device
+     * delay. */
+    if (pw_filter_connect(c->filter, PW_FILTER_FLAG_CUSTOM_LATENCY, NULL, 0) < 0)
     {
         pw_thread_loop_unlock(c->loop);
         ERR("pw_filter_connect failed\n");
@@ -870,16 +899,15 @@ audio_activate(audio_client_t *c)
         usleep(20 * 1000);
     }
 
-    /* Static latency: one buffer-period in either direction.  Refine
-     * later via SPA_IO_Latency events if a host actually queries them. */
-    for (uint32_t i = 0; i < c->n_ports; i++)
-    {
-        audio_port_t *p                        = c->ports[i];
-        p->latency[AUDIO_CAPTURE_LATENCY].min  = c->buffer_size;
-        p->latency[AUDIO_CAPTURE_LATENCY].max  = c->buffer_size;
-        p->latency[AUDIO_PLAYBACK_LATENCY].min = c->buffer_size;
-        p->latency[AUDIO_PLAYBACK_LATENCY].max = c->buffer_size;
-    }
+    /* Device latency starts unknown, so GetLatencies reports our own buffer
+     * period alone until the first peer SPA_PARAM_Latency lands.  Clear it per
+     * activation: the previous run's device may be gone. */
+    atomic_store_explicit(&c->device_latency[AUDIO_CAPTURE_LATENCY], 0, memory_order_relaxed);
+    atomic_store_explicit(&c->device_latency[AUDIO_PLAYBACK_LATENCY], 0, memory_order_relaxed);
+    atomic_store_explicit(&c->latency_changed, false, memory_order_relaxed);
+    atomic_store_explicit(&c->xrun_count, 0, memory_order_relaxed);
+    c->last_clock_position = 0;
+    c->last_clock_id       = 0;
 
     c->active = true;
     TRACE("audio_activate: %u ports, %u-sample buffers, %u Hz\n", c->n_ports, c->buffer_size,
@@ -1260,12 +1288,28 @@ audio_port_get_latency_range(audio_port_t *p, uint32_t mode, audio_latency_range
 {
     if (!range)
         return;
-    if (!p)
+    if (!p || !p->client)
     {
         range->min = range->max = 0;
         return;
     }
-    *range = p->latency[mode == AUDIO_PLAYBACK_LATENCY ? 1 : 0];
+    /* One buffer period is ours: a captured frame is that old by the time the
+     * host sees it, and a played frame waits that long before we hand it on.
+     * Everything past our ports is what the device chain reported. */
+    const uint32_t idx
+            = mode == AUDIO_PLAYBACK_LATENCY ? AUDIO_PLAYBACK_LATENCY : AUDIO_CAPTURE_LATENCY;
+    const uint32_t total
+            = p->client->buffer_size
+              + atomic_load_explicit(&p->client->device_latency[idx], memory_order_acquire);
+    range->min = range->max = total;
+}
+
+bool
+audio_latency_changed(audio_client_t *client)
+{
+    if (!client)
+        return false;
+    return atomic_exchange_explicit(&client->latency_changed, false, memory_order_acq_rel);
 }
 
 /* Callbacks. */
@@ -1399,10 +1443,60 @@ audio_on_state_changed(void *userdata, enum pw_filter_state old, enum pw_filter_
         pw_thread_loop_signal(c->loop, false);
 }
 
+/* Convert one direction of a spa_latency_info to samples.  The three terms are
+ * additive (spa/param/latency.h): whole graph quanta, a raw sample count, and
+ * nanoseconds.  Take the max end of each, which is the figure an ASIO host
+ * needs for delay compensation. */
+static uint32_t
+audio_latency_info_samples(const struct spa_latency_info *info, uint32_t quantum, uint32_t rate)
+{
+    double samples = (double)info->max_quantum * (double)quantum;
+    samples += (double)info->max_rate;
+    if (rate)
+        samples += (double)info->max_ns * (double)rate / 1000000000.0;
+    if (!(samples > 0.0))
+        return 0;
+    if (samples > (double)UINT32_MAX)
+        return UINT32_MAX;
+    return (uint32_t)(samples + 0.5);
+}
+
+static void
+audio_on_param_changed(void *userdata, void *port_data, uint32_t id, const struct spa_pod *param)
+{
+    audio_client_t         *c = userdata;
+    struct spa_latency_info info;
+
+    /* Global (port_data == NULL) params carry no port latency. */
+    if (id != SPA_PARAM_Latency || !param || !port_data)
+        return;
+    if (spa_latency_parse(param, &info) < 0)
+        return;
+
+    /* pw_filter forwards the direction opposite to the port's own, so an
+     * OUTPUT-direction info is the capture chain feeding our inputs and an
+     * INPUT-direction one is the playback chain behind our outputs.  Ports on
+     * the same side report the same figure; keep the worst case. */
+    const uint32_t idx     = info.direction == SPA_DIRECTION_OUTPUT ? AUDIO_CAPTURE_LATENCY
+                                                                    : AUDIO_PLAYBACK_LATENCY;
+    const uint32_t rate    = atomic_load_explicit(&c->sample_rate, memory_order_acquire);
+    const uint32_t quantum = c->buffer_size;
+    const uint32_t samples = audio_latency_info_samples(&info, quantum, rate);
+
+    uint32_t previous = atomic_load_explicit(&c->device_latency[idx], memory_order_relaxed);
+    if (samples <= previous)
+        return;
+    atomic_store_explicit(&c->device_latency[idx], samples, memory_order_release);
+    atomic_store_explicit(&c->latency_changed, true, memory_order_release);
+    TRACE("latency: %s device chain %u samples (was %u)\n",
+          idx == AUDIO_CAPTURE_LATENCY ? "capture" : "playback", samples, previous);
+}
+
 enum
 {
     AUDIO_DIAGNOSTIC_QUANTUM = 1u,
-    AUDIO_DIAGNOSTIC_TRACE   = 2u
+    AUDIO_DIAGNOSTIC_TRACE   = 2u,
+    AUDIO_DIAGNOSTIC_XRUN    = 4u
 };
 
 static void
@@ -1416,6 +1510,9 @@ audio_diagnostic_event(void *data, uint64_t count)
     (void)count;
     if (kind & AUDIO_DIAGNOSTIC_QUANTUM)
         WARN("PipeWire quantum %u differs from host buffer size %u\n", quantum, buffer_size);
+    if (kind & AUDIO_DIAGNOSTIC_XRUN)
+        WARN("xrun: missed the cycle deadline (%u this activation, buffer size %u)\n",
+             atomic_load_explicit(&client->xrun_count, memory_order_acquire), buffer_size);
     if (kind & AUDIO_DIAGNOSTIC_TRACE)
         TRACE("process: cycle=%lu tid=%lx buffer_size=%u quantum=%u rate=%u/%u\n",
               (unsigned long)atomic_load_explicit(&client->diagnostic_cycle, memory_order_acquire),
@@ -1500,8 +1597,41 @@ audio_on_process(void *userdata, struct spa_io_position *position)
             audio_signal_diagnostic(c, AUDIO_DIAGNOSTIC_TRACE, quantum, position);
     }
 
-    if (c->process_cb)
-        c->process_cb(c->buffer_size, c->process_cb_arg);
+    const bool delivered
+            = c->process_cb ? c->process_cb(c->buffer_size, c->process_cb_arg) == 0 : false;
+
+    /* Count cycles the host was due but did not get.  SPA_IO_CLOCK_FLAG_XRUN_RECOVER
+     * cannot serve here: impl-node.c only sets it around the driver node's own
+     * process_node, and we are deliberately a follower.  clock.position instead
+     * advances one duration per cycle, so a larger gap is the cycles our
+     * bufferSwitch was too slow for.  Only judge that at our steady quantum
+     * (renegotiation is not a dropout), across one clock.id (a new driver
+     * rebases the timeline), and when the host consumed both cycles (a
+     * deliberate Stop is idle, not late).  Report the first, then every 64th. */
+    if (delivered && position && quantum && quantum == c->buffer_size)
+    {
+        const uint64_t pos = position->clock.position;
+        if (position->clock.id != c->last_clock_id)
+        {
+            c->last_clock_id       = position->clock.id;
+            c->last_clock_position = 0;
+        }
+        if (c->last_clock_position && pos > c->last_clock_position)
+        {
+            const uint64_t cycles = (pos - c->last_clock_position) / quantum;
+            const uint32_t missed = cycles > 1 ? (uint32_t)(cycles - 1) : 0;
+            if (missed)
+            {
+                uint32_t n = atomic_fetch_add_explicit(&c->xrun_count, missed, memory_order_relaxed)
+                             + missed;
+                if (n == missed || (n % 64) < missed)
+                    audio_signal_diagnostic(c, AUDIO_DIAGNOSTIC_XRUN, quantum, position);
+            }
+        }
+        c->last_clock_position = pos;
+    }
+    else
+        c->last_clock_position = 0;
     for (uint32_t i = 0; i < c->n_ports; ++i)
     {
         audio_port_t *port = c->ports[i];

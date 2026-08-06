@@ -309,6 +309,9 @@ typedef struct IPipeASIOImpl
     BOOL             host_time_info_mode;
     _Atomic uint64_t host_time_stamp;
     LONG             host_version;
+    /* Rate the host asked for through SetSampleRate, 0 = none.  Applied on the
+     * next activation when config.ini does not pin a rate of its own. */
+    _Atomic uint32_t host_requested_rate;
 
     /* PipeASIO configuration options */
     int  pipeasio_number_inputs;
@@ -998,6 +1001,21 @@ config_watch_proc(LPVOID arg)
             }
             pipeasio_host_call_end(&token);
         }
+        else if (This->host_driver_state == Running && audio_latency_changed(This->audio_client))
+        {
+            /* The device chain moved without needing a rebuild, so the host only
+             * has to re-read GetLatencies.  Selector 6 is kAsioLatenciesChanged;
+             * the else-if skips it when a reset is already going out, which
+             * re-queries anyway. */
+            pipeasio_host_call_token token;
+            TRACE("config watcher: latency changed, notifying host\n");
+            if (pipeasio_host_call_begin(This, PIPEASIO_HOST_CONFIG_RESET, &token))
+            {
+                if (pipeasio_host_call_notify(&token, 1, 6, NULL, NULL))
+                    pipeasio_host_call_notify(&token, 6, 0, NULL, NULL);
+            }
+            pipeasio_host_call_end(&token);
+        }
     }
     config_watch_release(w);
     return 0;
@@ -1187,6 +1205,17 @@ set_last_error(IPipeASIOImpl *This, const char *fmt, ...)
     LeaveCriticalSection(&This->config_lock);
 }
 
+/* The rate handed to the backend on the next activation.  config.ini's
+ * sample_rate is an explicit user pin and outranks the host; with no pin (0 =
+ * follow graph) a rate the host set through SetSampleRate applies instead. */
+static audio_nframes_t
+effective_forced_rate(IPipeASIOImpl *This)
+{
+    if (This->pipeasio_sample_rate)
+        return (audio_nframes_t)This->pipeasio_sample_rate;
+    return (audio_nframes_t)atomic_load_explicit(&This->host_requested_rate, memory_order_acquire);
+}
+
 /* sysRef is 0 on OS/X; on Windows it is the application's main window handle.
  * Returns 0 on error, 1 on success. */
 
@@ -1256,7 +1285,7 @@ Init(LPPIPEASIO iface, void *sysRef)
         goto fail;
     }
 
-    audio_set_forced_rate(This->audio_client, (audio_nframes_t)This->pipeasio_sample_rate);
+    audio_set_forced_rate(This->audio_client, effective_forced_rate(This));
     audio_set_follow_device(This->audio_client, This->pipeasio_follow_device_clock);
     audio_set_realtime(This->audio_client, This->pipeasio_realtime);
     atomic_store_explicit(&This->host_sample_rate, audio_get_sample_rate(This->audio_client),
@@ -1718,6 +1747,26 @@ GetBufferSize(LPPIPEASIO iface, LONG *minSize, LONG *maxSize, LONG *preferredSiz
     return 0;
 }
 
+/* A rate the driver can put the graph on: the live one always, plus the standard
+ * set when nothing pins us.  config.ini's sample_rate and follow_device_clock
+ * are user pins and win over the host, the same way fixed_buffer_size wins over
+ * a host-chosen buffer size. */
+static bool
+rate_is_available(IPipeASIOImpl *This, double sampleRate)
+{
+    static const uint32_t standard[] = { 44100, 48000, 88200, 96000, 176400, 192000 };
+
+    uint32_t current = atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
+    if (sampleRate == (double)current)
+        return true;
+    if (This->pipeasio_sample_rate || This->pipeasio_follow_device_clock)
+        return false;
+    for (size_t i = 0; i < sizeof standard / sizeof standard[0]; i++)
+        if (sampleRate == (double)standard[i])
+            return true;
+    return false;
+}
+
 /* Returns -995 if the sample rate isn't available, -1000 on missing IO. */
 
 DEFINE_THISCALL_WRAPPER(CanSampleRate, 12)
@@ -1729,8 +1778,7 @@ CanSampleRate(LPPIPEASIO iface, double sampleRate)
     LONG           result;
     if (!method_begin(This, false, &token))
         return -1000;
-    uint32_t current = atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
-    result           = sampleRate == (double)current ? 0 : -995;
+    result = rate_is_available(This, sampleRate) ? 0 : -995;
     method_end(&token);
     return result;
 }
@@ -1765,15 +1813,48 @@ SetSampleRate(LPPIPEASIO iface, double sampleRate)
 {
     IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
     method_token   token;
-    LONG           result;
     if (!method_begin(This, false, &token))
         return -1000;
-    uint32_t current = atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
-    result           = sampleRate == (double)current ? 0 : -995;
-    if (result == 0)
+    if (!rate_is_available(This, sampleRate))
+    {
+        method_end(&token);
+        return -995;
+    }
+
+    uint32_t current   = atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
+    uint32_t requested = (uint32_t)sampleRate;
+    if (requested == current)
+    {
         atomic_store_explicit(&This->host_announced_rate, current, memory_order_release);
+        method_end(&token);
+        return 0;
+    }
+
+    /* NODE_FORCE_RATE is only read when the filter is built, so the graph moves
+     * on the next activation.  Report the requested rate now anyway: the host
+     * reads GetSampleRate straight after this and must see what it asked for,
+     * and the first process cycle corrects it if the daemon lands elsewhere. */
+    atomic_store_explicit(&This->host_requested_rate, requested, memory_order_release);
+    atomic_store_explicit(&This->host_sample_rate, requested, memory_order_release);
+    atomic_store_explicit(&This->host_announced_rate, requested, memory_order_release);
+
+    INT state = atomic_load_explicit(&This->host_driver_state, memory_order_acquire);
+    if (state == Prepared || state == Running)
+    {
+        pipeasio_host_call_token notify;
+        TRACE("SetSampleRate: %u Hz requested, asking the host to reset\n", requested);
+        if (pipeasio_host_call_begin(This, PIPEASIO_HOST_CONFIG_RESET, &notify))
+        {
+            if (pipeasio_host_call_notify(&notify, 1, 3, NULL, NULL))
+                pipeasio_host_call_notify(&notify, 3, 0, NULL, NULL);
+        }
+        pipeasio_host_call_end(&notify);
+    }
+    else
+        audio_set_forced_rate(This->audio_client, (audio_nframes_t)requested);
+
     method_end(&token);
-    return result;
+    return 0;
 }
 
 /* numSources: on entry the number of allocated members, on return the number
@@ -1906,7 +1987,7 @@ apply_pending_config(IPipeASIOImpl *This)
         lstrcpynA(This->pipeasio_input_device, cfg.input_device,
                   sizeof This->pipeasio_input_device);
 
-        audio_set_forced_rate(This->audio_client, (audio_nframes_t)This->pipeasio_sample_rate);
+        audio_set_forced_rate(This->audio_client, effective_forced_rate(This));
         audio_set_follow_device(This->audio_client, This->pipeasio_follow_device_clock);
         audio_set_realtime(This->audio_client, This->pipeasio_realtime);
         TRACE("config: applied live reload (buffer_size=%d rate=%d follow=%d auto=%d rt=%d)\n",
@@ -2507,7 +2588,9 @@ process_callback(audio_nframes_t nframes, void *arg)
     if (admitted)
         This->host_buffer_index = half ? 0 : 1;
     pipeasio_host_call_end(&token);
-    return 0;
+    /* Nonzero tells the backend the host did not consume this cycle, so a
+     * deliberate Stop's idle cycles are not billed to us as xruns. */
+    return admitted ? 0 : 1;
 }
 
 static inline int

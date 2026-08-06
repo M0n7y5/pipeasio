@@ -367,6 +367,12 @@ audio_default_changed(audio_client_t *client)
     return simple_u32((proxy_ctx *)client, PAU_DEFAULT_CHANGED) != 0;
 }
 
+bool
+audio_latency_changed(audio_client_t *client)
+{
+    return simple_u32((proxy_ctx *)client, PAU_LATENCY_CHANGED) != 0;
+}
+
 audio_port_t *
 audio_port_register(audio_client_t *client, const char *port_name, uint64_t flags, uint32_t channel)
 {
