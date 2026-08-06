@@ -58,6 +58,7 @@
         { "@type": "Question", "name": "A 32-bit game or host does not list PipeASIO under Proton?", "acceptedAnswer": { "@type": "Answer", "text": "Proton runs 32-bit apps through classic split WoW64 by default, which cannot load the 32-bit front end. In Steam, add PROTON_USE_WOW64=1 alongside WINEDLLPATH in the game's launch options: PROTON_USE_WOW64=1 WINEDLLPATH=/home/<you>/.local/lib/wine %command%. In Faugus, enable the WoW64 option in the game's settings. The install must also include the 32-bit half (-DBUILD_WOW64_32=ON)." } },
         { "@type": "Question", "name": "Registering fails with status c0000135?", "acceptedAnswer": { "@type": "Answer", "text": "Wine could not find the unified PE name. The install creates pipeasio.dll symlinks next to pipeasio64.dll for Wine 10+, so re-run cmake --install to create them, then register again." } },
         { "@type": "Question", "name": "Bluetooth headphones produce no sound?", "acceptedAnswer": { "@type": "Answer", "text": "Turn on follow device clock in the panel (or set PIPEASIO_FOLLOW_DEVICE_CLOCK=on). A Bluetooth sink's clock is the radio link and cannot be slaved to the host, so the driver follows it instead." } },
+        { "@type": "Question", "name": "FL Studio crackles or xruns constantly?", "acceptedAnswer": { "@type": "Answer", "text": "Turn Mix in buffer switch off in Options > Audio settings > Input / output. It makes FL Studio mix and run plugins inside the ASIO callback, which the driver delivers on the PipeWire data loop with one buffer period to return; a full mixer pass overruns that, and because the driver is scheduled synchronously the overrun stalls the graph rather than being absorbed. With it off, FL Studio mixes on its own threads and the callback only hands over ready buffers." } },
         { "@type": "Question", "name": "Does it conflict with WineASIO?", "acceptedAnswer": { "@type": "Answer", "text": "No. PipeASIO has its own CLSID and registry identity, so it installs side by side with WineASIO and hosts list them as separate drivers." } },
         { "@type": "Question", "name": "How do I select it in my DAW?", "acceptedAnswer": { "@type": "Answer", "text": "After registering, pick PipeASIO from the host's ASIO device list. In FL Studio that is Options > Audio settings > Device." } }
       ]
@@ -484,6 +485,10 @@ sudo cmake --install build --prefix /usr</pre>
         <details>
           <summary>Bluetooth headphones produce no sound?</summary>
           <div class="ans">Turn on <b>follow device clock</b> in the panel (or set <code>PIPEASIO_FOLLOW_DEVICE_CLOCK=on</code>). A Bluetooth sink's clock is the radio link and cannot be slaved to the host, so the driver follows it instead.</div>
+        </details>
+        <details>
+          <summary>FL Studio crackles or xruns constantly?</summary>
+          <div class="ans">Turn <b>Mix in buffer switch</b> off in Options &gt; Audio settings &gt; Input / output. It makes FL Studio mix and run plugins inside the ASIO callback, which the driver delivers on the PipeWire data loop with one buffer period to return; a full mixer pass overruns that, and because the driver is scheduled synchronously the overrun stalls the graph rather than being absorbed. With it off, FL Studio mixes on its own threads and the callback only hands over ready buffers.</div>
         </details>
         <details>
           <summary>Does it conflict with WineASIO?</summary>

@@ -34,6 +34,13 @@ follow [Semantic Versioning](https://semver.org/).
   `process_node` and the driver is deliberately a follower; the count comes from
   gaps in `clock.position` instead, ignoring quantum changes, timeline rebases
   and the idle cycles of a deliberate `Stop`.
+- Documented that FL Studio's **Mix in buffer switch** (Options > Audio
+  settings > Input / output) has to be off. It moves the whole mixer and plugin
+  pass into the ASIO `bufferSwitch` callback, which the driver delivers on the
+  PipeWire data loop with one buffer period to return; the pass overruns that,
+  and a synchronously scheduled driver stalls the graph instead of absorbing
+  it. Reported against `realtime` mode, where the same thread additionally
+  carries `SCHED_FIFO` priority.
 
 ### Changed
 

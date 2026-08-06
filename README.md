@@ -533,6 +533,15 @@ the resulting priority asymmetry can make things much worse: measured on FL
 Studio 2025 under Wine at 64 frames / 48 kHz, enabling this produced roughly 39x
 more xruns on the PipeASIO node than leaving it off.
 
+In FL Studio, also turn **Mix in buffer switch** off (Options > Audio settings >
+Input / output) before enabling this. That option makes FL Studio run its mixing
+and plugin processing inside the ASIO `bufferSwitch` callback, which the driver
+delivers on the PipeWire data loop. The driver is scheduled synchronously (see
+[Performance](#performance)), so the callback has one buffer period to return
+and a full mixer pass does not fit: the graph stalls instead of absorbing the
+overrun. With the option off, FL Studio mixes on its own threads and the
+callback only hands over buffers that are already filled.
+
 Useful as a diagnostic for the scheduling-related xruns in
 [#4](https://github.com/M0n7y5/pipeasio/issues/4), not as a fix for them. It
 takes effect the next time the host starts the driver.
@@ -562,6 +571,11 @@ A few knobs affect xrun-free, low-latency operation:
   overruns stalls the graph instead of being absorbed, so pick a buffer size
   the host can meet. [`follow_device_clock`](#follow_device_clock) schedules
   asynchronously instead.
+- Host-side callback work. Whatever the host does inside `bufferSwitch` runs
+  inside the driver's cycle and counts against that same deadline. Hosts that
+  offer to mix there - FL Studio's **Mix in buffer switch** - should have it
+  turned off, so the callback only exchanges buffers a host thread has already
+  prepared.
 - Reported latency. `GetLatencies()` returns one buffer period plus whatever the
   connected device chain reports through PipeWire, so a host's delay compensation
   lines up with the real hardware instead of assuming the buffer is the only
@@ -607,6 +621,8 @@ loads the driver into.
 **Registering fails with status `c0000135`.** Wine could not find the unified PE name. The install creates `pipeasio.dll` symlinks next to `pipeasio64.dll` for Wine 10+, so re-run `cmake --install` to create them, then register again.
 
 **Bluetooth headphones produce no sound.** Turn on `follow_device_clock` (or set `PIPEASIO_FOLLOW_DEVICE_CLOCK=on`). A Bluetooth sink's clock is the radio link and cannot be slaved to the host, so the driver follows it instead.
+
+**FL Studio crackles or xruns constantly, especially with [`realtime`](#realtime) enabled.** Turn **Mix in buffer switch** off in Options > Audio settings > Input / output. It makes FL Studio mix and run plugins inside the ASIO callback, which the driver delivers on the PipeWire data loop with one buffer period to return; a full mixer pass overruns that, and because the driver is scheduled synchronously the overrun stalls the graph rather than being absorbed. With it off, FL Studio mixes on its own threads and the callback only hands over ready buffers.
 
 **Does it conflict with WineASIO?** No. PipeASIO has its own CLSID and registry identity, so it installs side by side with WineASIO and hosts list them as separate drivers.
 
