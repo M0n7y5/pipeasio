@@ -4,6 +4,29 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.4.3] - 2026-08-06
+
+### Fixed
+
+- Round-trip latency was one buffer period higher than it needed to be
+  ([#21](https://github.com/M0n7y5/pipeasio/issues/21)). `pw_filter_connect()`
+  without `PW_FILTER_FLAG_RT_PROCESS` sets both `node.loop.class=main` and
+  `node.async=true`. The driver needs the first, which keeps the graph
+  scheduling `process()` on the Wine-bridged loop so the host's COM
+  `bufferSwitch` runs on a thread that has a TEB, but it was also paying for
+  the second, which makes every link to the driver carry an extra graph
+  quantum. The driver now clears `node.async` right after connecting, while no
+  link exists yet, because PipeWire latches a link's async mode when the link
+  is created. Measured round trip in `asio_loopback` drops from 2.00 to 1.00
+  buffer periods at every size and rate, 42.7 ms to 21.3 ms at the shipped
+  1024 / 48000 default, and the analyzer now asserts exactly one buffer period
+  so a regression fails the suite. `follow_device_clock` keeps asynchronous
+  scheduling on purpose, so a device-driven quantum cannot stall the graph.
+  Connecting with `PW_FILTER_FLAG_RT_PROCESS` instead, as proposed in the
+  issue, also drops `node.loop.class=main`, which moves `process()` onto a
+  PipeWire pool data-loop thread with no Wine TEB and segfaults in ntdll
+  during teardown.
+
 ## [1.4.2] - 2026-08-05
 
 ### Fixed
@@ -469,7 +492,8 @@ the driver loads inside the Steam Runtime container that Proton uses.
 - Hardened channel-count limits from both the INI and the environment overrides,
   and tightened COM teardown and several NULL and error paths.
 
-[Unreleased]: https://github.com/M0n7y5/pipeasio/compare/v1.4.2...HEAD
+[Unreleased]: https://github.com/M0n7y5/pipeasio/compare/v1.4.3...HEAD
+[1.4.3]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.4.3
 [1.4.2]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.4.2
 [1.4.1]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.4.1
 [1.4.0]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.4.0
