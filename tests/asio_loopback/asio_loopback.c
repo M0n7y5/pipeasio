@@ -434,6 +434,20 @@ run_phase(IPipeASIO *asio, LONG bs, int seconds)
         fail = 1;
     }
 
+    /* run.sh wires a hermetic null-sink loop with follow_device_clock off, so
+     * the only delay is the one graph cycle the loop costs: we are scheduled
+     * before the sink, so the monitor data we read is a cycle old.  An async
+     * node consumes the previous cycle and produces for the next, which
+     * doubles that to two buffers.  Pins audio_activate clearing node.async. */
+    if (rtl != (long long)bs)
+    {
+        fprintf(stderr,
+                "[loop] FAIL: RTL %lld is %.2f buffers, expected exactly 1 "
+                "(async graph scheduling adds a buffer period)\n",
+                rtl, (double)rtl / (double)bs);
+        fail = 1;
+    }
+
     fprintf(stderr,
             "[loop] phase bs=%ld: RTL=%lld samples (%.2f cycles, "
             "%.2f ms) reported=%lld -> %s\n",

@@ -787,6 +787,25 @@ audio_activate(audio_client_t *c)
         goto fail;
     }
 
+    /* Connecting without PW_FILTER_FLAG_RT_PROCESS sets both
+     * node.loop.class=main and node.async=true.  Keep the first: it schedules
+     * this node on the loop passed to pw_filter_new_simple, our Wine-bridged
+     * data loop, so process() can call the host's COM bufferSwitch on a thread
+     * that has a TEB.  RT_PROCESS drops it for a PipeWire pool data-loop
+     * thread that has none, which segfaults in ntdll.  Drop the second: it
+     * makes every link carry an extra graph quantum, one buffer period of
+     * round trip.  Clear it before any link exists, because connect always
+     * sets it and impl-link latches link->async when a link is created.  A
+     * follower keeps async so a device-driven quantum cannot stall the graph. */
+    if (!c->follow_device)
+    {
+        struct spa_dict_item async_off[] = {
+            SPA_DICT_ITEM_INIT(PW_KEY_NODE_ASYNC, "false"),
+        };
+        struct spa_dict dict = SPA_DICT_INIT(async_off, 1);
+        pw_filter_update_properties(c->filter, NULL, &dict);
+    }
+
     pw_thread_loop_unlock(c->loop);
 
     /* Start the data loop after add_port/connect; those need the thread-loop

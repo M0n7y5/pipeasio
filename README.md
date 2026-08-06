@@ -498,7 +498,8 @@ so the target device drives the cycle. This is required for Bluetooth sinks, who
 clock is the radio link and cannot be slaved to the host. Otherwise PipeWire
 silently drops the links and you get no sound. The buffer size is then dictated by
 the device (the driver settles to the device's quantum after one automatic reset),
-so latency is higher.
+so latency is higher. A follower is also scheduled asynchronously, which costs
+one more buffer period but keeps a device-driven quantum from stalling the graph.
 Env: `PIPEASIO_FOLLOW_DEVICE_CLOCK` (`on`/`off`).
 
 ### buffer_size
@@ -549,6 +550,11 @@ A few knobs affect xrun-free, low-latency operation:
   schedule. Defaults are 2 in / 2 out. Raise `inputs` / `outputs` only to what you
   route. Fewer ports mean a smaller graph and less overhead.
 - Buffer size. Smaller buffers cut latency but raise CPU and xrun risk.
+- Graph scheduling. The driver runs synchronously in the graph, so the round
+  trip is one buffer period instead of two. The trade is that a callback which
+  overruns stalls the graph instead of being absorbed, so pick a buffer size
+  the host can meet. [`follow_device_clock`](#follow_device_clock) schedules
+  asynchronously instead.
 - Debug logging. `PIPEASIO_DEBUG=1` makes the driver log on the audio path. Leave
   it off for normal use.
 
