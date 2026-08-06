@@ -480,8 +480,13 @@ time the driver reconnects.
 Env: `PIPEASIO_OUTPUT_DEVICE`, `PIPEASIO_INPUT_DEVICE`.
 
 ### sample_rate
-`0` (default) follows the PipeWire graph rate. A non-zero value pins the rate with
-`PW_KEY_NODE_FORCE_RATE`.
+`0` (default) follows the PipeWire graph rate, and lets the ASIO host choose one:
+`CanSampleRate()` then offers 44100, 48000, 88200, 96000, 176400 and 192000, and
+`SetSampleRate()` pins the graph to the host's choice with
+`PW_KEY_NODE_FORCE_RATE` on the next activation. A non-zero value pins the rate
+here instead and the host can no longer change it, the same way
+`fixed_buffer_size` takes the buffer size away from the host. Hosts that demand a
+specific rate need this left at 0; Rocksmith through RS_ASIO requires 48 kHz.
 Env: `PIPEASIO_SAMPLE_RATE`.
 
 ### fixed_buffer_size
@@ -504,7 +509,9 @@ Env: `PIPEASIO_FOLLOW_DEVICE_CLOCK` (`on`/`off`).
 
 ### buffer_size
 The preferred size returned by `GetBufferSize()`. Must be a power of two within
-[16, 8192]. Out-of-range values fall back to 1024.
+[32, 8192]. Out-of-range values fall back to 1024. The floor is 32 rather than 16
+because hosts mishandle smaller ASIO buffers (Max/MSP crashes on them), and
+RS_ASIO rounds every request up to a multiple of 32 regardless.
 Env: `PIPEASIO_PREFERRED_BUFFERSIZE`.
 
 A size the hardware does not support makes PipeWire reject the request or insert
@@ -555,6 +562,18 @@ A few knobs affect xrun-free, low-latency operation:
   overruns stalls the graph instead of being absorbed, so pick a buffer size
   the host can meet. [`follow_device_clock`](#follow_device_clock) schedules
   asynchronously instead.
+- Reported latency. `GetLatencies()` returns one buffer period plus whatever the
+  connected device chain reports through PipeWire, so a host's delay compensation
+  lines up with the real hardware instead of assuming the buffer is the only
+  delay. Measured on a wired card at 1024/48000 the figure is 2080 in and 2048
+  out; a USB or Bluetooth chain declares more. The driver relays
+  `kAsioLatenciesChanged` when it moves, so a host can re-read it without a full
+  reset.
+- Xruns. When the graph runs a cycle the driver was too slow for, it logs
+  `xrun: missed the cycle deadline` with a running count for the activation (the
+  first, then every 64th, so a storm cannot flood the log). That is the driver's
+  own accounting; the settings panel's counter is PipeWire's per-node figure from
+  `pw-top`, which covers the whole graph.
 - Debug logging. `PIPEASIO_DEBUG=1` makes the driver log on the audio path. Leave
   it off for normal use.
 

@@ -4,6 +4,50 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `GetLatencies()` now reports the connected device chain's own delay on top of
+  the driver's buffer period, instead of the buffer period alone. The filter
+  connects with `PW_FILTER_FLAG_CUSTOM_LATENCY`, which is the only way
+  libpipewire hands a filter its peers' `SPA_PARAM_Latency` (without it
+  `pw_filter` swallows the param and runs an inert default algorithm), and the
+  values arrive per port and per direction. Measured against a wired card at
+  1024/48000, input goes from 1024 to 2080 samples and output from 1024 to 2048,
+  the extra 32 being the converter offset the driver used to discard. Hosts that
+  compensate for latency were misaligning recorded tracks by the device delay.
+- `kAsioLatenciesChanged` is relayed when that figure moves, so a host re-reads
+  `GetLatencies()` without needing a full reset.
+- The ASIO host can select a sample rate. With `sample_rate = 0` (follow the
+  graph), `CanSampleRate()` offers 44100, 48000, 88200, 96000, 176400 and
+  192000, and `SetSampleRate()` pins the graph to the host's choice through
+  `PW_KEY_NODE_FORCE_RATE`, asking the host to reset when one is already
+  running. Previously only the rate the graph happened to be on was accepted, so
+  a host that demands a particular rate could not start at all; Rocksmith
+  through RS_ASIO requires 48 kHz. An explicit `sample_rate` in the config still
+  wins over the host, mirroring how `fixed_buffer_size` holds the buffer size.
+- The driver counts and logs cycles it was too slow for
+  (`xrun: missed the cycle deadline`), reporting the first and then every 64th
+  so a storm cannot flood the log. `SPA_IO_CLOCK_FLAG_XRUN_RECOVER` cannot serve
+  here, because PipeWire only sets it around the driver node's own
+  `process_node` and the driver is deliberately a follower; the count comes from
+  gaps in `clock.position` instead, ignoring quantum changes, timeline rebases
+  and the idle cycles of a deliberate `Stop`.
+
+### Changed
+
+- `node.lock-quantum` accompanies `node.force-quantum`, and `node.lock-rate`
+  accompanies `node.force-rate`, so another client cannot resize the graph under
+  a running host. Since 1.4.3 the driver is scheduled synchronously, so a
+  quantum it did not ask for is a glitch it cannot absorb. Follow-device mode
+  takes the device's quantum on purpose and locks neither.
+- The smallest advertised and accepted buffer size is 32 frames, up from 16.
+  Hosts mishandle smaller ASIO buffers (Max/MSP crashes on them, and FlexASIO
+  enforces the same floor) and RS_ASIO rounds every request up to a multiple of
+  32 anyway. A configured `buffer_size` of 16 now falls back to the 1024
+  default.
+
 ## [1.4.3] - 2026-08-06
 
 ### Fixed
