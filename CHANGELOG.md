@@ -34,6 +34,12 @@ follow [Semantic Versioning](https://semver.org/).
   `process_node` and the driver is deliberately a follower; the count comes from
   gaps in `clock.position` instead, ignoring quantum changes, timeline rebases
   and the idle cycles of a deliberate `Stop`.
+- `Init()` logs the product version and which half of a WoW64 pair is talking
+  (`PipeASIO 1.5.0 (64-bit)`), so a debug log identifies the build the host
+  loaded. `PIPEASIO_VERSION` was documented as reaching the driver log but only
+  ever reached the settings-panel title, which left bug reports with no version
+  in them. It is a `TRACE`, so it follows `PIPEASIO_DEBUG` like the rest of the
+  informational output.
 - Documented that FL Studio's **Mix in buffer switch** (Options > Audio
   settings > Input / output) has to be off. It moves the whole mixer and plugin
   pass into the ASIO `bufferSwitch` callback, which the driver delivers on the

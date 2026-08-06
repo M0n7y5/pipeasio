@@ -1239,6 +1239,14 @@ Init(LPPIPEASIO iface, void *sysRef)
         return 0;
     }
 
+    /* Open a debug log with the build the host actually loaded: a report then
+     * names the version and which half of a WoW64 pair is talking. */
+#ifdef PIPEASIO_WOW64_PE
+    TRACE("PipeASIO " PIPEASIO_VERSION " (32-bit WoW64 front end)\n");
+#else
+    TRACE("PipeASIO " PIPEASIO_VERSION " (64-bit)\n");
+#endif
+
     clear_last_error(This);
     owner = next_gate_owner(This);
     if (!pipeasio_gate_close(&This->method_gate, owner)
