@@ -62,7 +62,7 @@ SettingsDialog::SettingsDialog(QWidget *parent, SettingsDialogOptions options) :
 
     auto *tabs = new QTabWidget(this);
     tabs->addTab(buildSettingsTab(), QStringLiteral("Settings"));
-    tabs->addTab(buildMonitorTab(), QStringLiteral("Monitor"));
+    const int monitorTab = tabs->addTab(buildMonitorTab(), QStringLiteral("Monitor"));
     tabs->addTab(buildAboutTab(), QStringLiteral("About"));
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel
@@ -99,7 +99,19 @@ SettingsDialog::SettingsDialog(QWidget *parent, SettingsDialogOptions options) :
     {
         connect(&m_monitor, &PipeWireMonitor::updated, this, &SettingsDialog::onMonitorUpdated);
         m_monitor.setTarget(cfg.node_name[0] ? QString::fromUtf8(cfg.node_name) : QString());
-        m_monitor.start();
+        /* The Profiler pushes one point per audio cycle (47/s at 1024 frames,
+         * 375/s at 128), so hold the connection only while the tab that
+         * consumes it is showing. */
+        connect(tabs, &QTabWidget::currentChanged, this,
+                [this, monitorTab](int index)
+                {
+                    if (index == monitorTab)
+                        m_monitor.start();
+                    else
+                        m_monitor.stop();
+                });
+        if (tabs->currentIndex() == monitorTab)
+            m_monitor.start();
     }
 }
 
@@ -517,19 +529,21 @@ formatDevice(const QString &name, const QString &detail)
 void
 SettingsDialog::onMonitorUpdated(const NodeStats &stats)
 {
-    /* Polling a live graph has one-frame artifacts: the node vanishes from a
-     * pw-top iteration while restaging, and a brief idle cycle reports
-     * quantum/rate 0. Hold the last good frame across the first transient of
-     * either kind. A persistent absence reverts to the waiting state (and
-     * clears the device rows). A persistent idle/suspended node renders its
-     * actual I/S state. */
+    /* Polling a live graph has one-frame artifacts: the node vanishes for a
+     * cycle while restaging, and a brief idle cycle reports quantum/rate 0.
+     * Hold the last good frame across the first transient of either kind. A
+     * persistent absence reverts to the waiting state (and clears the device
+     * rows). A persistent idle/suspended node renders its actual I/S state. */
     if (!stats.found)
     {
         ++m_monMisses;
         m_monIdleFrames = 0;
         if (m_monHasData && m_monMisses < 2)
             return; /* transient: keep the previous frame */
-        const QString waiting = QStringLiteral("waiting for audio...");
+        /* Distinguish "no telemetry at all" (dead daemon, no module-profiler)
+         * from an idle graph. */
+        const QString waiting = stats.unavailable.isEmpty() ? QStringLiteral("waiting for audio...")
+                                                            : stats.unavailable;
         m_monQuantum->setText(waiting);
         m_monRate->setText(waiting);
         m_monXruns->setText(waiting);

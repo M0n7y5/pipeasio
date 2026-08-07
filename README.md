@@ -586,8 +586,9 @@ A few knobs affect xrun-free, low-latency operation:
 - Xruns. When the graph runs a cycle the driver was too slow for, it logs
   `xrun: missed the cycle deadline` with a running count for the activation (the
   first, then every 64th, so a storm cannot flood the log). That is the driver's
-  own accounting; the settings panel's counter is PipeWire's per-node figure from
-  `pw-top`, which covers the whole graph.
+  own accounting; the settings panel's counter is PipeWire's per-node figure,
+  read from the graph's Profiler interface (the same source `pw-top` uses), which
+  covers the whole graph.
 - Debug logging. `PIPEASIO_DEBUG=1` makes the driver log on the audio path. Leave
   it off for normal use.
 
@@ -601,6 +602,16 @@ the driver still builds, and no panel binary is produced. It runs on
 your Linux host. The in-app ASIO control-panel button shows a message pointing
 here, because the Qt panel cannot run inside the Wine/Proton container the host
 loads the driver into.
+
+The **Monitor** tab is a native PipeWire client: it binds the graph's Profiler
+interface and is pushed one timing point per audio cycle, the same source
+`pw-top` reads, so quantum, rate, xruns and DSP load match the CLI. That
+interface comes from PipeWire's `module-profiler`, which stock configurations
+load; if yours does not, the tab says `no Profiler interface (load PipeWire's
+module-profiler)` instead of showing telemetry. The connection is held only
+while the Monitor tab is showing, so the panel holds none of it while parked on
+another tab. The device combos on the **Settings** tab enumerate through
+`pw-dump`.
 
 ## Troubleshooting
 

@@ -1,7 +1,14 @@
 /*
- * PipeWireMonitor.hpp - live telemetry for the Monitor tab via `pw-top`.
+ * PipeWireMonitor.hpp - live telemetry for the Monitor tab.
  *
- * parsePwTop() is PURE (operates on captured output) so it is unit testable.
+ * A native libpipewire client: it binds the graph's Profiler global and is
+ * pushed one timing point per audio cycle, the same source `pw-top` reads.
+ * Names, states, formats and links come from the registry on that connection.
+ * The loop runs on the Qt event loop via a QSocketNotifier on pw_loop_get_fd(),
+ * so there is no second thread and no locking.
+ *
+ * describePeer() and resolveConnections() are PURE so they stay unit testable
+ * without a running daemon.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
@@ -22,12 +29,13 @@
  */
 #pragma once
 
-#include <QByteArray>
+#include <QHash>
 #include <QObject>
 #include <QString>
+#include <QVector>
 
-class QTimer;
-class QProcess;
+#include <cstdint>
+#include <memory>
 
 struct NodeStats
 {
@@ -42,11 +50,54 @@ struct NodeStats
     QString outputDevice;       /* sink our outputs feed (Monitor tab) */
     QString inputDeviceDetail;  /* codec/format/state line for the input */
     QString outputDeviceDetail; /* codec/format/state line for the output */
+
+    /* Non-empty when no telemetry can be collected at all (no daemon, or no
+     * Profiler interface). Shown instead of "waiting for audio...". */
+    QString unavailable;
 };
 
-/* Parse `pw-top -b -n 1` output, returning stats for the first data row whose
- * trailing NAME contains `nodeNameSubstr`. Pure. */
-NodeStats parsePwTop(const QByteArray &out, const QString &nodeNameSubstr);
+/* Everything the Monitor tab needs about one peer node in the graph. */
+struct PeerInfo
+{
+    QString description;       /* node.description */
+    QString nick;              /* node.nick */
+    QString name;              /* node.name */
+    QString btCodec;           /* api.bluez5.codec, empty when not Bluetooth */
+    bool    bluetooth = false; /* device.api == bluez5 */
+    int     rate      = 0;     /* negotiated Format rate, 0 when suspended */
+    int     channels  = 0;
+    QString sampleFormat;
+    QString state; /* "running" / "idle" / "suspended" / "error" */
+};
+
+/* Split a peer into the Monitor row's display name and its detail line: codec
+ * (Bluetooth only) / negotiated rate / channels+format / state. Attributes the
+ * graph does not expose are dropped (a suspended device has no Format). Pure. */
+void describePeer(const PeerInfo &peer, QString *name, QString *detail);
+
+struct GraphLink
+{
+    uint32_t outputNode = 0;
+    uint32_t inputNode  = 0;
+};
+
+/* What our own filter node is wired to. Each side's `*Detail` carries the
+ * peer's codec/format/state for a second display line (empty when several
+ * peers share a side and the name string already lists them). Empty name ==
+ * nothing connected. */
+struct Connections
+{
+    QString output;       /* sink name(s) our outputs feed */
+    QString outputDetail; /* codec / rate / channels / state of a single sink */
+    QString input;        /* source name(s) feeding our inputs */
+    QString inputDetail;
+};
+
+/* Resolve `ownId`'s peers: a link FROM our node lands on a sink we play to, a
+ * link TO our node comes from a source we capture from. Distinct peers, link
+ * order kept. Pure. */
+Connections resolveConnections(uint32_t ownId, const QHash<uint32_t, PeerInfo> &nodes,
+                               const QVector<GraphLink> &links);
 
 class PipeWireMonitor : public QObject
 {
@@ -55,7 +106,13 @@ class PipeWireMonitor : public QObject
     explicit PipeWireMonitor(QObject *parent = nullptr);
     ~PipeWireMonitor() override;
 
+    /* Substring of the node.name to watch. Empty re-enables auto-discovery via
+     * the driver's "pipeasio.node" marker property. */
     void setTarget(const QString &nodeNameSubstr);
+
+    /* Opaque, defined in the .cpp. Public only so the file-local NodeRecord
+     * can refer to it. */
+    struct Impl;
 
   public slots:
     void start();
@@ -64,24 +121,6 @@ class PipeWireMonitor : public QObject
   signals:
     void updated(const NodeStats &stats);
 
-  private slots:
-    void poll();
-    void onTopFinished();
-    void onDumpFinished();
-
   private:
-    void startTop();
-    void startDump();
-
-    QTimer    *m_timer;
-    QString    m_target;
-    bool       m_autoDiscover;   /* true => resolve our node via the marker prop */
-    QProcess  *m_proc = nullptr; /* in-flight child (pw-top or pw-dump) */
-    bool       m_busy = false;   /* a poll cycle is in flight */
-    QByteArray m_lastTop;        /* last pw-top output, re-parsed after discovery */
-    QString    m_connInput;      /* last-resolved Monitor connections */
-    QString    m_connOutput;
-    QString    m_connInputDetail; /* second-line detail for the Monitor rows */
-    QString    m_connOutputDetail;
-    int        m_pollsSinceDump = 1000; /* force a connection dump on first poll */
+    std::unique_ptr<Impl> d;
 };

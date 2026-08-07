@@ -53,27 +53,9 @@ struct Device
 /* Invalid JSON and non-array top levels return std::nullopt. */
 std::optional<QList<Device>> parsePwDump(const QByteArray &json);
 
-/* node.name of our own filter node (tagged "pipeasio.node"="1" by the driver),
- * or "" if no such node is present.  Pure. */
-QString findOwnNode(const QByteArray &json);
-
 /* Current graph sample rate from the "settings" metadata (clock.force-rate
  * when nonzero, else clock.rate), or 0 when unknown.  Pure. */
 int graphClockRate(const QByteArray &json);
-
-/* What our own filter node (tagged "pipeasio.node"="1") is wired to in the
- * PipeWire graph: the sink our outputs feed and the source feeding our inputs.
- * Each side's `*Detail` carries the peer's codec/format/state for a second
- * display line (empty when unknown, or when several peers share a side and
- * the name string already lists them). Empty name == nothing connected. Pure. */
-struct Connections
-{
-    QString output;       /* sink name(s) our outputs feed */
-    QString outputDetail; /* codec / rate / channels / state of a single sink */
-    QString input;        /* source name(s) feeding our inputs */
-    QString inputDetail;
-};
-Connections resolveConnections(const QByteArray &json);
 
 class Request final : public QObject
 {

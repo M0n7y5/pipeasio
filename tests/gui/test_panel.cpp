@@ -3,7 +3,7 @@
  *   - Config::serializeIni / parseIni round-trip
  *   - cross-language: panel-written INI parsed by the driver's C reader
  *   - DeviceEnumerator::parsePwDump (fixture)
- *   - parsePwTop (fixture)
+ *   - the Profiler POD contract and its pw-top-compatible derivations
  *   - SettingsDialog behavior (device loading state, tooltip wrapping,
  *     monitor transient hold)
  *
@@ -13,6 +13,12 @@
 #include "DeviceEnumerator.hpp"
 #include "PipeWireMonitor.hpp"
 #include "SettingsDialog.hpp"
+#include "ProfilerParse.hpp"
+
+#include <spa/node/io.h>
+#include <spa/param/profiler.h>
+#include <spa/pod/builder.h>
+#include <spa/utils/defs.h>
 
 #include <QApplication>
 #include <QCheckBox>
@@ -24,6 +30,7 @@
 #include <QPushButton>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QTabWidget>
 
 #include <cmath>
 #include <cstdio>
@@ -237,113 +244,209 @@ test_graph_clock_rate()
     CHECK(DeviceEnumerator::graphClockRate("not json") == 0);
 }
 
+/* Append one driver/follower timing block to an in-progress Profiler object.
+ * `haveXrun`/`haveAsync` exercise the trailing optional fields. */
 static void
-test_parse_pwtop()
+build_block(spa_pod_builder *b, uint32_t key, int32_t id, const char *name, int64_t prev,
+            int64_t signal, int64_t awake, int64_t finish, int32_t xrun, bool haveXrun,
+            bool haveAsync, bool async)
 {
-    /* Single-iteration sanity (period decimals, multi-token FORMAT column). */
-    const QByteArray one
-            = "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT        NAME\n"
-              "R   45    1024  48000  10.0us  20.0us 0.01  0.25    2  F32P 2 48000 PipeASIO\n"
-              "C   52       0      0    ---     ---   ---   ---     0               "
-              "alsa_output.test\n";
-    const NodeStats s = parsePwTop(one, QStringLiteral("PipeASIO"));
-    CHECK(s.found);
-    CHECK(s.quantum == 1024);
-    CHECK(s.rate == 48000);
-    CHECK(std::fabs(s.dspLoad - 0.25) < 1e-9);
-    CHECK(s.xruns == 2);
-    CHECK(!parsePwTop(one, QStringLiteral("NoSuchNode")).found);
+    spa_pod_frame f;
+    spa_pod_builder_prop(b, key, 0);
+    spa_pod_builder_push_struct(b, &f);
+    spa_pod_builder_int(b, id);
+    spa_pod_builder_string(b, name);
+    spa_pod_builder_long(b, prev);
+    spa_pod_builder_long(b, signal);
+    spa_pod_builder_long(b, awake);
+    spa_pod_builder_long(b, finish);
+    spa_pod_builder_int(b, 0); /* status */
+    spa_pod_builder_fraction(b, 1024u, 48000u);
+    if (haveXrun)
+        spa_pod_builder_int(b, xrun);
+    if (haveAsync)
+        spa_pod_builder_bool(b, async);
+    spa_pod_builder_pop(b, &f);
+}
 
-    /* Realistic batch output: pw-top emits an all-zero baseline first, then a
-     * measured iteration.  The parser must read the LAST iteration, cope with
-     * comma decimals (non-C locale), and handle a driver row whose FORMAT
-     * column is empty (only a "=" link marker before the NAME). */
-    const QByteArray two
-            = "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME\n"
-              "C   54      0      0    ---     ---   ---   ---     0                  mic\n"
-              "C   78      0      0    ---     ---   ---   ---     0                  FL64\n"
-              "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME\n"
-              "R   54    256  48000  64,9us   1,1us  0,01  0,00    1    S24LE 1 48000 mic\n"
-              "R   78    256  48000  11,0us   1,7ms  0,00  0,17    3                   = FL64\n";
-    const NodeStats m = parsePwTop(two, QStringLiteral("FL64"));
-    CHECK(m.found);
-    CHECK(m.state == QStringLiteral("R")); /* measured iteration, not baseline "C" */
-    CHECK(m.quantum == 256);
-    CHECK(m.rate == 48000);
-    CHECK(std::fabs(m.dspLoad - 0.17) < 1e-9); /* comma decimal parsed */
-    CHECK(m.xruns == 3);
+/* The Profiler POD is the panel's only telemetry source, so its layout is a
+ * hard contract with module-profiler. */
+static void
+test_profiler_pod()
+{
+    uint8_t         buf[8192];
+    spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof(buf));
+    spa_pod_frame   f[2];
+    spa_fraction    rate = SPA_FRACTION(1u, 48000u);
 
-    /* An empty target must not match a random row (panel shows "waiting"). */
-    CHECK(!parsePwTop(two, QString()).found);
+    spa_pod_builder_push_struct(&b, &f[0]);
+
+    spa_pod_builder_push_object(&b, &f[1], SPA_TYPE_OBJECT_Profiler, 0);
+    spa_pod_builder_prop(&b, SPA_PROFILER_info, 0);
+    spa_pod_builder_add_struct(&b, SPA_POD_Long((int64_t)7), SPA_POD_Float(0.1f),
+                               SPA_POD_Float(0.2f), SPA_POD_Float(0.3f), SPA_POD_Int((int32_t)9));
+    spa_pod_builder_prop(&b, SPA_PROFILER_clock, 0);
+    spa_pod_builder_add_struct(
+            &b, SPA_POD_Int(0), SPA_POD_Int(1), SPA_POD_String("clk"), SPA_POD_Long((int64_t)123),
+            SPA_POD_Fraction(&rate), SPA_POD_Long((int64_t)4096), SPA_POD_Long((int64_t)1024),
+            SPA_POD_Long((int64_t)0), SPA_POD_Double(1.0), SPA_POD_Long((int64_t)456),
+            SPA_POD_Int(SPA_IO_POSITION_STATE_RUNNING));
+    build_block(&b, SPA_PROFILER_driverBlock, 40, "alsa", 1000000, 2000000, 2500000, 6000000, 5,
+                true, false, false);
+    build_block(&b, SPA_PROFILER_followerBlock, 61, "FL64", 1000000, 2100000, 2200000, 2900000, 0,
+                false, false, false);
+    build_block(&b, SPA_PROFILER_followerBlock, 62, "Other", 1000, 2000, 3000, 4000, 3, true, true,
+                true);
+    /* Never signalled this cycle -> both times unknown ("---" in pw-top). */
+    build_block(&b, SPA_PROFILER_followerBlock, 63, "Silent", 5000, 4000, 3000, 2000, 0, false,
+                false, false);
+    /* Woken but not finished -> busy is pending ("+++"). */
+    build_block(&b, SPA_PROFILER_followerBlock, 64, "Late", 1000, 2000, 3000, 2500, 0, false, false,
+                false);
+    spa_pod_builder_pop(&b, &f[1]);
+
+    /* A profiler object with a short info struct must be dropped whole, and a
+     * non-Profiler object must not be mistaken for a point. */
+    spa_pod_builder_push_object(&b, &f[1], SPA_TYPE_OBJECT_Profiler, 0);
+    spa_pod_builder_prop(&b, SPA_PROFILER_info, 0);
+    spa_pod_builder_add_struct(&b, SPA_POD_Long((int64_t)1));
+    spa_pod_builder_pop(&b, &f[1]);
+    spa_pod_builder_push_object(&b, &f[1], SPA_TYPE_OBJECT_Props, 0);
+    spa_pod_builder_pop(&b, &f[1]);
+
+    const spa_pod *pod = static_cast<const spa_pod *>(spa_pod_builder_pop(&b, &f[0]));
+
+    const QVector<ProfilePoint> points = parseProfilePods(pod);
+    CHECK(points.size() == 1);
+    if (points.isEmpty())
+        return;
+    const ProfilePoint &p = points.first();
+
+    CHECK(p.info.count == 7);
+    CHECK(p.info.xrunCount == 9);
+    CHECK(p.info.clockDuration == 1024);
+    CHECK(p.info.clockRateNum == 1);
+    CHECK(p.info.clockRateDenom == 48000);
+    CHECK(p.info.transportState == SPA_IO_POSITION_STATE_RUNNING);
+    CHECK(p.blocks.size() == 5);
+    if (p.blocks.size() != 5)
+        return;
+
+    /* Driver: QUANT/RATE come from the clock, W/Q and B/Q from its timestamps. */
+    const CycleTiming drv = deriveTiming(p.info, p.blocks.at(0));
+    CHECK(p.blocks.at(0).isDriver);
+    CHECK(p.blocks.at(0).name == QStringLiteral("alsa"));
+    CHECK(drv.quantum == 1024);
+    CHECK(drv.rate == 48000);
+    CHECK(drv.waitNs == 500000);
+    CHECK(drv.busyNs == 3500000);
+    CHECK(std::fabs(drv.busyRatio - 0.1640625) < 1e-9);
+    CHECK(std::fabs(drv.waitRatio - 0.0234375) < 1e-9);
+    CHECK(drv.xruns == 5); /* the block's own counter wins */
+
+    /* Follower: QUANT/RATE come from its latency fraction; an absent xrun
+     * counter falls back to the driver-wide one. */
+    const CycleTiming own = deriveTiming(p.info, p.blocks.at(1));
+    CHECK(!p.blocks.at(1).isDriver);
+    CHECK(p.blocks.at(1).id == 61);
+    CHECK(own.quantum == 1024);
+    CHECK(own.rate == 48000);
+    CHECK(own.busyNs == 700000);
+    CHECK(std::fabs(own.busyRatio - 0.0328125) < 1e-9);
+    CHECK(own.xruns == 9);
+
+    CHECK(p.blocks.at(2).async);
+    CHECK(deriveTiming(p.info, p.blocks.at(2)).xruns == 3);
+
+    const CycleTiming silent = deriveTiming(p.info, p.blocks.at(3));
+    CHECK(silent.waitNs == kTimeUnknown);
+    CHECK(silent.busyNs == kTimeUnknown);
+    CHECK(silent.busyRatio == 0.0); /* sentinels never leak into the ratio */
+
+    const CycleTiming late = deriveTiming(p.info, p.blocks.at(4));
+    CHECK(late.waitNs == 1000);
+    CHECK(late.busyNs == kTimePending);
+    CHECK(late.busyRatio == 0.0);
+
+    CHECK(parseProfilePods(nullptr).isEmpty());
 }
 
 static void
-test_find_own_node()
+test_describe_peer()
 {
-    const QByteArray json
-            = "[\n"
-              "  {\"id\":40,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
-              "{\"media.class\":\"Audio/Sink\",\"node.name\":\"alsa_output.test\"}}},\n"
-              "  {\"id\":61,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
-              "{\"node.name\":\"FL64\",\"media.role\":\"DSP\",\"pipeasio.node\":\"1\"}}}\n"
-              "]\n";
-    CHECK(DeviceEnumerator::findOwnNode(json) == QStringLiteral("FL64"));
+    PeerInfo bt;
+    bt.description  = QStringLiteral("FiiO UTWS5");
+    bt.name         = QStringLiteral("bluez_output.xx");
+    bt.btCodec      = QStringLiteral("aptx");
+    bt.bluetooth    = true;
+    bt.rate         = 44100;
+    bt.channels     = 2;
+    bt.sampleFormat = QStringLiteral("S16LE");
+    bt.state        = QStringLiteral("running");
 
-    /* Numeric marker form: pw-dump serialises the property "1" as a JSON
-     * number, which is what actually appears at runtime - the panel must still
-     * recognise it (regression: toString() is empty for JSON numbers). */
-    const QByteArray numForm
-            = "[\n"
-              "  {\"id\":112,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
-              "{\"node.name\":\"FL64\",\"pipeasio.node\":1}}}\n"
-              "]\n";
-    CHECK(DeviceEnumerator::findOwnNode(numForm) == QStringLiteral("FL64"));
+    QString name, detail;
+    describePeer(bt, &name, &detail);
+    CHECK(name == QStringLiteral("FiiO UTWS5"));
+    CHECK(detail.contains(QStringLiteral("aptX")));
+    CHECK(detail.contains(QStringLiteral("44100 Hz")));
+    CHECK(detail.contains(QStringLiteral("2 ch S16LE")));
+    CHECK(detail.contains(QStringLiteral("running")));
 
-    const QByteArray none = "[ {\"id\":40,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
-                            "{\"node.name\":\"alsa_output.test\"}}} ]";
-    CHECK(DeviceEnumerator::findOwnNode(none).isEmpty());
+    /* Name falls back description -> nick -> node.name. */
+    PeerInfo nick;
+    nick.nick = QStringLiteral("Nick");
+    nick.name = QStringLiteral("node.name");
+    describePeer(nick, &name, &detail);
+    CHECK(name == QStringLiteral("Nick"));
+    nick.nick.clear();
+    describePeer(nick, &name, &detail);
+    CHECK(name == QStringLiteral("node.name"));
+
+    /* A suspended device has no negotiated Format: drop those attributes
+     * instead of printing "0 Hz". */
+    PeerInfo suspended;
+    suspended.name  = QStringLiteral("alsa_output.test");
+    suspended.state = QStringLiteral("suspended");
+    describePeer(suspended, &name, &detail);
+    CHECK(detail == QStringLiteral("suspended"));
 }
 
 static void
 test_resolve_connections()
 {
-    /* Our filter node (61, marked) plays to a sink (89, Bluetooth/aptX) and
-     * captures from a source (53). Links reference node ids directly. Each peer
-     * carries state + negotiated Format so we can assert the enriched line. */
-    const QByteArray json
-            = "[\n"
-              "  {\"id\":89,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"state\":\"running\","
-              "\"props\":{\"media.class\":\"Audio/Sink\",\"node.name\":\"bluez_output.x\","
-              "\"node.description\":\"FiiO UTWS5\",\"api.bluez5.codec\":\"aptx\","
-              "\"device.api\":\"bluez5\"},"
-              "\"params\":{\"Format\":[{\"rate\":44100,\"channels\":2,\"format\":\"S24LE\"}]}}},\n"
-              "  {\"id\":53,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"state\":\"running\","
-              "\"props\":{\"media.class\":\"Audio/Source\",\"node.name\":\"alsa_input.mic\","
-              "\"node.description\":\"USB Mic\"},"
-              "\"params\":{\"Format\":[{\"rate\":48000,\"channels\":1,\"format\":\"S24LE\"}]}}},\n"
-              "  {\"id\":61,\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
-              "{\"node.name\":\"FL64\",\"pipeasio.node\":1}}},\n"
-              "  {\"id\":201,\"type\":\"PipeWire:Interface:Link\",\"info\":{\"props\":"
-              "{\"link.output.node\":61,\"link.input.node\":89}}},\n"
-              "  {\"id\":202,\"type\":\"PipeWire:Interface:Link\",\"info\":{\"props\":"
-              "{\"link.output.node\":53,\"link.input.node\":61}}}\n"
-              "]\n";
-    const DeviceEnumerator::Connections c = DeviceEnumerator::resolveConnections(json);
-    CHECK(c.output == QStringLiteral("FiiO UTWS5"));
+    PeerInfo sink;
+    sink.description = QStringLiteral("FiiO UTWS5");
+    sink.btCodec     = QStringLiteral("aptx");
+    sink.rate        = 44100;
+    PeerInfo source;
+    source.description = QStringLiteral("Built-in Mic");
+    PeerInfo sink2;
+    sink2.description = QStringLiteral("Second Sink");
+
+    const QHash<uint32_t, PeerInfo> nodes
+            = { { 61, PeerInfo() }, { 89, sink }, { 55, source }, { 90, sink2 } };
+
+    /* Our node (61) plays to 89 and captures from 55. */
+    QVector<GraphLink> links = { { 61, 89 }, { 61, 89 }, { 55, 61 } };
+    Connections        c     = resolveConnections(61, nodes, links);
+    CHECK(c.output == QStringLiteral("FiiO UTWS5")); /* duplicate links coalesce */
     CHECK(c.outputDetail.contains(QStringLiteral("aptX")));
     CHECK(c.outputDetail.contains(QStringLiteral("44100 Hz")));
-    CHECK(c.outputDetail.contains(QStringLiteral("2 ch S24LE")));
-    CHECK(c.outputDetail.contains(QStringLiteral("running")));
-    CHECK(c.input == QStringLiteral("USB Mic"));
-    CHECK(c.inputDetail.contains(QStringLiteral("48000 Hz")));
-    CHECK(c.inputDetail.contains(QStringLiteral("1 ch S24LE")));
+    CHECK(c.input == QStringLiteral("Built-in Mic"));
+    CHECK(c.inputDetail.isEmpty()); /* no format/state known for this peer */
 
-    /* No pipeasio-marked node present -> both sides empty. */
-    const QByteArray none = "[ {\"id\":89,\"type\":\"PipeWire:Interface:Node\",\"info\":"
-                            "{\"props\":{\"media.class\":\"Audio/Sink\",\"node.name\":\"x\"}}} ]";
-    const DeviceEnumerator::Connections e = DeviceEnumerator::resolveConnections(none);
-    CHECK(e.output.isEmpty());
-    CHECK(e.input.isEmpty());
+    /* Several distinct peers on one side collapse to a names-only list. */
+    links = { { 61, 89 }, { 61, 90 } };
+    c     = resolveConnections(61, nodes, links);
+    CHECK(c.output == QStringLiteral("FiiO UTWS5, Second Sink"));
+    CHECK(c.outputDetail.isEmpty());
+
+    /* Links to nodes we never saw, and an unconnected node, resolve to empty. */
+    c = resolveConnections(61, nodes, { { 61, 777 } });
+    CHECK(c.output.isEmpty());
+    c = resolveConnections(61, nodes, {});
+    CHECK(c.output.isEmpty());
+    CHECK(c.input.isEmpty());
 }
 
 static int
@@ -638,7 +741,7 @@ test_monitor_transient_hold()
     CHECK(quantum->text() == QStringLiteral("64"));
     CHECK(output->text() == QStringLiteral("Sink A"));
 
-    /* One miss (node vanished from a single pw-top iteration) holds the last
+    /* One miss (the node vanished for a single frame) holds the last
      * good frame. A second consecutive miss reverts to waiting and clears the
      * device rows. */
     send(NodeStats());
@@ -668,6 +771,63 @@ test_monitor_transient_hold()
     CHECK(quantum->text() == QStringLiteral("128"));
 }
 
+static void
+spin(int ms)
+{
+    QElapsedTimer deadline;
+    deadline.start();
+    while (deadline.elapsed() < ms)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+}
+
+/* The Profiler pushes a point per audio cycle, so the panel must not hold the
+ * connection while the tab that consumes it is hidden. A remote that cannot
+ * exist makes a delivered frame observable: no frame leaves the labels at
+ * their construction-time text, one writes the connection error. */
+static void
+test_monitor_tab_gating()
+{
+    const QByteArray savedRemote = qgetenv("PIPEWIRE_REMOTE");
+    qputenv("PIPEWIRE_REMOTE", "pipeasio-test-no-such-remote");
+
+    SettingsDialogOptions options; /* monitorEnabled stays at its default */
+    options.deviceRequest.program   = QCoreApplication::applicationFilePath();
+    options.deviceRequest.arguments = { QStringLiteral("--sleep") };
+    options.deviceRequest.timeoutMs = 200;
+
+    {
+        SettingsDialog dialog(nullptr, options);
+        auto          *tabs    = dialog.findChild<QTabWidget *>();
+        auto          *quantum = dialog.findChild<QLabel *>(QStringLiteral("monQuantum"));
+        CHECK(tabs != nullptr);
+        CHECK(quantum != nullptr);
+        if (tabs && quantum)
+        {
+            CHECK(tabs->currentIndex() == 0); /* opens on Settings, not Monitor */
+
+            /* Hidden: nothing is sampled, so no frame ever reaches the labels. */
+            spin(500);
+            CHECK(quantum->text() == QStringLiteral("waiting for audio..."));
+
+            /* Showing: frames arrive within a few emit intervals. */
+            tabs->setCurrentIndex(1);
+            spin(500);
+            CHECK(quantum->text() == QStringLiteral("no PipeWire daemon"));
+
+            /* Hidden again: delivery stops, so the sentinel survives. */
+            tabs->setCurrentIndex(0);
+            quantum->setText(QStringLiteral("sentinel"));
+            spin(500);
+            CHECK(quantum->text() == QStringLiteral("sentinel"));
+        }
+    }
+
+    if (savedRemote.isEmpty())
+        qunsetenv("PIPEWIRE_REMOTE");
+    else
+        qputenv("PIPEWIRE_REMOTE", savedRemote);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -682,14 +842,15 @@ main(int argc, char **argv)
     test_line_length_boundary();
     test_parse_pwdump();
     test_graph_clock_rate();
-    test_parse_pwtop();
-    test_find_own_node();
+    test_profiler_pod();
+    test_describe_peer();
     test_resolve_connections();
     test_async_enumerator();
     test_dialog_loading_state();
     test_latency_follows_graph_rate();
     test_tooltip_wrapping();
     test_monitor_transient_hold();
+    test_monitor_tab_gating();
 
     std::fprintf(stderr, "[%s] %d checks, %d failed\n", g_fail ? "FAIL" : "PASS", g_total, g_fail);
     return g_fail ? 1 : 0;

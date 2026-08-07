@@ -2,10 +2,11 @@ find_package(Qt6 COMPONENTS Widgets REQUIRED)
 set(CMAKE_AUTOMOC ON)
 add_executable(pipeasio-settings
     main.cpp SettingsDialog.cpp Config.cpp DeviceEnumerator.cpp PipeWireMonitor.cpp
-    LoadHistogram.cpp ${CMAKE_SOURCE_DIR}/src/config.c)
+    ProfilerParse.cpp LoadHistogram.cpp ${CMAKE_SOURCE_DIR}/src/config.c)
 target_include_directories(pipeasio-settings PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_compile_features(pipeasio-settings PRIVATE cxx_std_17)
-target_link_libraries(pipeasio-settings PRIVATE Qt6::Widgets)
+# PkgConfig::PIPEWIRE comes from the top-level CMakeLists, where it is REQUIRED.
+target_link_libraries(pipeasio-settings PRIVATE Qt6::Widgets PkgConfig::PIPEWIRE)
 if(PIPEASIO_ASAN)
     target_compile_options(pipeasio-settings PRIVATE
         -fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer)
