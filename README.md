@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/M0n7y5/pipeasio/releases"><img alt="Release" src="https://img.shields.io/github/v/release/M0n7y5/pipeasio?include_prereleases&amp;label=release&amp;color=ff6a1f"></a>
   <a href="https://aur.archlinux.org/packages/pipeasio"><img alt="AUR version" src="https://img.shields.io/aur/version/pipeasio?label=AUR&amp;color=ff6a1f"></a>
-  <a href="https://fluxer.gg/THKL1aSc"><img alt="Fluxer guild" src="https://img.shields.io/badge/Fluxer-join%20the%20guild-4641D9"></a>
+  <a href="https://fluxer.gg/HbKTgk5V"><img alt="Fluxer guild" src="https://img.shields.io/badge/Fluxer-join%20the%20guild-4641D9"></a>
   <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-blue">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20x86__64-lightgrey">
   <img alt="PipeWire" src="https://img.shields.io/badge/PipeWire-1.4.2%2B-ff6a1f">
@@ -57,14 +57,14 @@ driver.
 If you would like to work on PipeASIO, come and say so in the Fluxer guild, with
 a rough outline of what you want to change:
 
-<a href="https://fluxer.gg/THKL1aSc">
+<a href="https://fluxer.gg/HbKTgk5V">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/fluxer-logo-white.svg">
     <img alt="Fluxer" src="docs/fluxer-logo-color.svg" width="170">
   </picture>
 </a>
 
-**[Join the guild &rarr;](https://fluxer.gg/THKL1aSc)**
+**[Join the guild &rarr;](https://fluxer.gg/HbKTgk5V)**
 
 Once you are on the contributor list the usual rules apply: run `clang-format`
 (the config is in-tree) before submitting, and keep changes x86_64 and C11.
