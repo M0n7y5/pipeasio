@@ -38,6 +38,8 @@ err_log="$PROBE_PREFIX/probe.err"
 # Run the probe unless told to inspect the previous core.
 if [[ "$mode" != "last" ]]; then
     export WINEPREFIX="$PROBE_PREFIX"
+    # No .NET or Gecko; the Wine Mono prompt would block an unattended run.
+    export WINEDLLOVERRIDES="mscoree,mshtml=${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
     export WINEDLLPATH="${PIPEASIO_ROOT}/lib/wine"
     export WINEDEBUG
     export PIPEWIRE_DEBUG

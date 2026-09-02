@@ -30,6 +30,8 @@ if [[ ! -e "${PIPEASIO_PREFIX}/lib/wine/i386-windows/pipeasio32.dll" \
 fi
 
 export WINEPREFIX="$PROBE_PREFIX"
+# No .NET or Gecko; the Wine Mono prompt would block an unattended run.
+export WINEDLLOVERRIDES="mscoree,mshtml=${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
 export PIPEASIO_PREFIX
 export PIPEASIO_ROOT
 export WINEDEBUG
