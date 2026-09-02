@@ -58,8 +58,10 @@ class SettingsDialog : public QDialog
     QWidget *buildAboutTab();
     void     applyConfig(const struct pipeasio_config &c);
     void     updateLatencyLabel();
+    void     updateSchedulingLabel();
     int      currentBufferSize() const;
     int      currentSampleRate() const;
+    double   currentPeriodMs() const;
 
     /* Settings widgets */
     QSpinBox                  *m_inputs            = nullptr;
@@ -72,6 +74,7 @@ class SettingsDialog : public QDialog
     QCheckBox                 *m_autoConnect       = nullptr;
     QCheckBox                 *m_fixedBuffer       = nullptr;
     QCheckBox                 *m_followDeviceClock = nullptr;
+    QLabel                    *m_scheduling        = nullptr;
     QCheckBox                 *m_realtime          = nullptr;
     QLineEdit                 *m_nodeName          = nullptr;
     DeviceEnumerator::Request *m_deviceRequest     = nullptr;

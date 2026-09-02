@@ -671,6 +671,42 @@ test_latency_follows_graph_rate()
     CHECK(latency->text() == QStringLiteral("10.7 ms"));
 }
 
+/* The follow-device checkbox also flips the node between synchronous and
+ * asynchronous scheduling; the derived row names the mode and its cost. */
+static void
+test_scheduling_row_follows_checkbox()
+{
+    CHECK(Config::save(Config::defaults())); /* follow off, buffer 1024, 48 kHz */
+
+    SettingsDialogOptions options;
+    options.monitorEnabled          = false;
+    options.deviceRequest.program   = QCoreApplication::applicationFilePath();
+    options.deviceRequest.arguments = { QStringLiteral("--devices") };
+    options.deviceRequest.timeoutMs = 1000;
+
+    SettingsDialog dialog(nullptr, options);
+    auto          *scheduling = dialog.findChild<QLabel *>(QStringLiteral("scheduling"));
+    auto          *follow     = dialog.findChild<QCheckBox *>(QStringLiteral("followDeviceClock"));
+    auto          *buffer     = dialog.findChild<QComboBox *>(QStringLiteral("bufferSize"));
+    CHECK(scheduling && follow && buffer);
+    CHECK(!follow->isChecked());
+    CHECK(scheduling->text() == QStringLiteral("synchronous"));
+
+    /* A shown window does not grow, so the longer reading must fit up front. */
+    const int hintBefore = dialog.sizeHint().width();
+
+    follow->setChecked(true);
+    CHECK(scheduling->text() == QStringLiteral("asynchronous (+1 period, 21.3 ms)"));
+    CHECK(dialog.sizeHint().width() == hintBefore);
+    CHECK(scheduling->sizeHint().width() <= scheduling->minimumWidth());
+
+    buffer->setCurrentIndex(buffer->findData(128));
+    CHECK(scheduling->text() == QStringLiteral("asynchronous (+1 period, 2.7 ms)"));
+
+    follow->setChecked(false);
+    CHECK(scheduling->text() == QStringLiteral("synchronous"));
+}
+
 static void
 test_tooltip_wrapping()
 {
@@ -848,6 +884,7 @@ main(int argc, char **argv)
     test_async_enumerator();
     test_dialog_loading_state();
     test_latency_follows_graph_rate();
+    test_scheduling_row_follows_checkbox();
     test_tooltip_wrapping();
     test_monitor_transient_hold();
     test_monitor_tab_gating();

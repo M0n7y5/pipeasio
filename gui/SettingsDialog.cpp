@@ -219,10 +219,24 @@ SettingsDialog::buildSettingsTab()
 
     m_followDeviceClock = new QCheckBox(page);
     m_followDeviceClock->setObjectName(QStringLiteral("followDeviceClock"));
-    addRow(QStringLiteral("Follow device clock (Bluetooth)"), m_followDeviceClock,
+    addRow(QStringLiteral("Follow device clock"), m_followDeviceClock,
            QStringLiteral("Follow the target device's clock instead of forcing the graph "
-                          "quantum. Required for Bluetooth sinks, whose clock cannot be "
-                          "slaved. Raises latency, so leave it off for wired output."));
+                          "quantum, and schedule the node asynchronously. Costs one buffer "
+                          "period, so leave it off for wired output. Try it when a "
+                          "Bluetooth sink is silent or drifts, since its clock is the "
+                          "radio link and cannot always be slaved."));
+
+    m_scheduling = new QLabel(page);
+    m_scheduling->setObjectName(QStringLiteral("scheduling"));
+    /* A shown window does not grow with its hint; reserve the widest reading now. */
+    m_scheduling->setMinimumWidth(m_scheduling->fontMetrics().horizontalAdvance(
+            QStringLiteral("asynchronous (+1 period, 000.0 ms)")));
+    addRow(QStringLiteral("Scheduling"), m_scheduling,
+           QStringLiteral("Read-only, set by the option above. Synchronous: the host's "
+                          "bufferSwitch must return inside one buffer period or the graph "
+                          "stalls. Asynchronous: the device drives the cycle and one extra "
+                          "buffer period absorbs an overrun. pw-top marks an asynchronous "
+                          "node \"=\" and a synchronous one \"+\"."));
 
     m_realtime = new QCheckBox(page);
     m_realtime->setObjectName(QStringLiteral("realtime"));
@@ -245,6 +259,11 @@ SettingsDialog::buildSettingsTab()
             &SettingsDialog::updateLatencyLabel);
     connect(m_sampleRate, &QComboBox::currentIndexChanged, this,
             &SettingsDialog::updateLatencyLabel);
+    connect(m_bufferSize, &QComboBox::currentIndexChanged, this,
+            &SettingsDialog::updateSchedulingLabel);
+    connect(m_sampleRate, &QComboBox::currentIndexChanged, this,
+            &SettingsDialog::updateSchedulingLabel);
+    connect(m_followDeviceClock, &QCheckBox::toggled, this, &SettingsDialog::updateSchedulingLabel);
 
     return page;
 }
@@ -382,13 +401,31 @@ SettingsDialog::currentSampleRate() const
 void
 SettingsDialog::updateLatencyLabel()
 {
+    m_latency->setText(QString::number(currentPeriodMs(), 'f', 1) + QStringLiteral(" ms"));
+}
+
+double
+SettingsDialog::currentPeriodMs() const
+{
     const int buffer = currentBufferSize();
     const int sr     = currentSampleRate();
     /* "Follow PipeWire" (0): use the graph's actual clock rate when pw-dump
      * resolved it, so the readout doesn't lie at non-48k rates (issue #20). */
-    const int    rate = sr > 0 ? sr : (m_graphRate > 0 ? m_graphRate : 48000);
-    const double ms   = buffer * 1000.0 / rate;
-    m_latency->setText(QString::number(ms, 'f', 1) + QStringLiteral(" ms"));
+    const int rate = sr > 0 ? sr : (m_graphRate > 0 ? m_graphRate : 48000);
+    return buffer * 1000.0 / rate;
+}
+
+void
+SettingsDialog::updateSchedulingLabel()
+{
+    /* audio.c clears PW_KEY_NODE_ASYNC only while not following the device. */
+    if (!m_followDeviceClock->isChecked())
+    {
+        m_scheduling->setText(QStringLiteral("synchronous"));
+        return;
+    }
+    m_scheduling->setText(QStringLiteral("asynchronous (+1 period, %1 ms)")
+                                  .arg(QString::number(currentPeriodMs(), 'f', 1)));
 }
 
 void
@@ -439,6 +476,7 @@ SettingsDialog::applyConfig(const pipeasio_config &c)
     m_nodeName->setText(QString::fromUtf8(c.node_name));
 
     updateLatencyLabel();
+    updateSchedulingLabel();
 }
 void
 SettingsDialog::onDevicesEnumerated(bool success, const QList<DeviceEnumerator::Device> &devices,
@@ -479,6 +517,7 @@ SettingsDialog::onDevicesEnumerated(bool success, const QList<DeviceEnumerator::
     finishCombo(m_outputDevice, m_pendingOutputDevice);
     finishCombo(m_inputDevice, m_pendingInputDevice);
     updateLatencyLabel();
+    updateSchedulingLabel();
 }
 
 void
