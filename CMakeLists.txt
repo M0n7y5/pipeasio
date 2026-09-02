@@ -129,6 +129,7 @@ if(BUILD_WOW64_32)
 
     # i386 PE front end.  The shared ASIO sources link against the WoW64
     # proxy instead of src/audio.c.
+    # -lmingw32 first: its tlssup.o must own _tls_index, or Wine 11.16+'s winecrt0 tls.o collides.
     add_custom_command(
         OUTPUT  "${PA32_DLL}"
         COMMAND "${I686_W64_MINGW_GCC}" -shared
@@ -138,6 +139,7 @@ if(BUILD_WOW64_32)
                 "${CMAKE_SOURCE_DIR}/src/config.c"
                 "${CMAKE_SOURCE_DIR}/src/wow64/audio_proxy.c"
                 "${PA32_DEF}"
+                -lmingw32
                 "${CMAKE_BINARY_DIR}/libwinecrt0-i386.a"
                 -DPIPEASIO_WOW64_PE
                 ${_pa32_inc} ${_pa32_cflags} -static -static-libgcc
