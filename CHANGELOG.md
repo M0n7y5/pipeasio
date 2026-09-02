@@ -6,6 +6,20 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `pipeasio-register` no longer runs host Wine inside a Proton prefix. The
+  README's Proton section told users to register that way, and the first
+  host-Wine process in a prefix runs Wine's prefix update, rewriting the
+  registry and `system32` for a build the runner does not ship (#22). The
+  script now refuses a prefix that carries Proton's `tracked_files` (beside
+  `drive_c`, or one level up in Steam's `compatdata/<id>/pfx` layout) and
+  prints the runner form. `WINE=<command>` names the launcher to use in place
+  of `wine`; `WINE=umu-run` with `PROTONPATH` and `GAMEID` registers through
+  the game's own runner and container, leaving the prefix's `version` and
+  `.update-timestamp` untouched. The README, the website and the uninstall
+  instructions carry the same form.
+
 ### Changed
 
 - The settings panel names the scheduling mode. `follow_device_clock` has always

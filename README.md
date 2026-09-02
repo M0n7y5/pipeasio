@@ -308,6 +308,11 @@ the `lib/wine` inside a WineHQ `/opt/wine-<branch>` tree.
 root (`-DPIPEASIO_WINE_INSTALL_ROOT=...`, see [Installing](#installing)) or to
 set `WINEDLLPATH=<driver-install-root>` in the host's launch environment.
 
+The script runs whatever `wine` is on `PATH`; `WINE=<command>` substitutes
+another launcher, `umu-run` included. Proton prefixes (anything with a
+`tracked_files`) are refused unless `WINE` is set, see
+[Proton / Steam / Faugus](#proton--steam--faugus).
+
 ## 32-bit applications (experimental)
 
 PipeASIO is 64-bit by default. A front end for **32-bit** Windows ASIO hosts
@@ -409,14 +414,35 @@ third, see step 3):
 
    64-bit games and hosts do not need this.
 
-Then register PipeASIO in the Proton wineprefix as usual:
+Then register PipeASIO in the Proton wineprefix **through the runner**, not
+through the host's `wine`: `umu-run` runs a Windows executable inside the same
+runner and container the game uses, and `pipeasio-register` runs whatever
+`WINE` names in place of `wine`:
 
 ```sh
-env WINEPREFIX="$HOME/Faugus/<game>" pipeasio-register
+env WINEPREFIX="$HOME/Faugus/<game>" \
+    WINE=umu-run \
+    PROTONPATH="$HOME/.local/share/Steam/compatibilitytools.d/<runner>" \
+    GAMEID=umu-<game> \
+    pipeasio-register
 ```
 
-The PE stub lands in `<prefix>/drive_c/windows/system32/` and the CLSID
-registration persists in the prefix registry, both shared across Wine versions.
+`PROTONPATH` is the full path of the runner directory the game is configured
+with, under `~/.local/share/Steam/compatibilitytools.d/` or
+`/usr/share/steam/compatibilitytools.d/`; a bare name only resolves for runners
+in the user directory. `GAMEID` is any stable label; without one umu falls back
+to `umu-default`. Faugus bundles `umu-run` at
+`~/.local/share/faugus-launcher/umu-run` if the `umu-launcher` package is not
+installed. For a Steam game the prefix is
+`~/.steam/steam/steamapps/compatdata/<appid>/pfx`. The PE stub lands in
+`<prefix>/drive_c/windows/system32/` and the CLSID registration persists in
+the prefix registry, both shared across Wine versions.
+
+`pipeasio-register` refuses a Proton prefix when `WINE` is unset. Host Wine is
+a different build from the runner's, and the first host-Wine process in a
+prefix runs Wine's prefix update, rewriting the registry and `system32` for the
+host build ([#22](https://github.com/M0n7y5/pipeasio/issues/22)). Unregistering
+uses the same environment, see [Uninstalling](#uninstalling).
 
 ## Other distributions
 
@@ -653,6 +679,9 @@ Unregister from each Wine prefix you registered, then remove the files:
 ```sh
 # Unregister (set WINEDLLPATH the same way pipeasio-register does)
 env WINEDLLPATH="$HOME/.local/lib/wine" wine regsvr32 /u pipeasio64.dll
+# Proton prefix: same, through the runner, never host wine
+env WINEDLLPATH="$HOME/.local/lib/wine" PROTONPATH=<runner dir> GAMEID=umu-<game> \
+    umu-run regsvr32 /u pipeasio64.dll
 rm -f "$WINEPREFIX/drive_c/windows/system32/pipeasio64.dll"
 
 # Remove the installed files (CMake records them at install time)

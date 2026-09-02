@@ -429,7 +429,14 @@ sudo cmake --install build --prefix /usr</pre>
       <p class="note"><code>pipeasio-register</code> compares the install root against the Wine on your <code>PATH</code> and warns when they mismatch; the alternative to reinstalling is <code>WINEDLLPATH=&lt;driver-install-root&gt;</code> in the host's launch environment.</p>
 
       <div class="step">3 / Register into a wineprefix</div>
-<pre>env WINEPREFIX=<span class="p">"$HOME/Faugus/&lt;game&gt;"</span> pipeasio-register</pre>
+<pre><span class="c"># plain Wine prefix</span>
+env WINEPREFIX=<span class="p">"$HOME/asioapp"</span> pipeasio-register
+
+<span class="c"># Proton / Faugus / Steam prefix: through the runner, never host wine</span>
+env WINEPREFIX=<span class="p">"$HOME/Faugus/&lt;game&gt;"</span> WINE=umu-run \
+    PROTONPATH=<span class="p">"$HOME/.local/share/Steam/compatibilitytools.d/&lt;runner&gt;"</span> \
+    GAMEID=umu-&lt;game&gt; pipeasio-register</pre>
+      <p class="note">Host Wine started in a Proton prefix rewrites its registry and <code>system32</code> for the host build, so <code>pipeasio-register</code> refuses one unless <code>WINE</code> names the runner's launcher. Faugus bundles <code>umu-run</code> at <code>~/.local/share/faugus-launcher/umu-run</code>.</p>
 
       <div class="step">4 / Proton and Steam Runtime</div>
       <p>Proton runs Wine in a container that cannot see <code>/usr/lib/wine</code>, so install under <code>$HOME</code> (above) and point Proton's Wine at the ELF half with <code>WINEDLLPATH</code>. In Steam, add it to the game's launch options (right-click the game &gt; Properties &gt; General):</p>
