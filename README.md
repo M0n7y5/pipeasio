@@ -497,14 +497,19 @@ Env: `PIPEASIO_FIXED_BUFFERSIZE` (`on`/`off`).
 
 ### follow_device_clock
 Default 0 (off): the driver pins the PipeWire graph quantum to the host's buffer
-size and runs as its own low-latency clock master, which is correct for wired
-devices. Set to 1 to make the driver a follower instead: it drops `FORCE_QUANTUM`
-so the target device drives the cycle. This is required for Bluetooth sinks, whose
-clock is the radio link and cannot be slaved to the host. Otherwise PipeWire
-silently drops the links and you get no sound. The buffer size is then dictated by
-the device (the driver settles to the device's quantum after one automatic reset),
-so latency is higher. A follower is also scheduled asynchronously, which costs
-one more buffer period but keeps a device-driven quantum from stalling the graph.
+size, runs as its own low-latency clock master, and is scheduled synchronously.
+Set to 1 and two properties change together. The driver drops `FORCE_QUANTUM`,
+so the target device drives the cycle and dictates the buffer size (the driver
+settles to the device's quantum after one automatic reset), and the node turns
+asynchronous (`PW_KEY_NODE_ASYNC`), which `pw-top` marks `=` instead of `+`.
+Asynchronous costs one more buffer period of round trip and in exchange absorbs
+a callback that overruns instead of stalling the graph. The settings panel's
+read-only `Scheduling` row names the resulting mode and that extra period.
+
+Reach for it when a Bluetooth sink is silent or drifts: its clock is the radio
+link and cannot always be slaved to the host, and PipeWire then drops the links.
+Not every Bluetooth sink needs it; some accept a forced quantum and run
+synchronously.
 Env: `PIPEASIO_FOLLOW_DEVICE_CLOCK` (`on`/`off`).
 
 ### buffer_size
@@ -536,11 +541,12 @@ more xruns on the PipeASIO node than leaving it off.
 In FL Studio, also turn **Mix in buffer switch** off (Options > Audio settings >
 Input / output) before enabling this. That option makes FL Studio run its mixing
 and plugin processing inside the ASIO `bufferSwitch` callback, which the driver
-delivers on the PipeWire data loop. The driver is scheduled synchronously (see
-[Performance](#performance)), so the callback has one buffer period to return
-and a full mixer pass does not fit: the graph stalls instead of absorbing the
-overrun. With the option off, FL Studio mixes on its own threads and the
-callback only hands over buffers that are already filled.
+delivers on the PipeWire data loop. With
+[`follow_device_clock`](#follow_device_clock) off the driver is scheduled
+synchronously (see [Performance](#performance)), so the callback has one buffer
+period to return and a full mixer pass does not fit: the graph stalls instead of
+absorbing the overrun. With **Mix in buffer switch** off, FL Studio mixes on its
+own threads and the callback only hands over buffers that are already filled.
 
 Useful as a diagnostic for the scheduling-related xruns in
 [#4](https://github.com/M0n7y5/pipeasio/issues/4), not as a fix for them. It
@@ -570,7 +576,8 @@ A few knobs affect xrun-free, low-latency operation:
   trip is one buffer period instead of two. The trade is that a callback which
   overruns stalls the graph instead of being absorbed, so pick a buffer size
   the host can meet. [`follow_device_clock`](#follow_device_clock) schedules
-  asynchronously instead.
+  asynchronously instead, which adds a buffer period and absorbs the overrun;
+  `pw-top` marks the node `=` when it is asynchronous and `+` when it is not.
 - Host-side callback work. Whatever the host does inside `bufferSwitch` runs
   inside the driver's cycle and counts against that same deadline. Hosts that
   offer to mix there - FL Studio's **Mix in buffer switch** - should have it
@@ -631,9 +638,9 @@ another tab. The device combos on the **Settings** tab enumerate through
 
 **Registering fails with status `c0000135`.** Wine could not find the unified PE name. The install creates `pipeasio.dll` symlinks next to `pipeasio64.dll` for Wine 10+, so re-run `cmake --install` to create them, then register again.
 
-**Bluetooth headphones produce no sound.** Turn on `follow_device_clock` (or set `PIPEASIO_FOLLOW_DEVICE_CLOCK=on`). A Bluetooth sink's clock is the radio link and cannot be slaved to the host, so the driver follows it instead.
+**Bluetooth headphones produce no sound.** Turn on `follow_device_clock` (or set `PIPEASIO_FOLLOW_DEVICE_CLOCK=on`). A Bluetooth sink's clock is the radio link and cannot always be slaved to the host, so the driver follows it instead. Some Bluetooth sinks do accept a forced quantum and work with the option off, which keeps the synchronous scheduling and its lower latency, so try it both ways.
 
-**FL Studio crackles or xruns constantly, especially with [`realtime`](#realtime) enabled.** Turn **Mix in buffer switch** off in Options > Audio settings > Input / output. It makes FL Studio mix and run plugins inside the ASIO callback, which the driver delivers on the PipeWire data loop with one buffer period to return; a full mixer pass overruns that, and because the driver is scheduled synchronously the overrun stalls the graph rather than being absorbed. With it off, FL Studio mixes on its own threads and the callback only hands over ready buffers.
+**FL Studio crackles or xruns constantly, especially with [`realtime`](#realtime) enabled.** Turn **Mix in buffer switch** off in Options > Audio settings > Input / output. It makes FL Studio mix and run plugins inside the ASIO callback, which the driver delivers on the PipeWire data loop with one buffer period to return; a full mixer pass overruns that, and with [`follow_device_clock`](#follow_device_clock) off the driver is scheduled synchronously, so the overrun stalls the graph rather than being absorbed. With it off, FL Studio mixes on its own threads and the callback only hands over ready buffers.
 
 **Does it conflict with WineASIO?** No. PipeASIO has its own CLSID and registry identity, so it installs side by side with WineASIO and hosts list them as separate drivers.
 

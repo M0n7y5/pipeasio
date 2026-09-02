@@ -57,8 +57,8 @@
         { "@type": "Question", "name": "No sound, or the driver does not load under Proton?", "acceptedAnswer": { "@type": "Answer", "text": "Proton's container cannot see /usr/lib/wine. Install under $HOME and set WINEDLLPATH in the game's launch options - Steam: WINEDLLPATH=/home/<you>/.local/lib/wine %command%, Faugus: the same variable in the per-game environment field - then register in that prefix." } },
         { "@type": "Question", "name": "A 32-bit game or host does not list PipeASIO under Proton?", "acceptedAnswer": { "@type": "Answer", "text": "Proton runs 32-bit apps through classic split WoW64 by default, which cannot load the 32-bit front end. In Steam, add PROTON_USE_WOW64=1 alongside WINEDLLPATH in the game's launch options: PROTON_USE_WOW64=1 WINEDLLPATH=/home/<you>/.local/lib/wine %command%. In Faugus, enable the WoW64 option in the game's settings. The install must also include the 32-bit half (-DBUILD_WOW64_32=ON)." } },
         { "@type": "Question", "name": "Registering fails with status c0000135?", "acceptedAnswer": { "@type": "Answer", "text": "Wine could not find the unified PE name. The install creates pipeasio.dll symlinks next to pipeasio64.dll for Wine 10+, so re-run cmake --install to create them, then register again." } },
-        { "@type": "Question", "name": "Bluetooth headphones produce no sound?", "acceptedAnswer": { "@type": "Answer", "text": "Turn on follow device clock in the panel (or set PIPEASIO_FOLLOW_DEVICE_CLOCK=on). A Bluetooth sink's clock is the radio link and cannot be slaved to the host, so the driver follows it instead." } },
-        { "@type": "Question", "name": "FL Studio crackles or xruns constantly?", "acceptedAnswer": { "@type": "Answer", "text": "Turn Mix in buffer switch off in Options > Audio settings > Input / output. It makes FL Studio mix and run plugins inside the ASIO callback, which the driver delivers on the PipeWire data loop with one buffer period to return; a full mixer pass overruns that, and because the driver is scheduled synchronously the overrun stalls the graph rather than being absorbed. With it off, FL Studio mixes on its own threads and the callback only hands over ready buffers." } },
+        { "@type": "Question", "name": "Bluetooth headphones produce no sound?", "acceptedAnswer": { "@type": "Answer", "text": "Turn on follow device clock in the panel (or set PIPEASIO_FOLLOW_DEVICE_CLOCK=on). A Bluetooth sink's clock is the radio link and cannot always be slaved to the host, so the driver follows it instead, which also switches it to asynchronous scheduling and costs one buffer period. Some Bluetooth sinks do accept a forced quantum and work with the option off, so try it both ways." } },
+        { "@type": "Question", "name": "FL Studio crackles or xruns constantly?", "acceptedAnswer": { "@type": "Answer", "text": "Turn Mix in buffer switch off in Options > Audio settings > Input / output. It makes FL Studio mix and run plugins inside the ASIO callback, which the driver delivers on the PipeWire data loop with one buffer period to return; a full mixer pass overruns that, and with follow device clock off the driver is scheduled synchronously, so the overrun stalls the graph rather than being absorbed. With it off, FL Studio mixes on its own threads and the callback only hands over ready buffers." } },
         { "@type": "Question", "name": "Does it conflict with WineASIO?", "acceptedAnswer": { "@type": "Answer", "text": "No. PipeASIO has its own CLSID and registry identity, so it installs side by side with WineASIO and hosts list them as separate drivers." } },
         { "@type": "Question", "name": "How do I select it in my DAW?", "acceptedAnswer": { "@type": "Answer", "text": "After registering, pick PipeASIO from the host's ASIO device list. In FL Studio that is Options > Audio settings > Device." } }
       ]
@@ -360,7 +360,7 @@
         <div class="card"><h3>Runs under Proton</h3><p>Loads inside the Steam Runtime steamrt4 container that Proton uses, via a host-provided <code>WINEDLLPATH</code>.</p></div>
         <div class="card"><h3>Sample-accurate clock</h3><p>Locks the PipeWire quantum to the host's negotiated buffer with <code>PW_KEY_NODE_FORCE_QUANTUM</code> for tight, glitch-free timing.</p></div>
         <div class="card"><h3>Qt6 settings panel</h3><p>A native <code>pipeasio-settings</code> app: channels, buffer size, device routing, plus a live Monitor tab showing the connected input/output devices, quantum, rate, xruns and a DSP-load graph.</p></div>
-        <div class="card"><h3>Bluetooth friendly</h3><p>A follow-device-clock mode lets the target device drive the cycle, which Bluetooth sinks require since their clock is the radio link.</p></div>
+        <div class="card"><h3>Bluetooth friendly</h3><p>A follow-device-clock mode lets the target device drive the cycle, which a Bluetooth sink needs when its radio-link clock cannot be slaved. The panel names the scheduling mode each choice implies.</p></div>
         <div class="card"><h3>Live config reload</h3><p>The driver re-reads its INI while running, so saving in the panel applies within about a second. No reselecting the driver or restarting the host.</p></div>
       </div>
     </div>
@@ -459,7 +459,7 @@ sudo cmake --install build --prefix /usr</pre>
           <tr><td><code>fixed_buffer_size</code></td><td class="d">on</td><td>Lock the size, or let the host change PipeWire's quantum.</td></tr>
           <tr><td><code>sample_rate</code></td><td class="d">follow</td><td><code>0</code> follows the graph, a non-zero value pins the rate.</td></tr>
           <tr><td><code>auto_connect</code></td><td class="d">on</td><td>Auto-wire channels to a hardware device on start.</td></tr>
-          <tr><td><code>follow_device_clock</code></td><td class="d">off</td><td>Let the target device drive the cycle (needed for Bluetooth).</td></tr>
+          <tr><td><code>follow_device_clock</code></td><td class="d">off</td><td>Let the target device drive the cycle, scheduled asynchronously (+1 buffer period).</td></tr>
         </tbody>
       </table>
     </div>
@@ -484,11 +484,11 @@ sudo cmake --install build --prefix /usr</pre>
         </details>
         <details>
           <summary>Bluetooth headphones produce no sound?</summary>
-          <div class="ans">Turn on <b>follow device clock</b> in the panel (or set <code>PIPEASIO_FOLLOW_DEVICE_CLOCK=on</code>). A Bluetooth sink's clock is the radio link and cannot be slaved to the host, so the driver follows it instead.</div>
+          <div class="ans">Turn on <b>follow device clock</b> in the panel (or set <code>PIPEASIO_FOLLOW_DEVICE_CLOCK=on</code>). A Bluetooth sink's clock is the radio link and cannot always be slaved to the host, so the driver follows it instead, which also switches it to asynchronous scheduling and costs one buffer period. Some Bluetooth sinks do accept a forced quantum and work with the option off, so try it both ways.</div>
         </details>
         <details>
           <summary>FL Studio crackles or xruns constantly?</summary>
-          <div class="ans">Turn <b>Mix in buffer switch</b> off in Options &gt; Audio settings &gt; Input / output. It makes FL Studio mix and run plugins inside the ASIO callback, which the driver delivers on the PipeWire data loop with one buffer period to return; a full mixer pass overruns that, and because the driver is scheduled synchronously the overrun stalls the graph rather than being absorbed. With it off, FL Studio mixes on its own threads and the callback only hands over ready buffers.</div>
+          <div class="ans">Turn <b>Mix in buffer switch</b> off in Options &gt; Audio settings &gt; Input / output. It makes FL Studio mix and run plugins inside the ASIO callback, which the driver delivers on the PipeWire data loop with one buffer period to return; a full mixer pass overruns that, and with <b>follow device clock</b> off the driver is scheduled synchronously, so the overrun stalls the graph rather than being absorbed. With it off, FL Studio mixes on its own threads and the callback only hands over ready buffers.</div>
         </details>
         <details>
           <summary>Does it conflict with WineASIO?</summary>

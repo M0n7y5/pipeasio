@@ -4,6 +4,31 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- The settings panel names the scheduling mode. `follow_device_clock` has always
+  set two properties at once (the target device drives the cycle, and the node
+  turns asynchronous), but the checkbox read "Follow device clock (Bluetooth)"
+  and its tooltip mentioned only the quantum, so the extra buffer period and the
+  synchronous to asynchronous switch stayed invisible until `pw-top` showed the
+  node as `=` instead of `+`. The checkbox is now "Follow device clock", the
+  tooltip names both effects, and a read-only `Scheduling` row reads
+  `synchronous` or `asynchronous (+1 period, 2.7 ms)`, tracking the checkbox and
+  the buffer period live.
+
+### Fixed
+
+- The docs asserted that the driver "is scheduled synchronously" without
+  qualification, which is wrong whenever `follow_device_clock` is on. The
+  `realtime` section, the Performance list, the FL Studio troubleshooting entry
+  and the website FAQ now attach that claim to the synchronous case only.
+- The docs called `follow_device_clock` a requirement for Bluetooth sinks and
+  promised silence without it. Some Bluetooth sinks accept a forced quantum and
+  run synchronously, so the README, the panel tooltip and the website now say to
+  try it both ways.
+
 ## [1.5.0] - 2026-08-06
 
 ### Added
