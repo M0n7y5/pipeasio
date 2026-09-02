@@ -3,8 +3,19 @@ me=pipeasio-register
 
 WINEPREFIX=${WINEPREFIX:=~/.wine}
 
+wine=${WINE:-wine}
+
+# Host wine's first process in a Proton prefix migrates it to the host build (#22).
+if [ -z "${WINE:-}" ] \
+   && { [ -e "${WINEPREFIX}/tracked_files" ] || [ -e "${WINEPREFIX}/../tracked_files" ]; }; then
+    >&2 echo "[${me}] ${WINEPREFIX} is a Proton prefix; not running host wine in it."
+    >&2 echo "[${me}] Host wine would migrate the prefix to its own build. Register through the runner:"
+    >&2 echo "[${me}]   WINE=umu-run PROTONPATH=<runner dir> GAMEID=umu-<name> WINEPREFIX=${WINEPREFIX} ${me}"
+    exit 1
+fi
+
 if [ ! -d "${WINEPREFIX}" ]; then
-    wineboot -u || exit $?
+    "${wine}" wineboot -u || exit $?
 fi
 
 # Candidate install roots, in preference order. PIPEASIO_REGISTER_CANDIDATES
@@ -36,7 +47,7 @@ fi
 # WINEDLLPATH; derive that dir from the wine binary so a mismatched install
 # root can be flagged instead of registering a driver that never loads.
 wine_libdir=""
-wine_cmd=$(command -v wine 2>/dev/null || true)
+wine_cmd=$(command -v "${wine}" 2>/dev/null || true)
 if [ -n "${wine_cmd}" ]; then
     wine_root=$(dirname "$(dirname "$(readlink -f "${wine_cmd}")")")
     # Older WineHQ builds keep 32-bit in lib/wine and 64-bit in lib64/wine, so
@@ -114,29 +125,29 @@ cp -v --no-preserve mode "${prefix}/x86_64-windows/pipeasio64.dll" \
 # Let Wine find the ELF half next to the PE half.
 export WINEDLLPATH="${prefix}${WINEDLLPATH:+:${WINEDLLPATH}}"
 if [ "${PIPEASIO_REGISTER_WITHOUT_LOADING:-0}" = 1 ]; then
-    wine reg add \
+    "${wine}" reg add \
         'HKCR\CLSID\{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}' \
         /ve /t REG_SZ /d 'PipeASIO Object' /f /reg:64 &&
-    wine reg add \
+    "${wine}" reg add \
         'HKCR\CLSID\{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}\InprocServer32' \
         /ve /t REG_SZ /d 'pipeasio64.dll' /f /reg:64 &&
-    wine reg add \
+    "${wine}" reg add \
         'HKCR\CLSID\{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}\InprocServer32' \
         /v ThreadingModel /t REG_SZ /d Apartment /f /reg:64 &&
-    wine reg add \
+    "${wine}" reg add \
         'HKCU\Software\Wine\DllOverrides' \
         /v pipeasio64 /t REG_SZ /d builtin /f /reg:64 &&
-    wine reg add \
+    "${wine}" reg add \
         'HKLM\Software\ASIO\PipeASIO' \
         /v CLSID /t REG_SZ /d '{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}' /f /reg:64 &&
-    wine reg add \
+    "${wine}" reg add \
         'HKLM\Software\ASIO\PipeASIO' \
         /v Description /t REG_SZ /d 'PipeASIO Driver' /f /reg:64
     code=$?
 else
     # /s: no modal success dialog - an undismissed box would block unattended
     # runs (fresh test prefixes, AFK registrations) forever.
-    wine regsvr32 /s pipeasio64.dll
+    "${wine}" regsvr32 /s pipeasio64.dll
     code=$?
 fi
 
@@ -148,19 +159,19 @@ if [ ${code} -eq 0 ] \
     mkdir -p "${WINEPREFIX}/drive_c/windows/syswow64" || exit $?
     cp -v --no-preserve mode "${prefix}/i386-windows/pipeasio32.dll" \
                              "${WINEPREFIX}/drive_c/windows/syswow64/" || exit $?
-    wine reg add \
+    "${wine}" reg add \
         'HKCR\CLSID\{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}\InprocServer32' \
         /ve /t REG_SZ /d 'pipeasio32.dll' /f /reg:32 || exit $?
-    wine reg add \
+    "${wine}" reg add \
         'HKCR\CLSID\{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}\InprocServer32' \
         /v ThreadingModel /t REG_SZ /d Apartment /f /reg:32 || exit $?
-    wine reg add \
+    "${wine}" reg add \
         'HKCU\Software\Wine\DllOverrides' \
         /v pipeasio32 /t REG_SZ /d builtin /f /reg:32 || exit $?
-    wine reg add \
+    "${wine}" reg add \
         'HKLM\Software\ASIO\PipeASIO' \
         /v CLSID /t REG_SZ /d '{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}' /f /reg:32 || exit $?
-    wine reg add \
+    "${wine}" reg add \
         'HKLM\Software\ASIO\PipeASIO' \
         /v Description /t REG_SZ /d 'PipeASIO Driver' /f /reg:32 || exit $?
     >&2 echo "[${me}] 32-bit WoW64 front end registered"

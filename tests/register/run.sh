@@ -207,6 +207,42 @@ for d in /usr/local/lib/wine /usr/lib/x86_64-linux-gnu/wine \
     fi
 done
 
+# 7. Proton prefixes (#22): no wine call unless WINE names the runner's
+#    command. The stub wine records every invocation.
+root7="$work/root7"
+use_root "$root7"
+mkpair "$root7/lib/wine"
+printf '#!/usr/bin/env bash\necho "$@" >> "%s/wine.calls"\nexit 0\n' "$work" > "$root7/bin/wine"
+
+# 7a. umu/Faugus layout: tracked_files beside drive_c.
+: > "$WINEPREFIX/tracked_files"
+run "$root7" "$tc"
+check "proton prefix refused" "$out" "is a Proton prefix"
+check "refusal names the runner route" "$out" "WINE=umu-run"
+check_absent "refusal registers nothing" "$out" "registered in"
+((status != 0)) || { echo "FAIL - proton refusal should exit nonzero"; fail=1; }
+[[ ! -e "$work/wine.calls" ]] || { echo "FAIL - host wine was invoked in a Proton prefix"; fail=1; }
+
+# 7b. Steam layout: tracked_files one level above pfx.
+rm -f "$WINEPREFIX/tracked_files"
+: > "$WINEPREFIX/../tracked_files"
+run "$root7" "$tc"
+check "steam compatdata layout refused" "$out" "is a Proton prefix"
+[[ ! -e "$work/wine.calls" ]] || { echo "FAIL - host wine was invoked in a compatdata prefix"; fail=1; }
+rm -f "$WINEPREFIX/../tracked_files"
+
+# 7c. WINE set: the named command runs the registration instead of wine.
+: > "$WINEPREFIX/tracked_files"
+runner="$work/runner-cmd"
+printf '#!/usr/bin/env bash\necho "$@" >> "%s/runner.calls"\nexit 0\n' "$work" > "$runner"
+chmod +x "$runner"
+WINE="$runner" run "$root7" "$tc"
+check "WINE override registers a Proton prefix" "$out" "registered in"
+((status == 0)) || { echo "FAIL - WINE override exit status ($status)"; fail=1; }
+[[ -e "$work/runner.calls" ]] || { echo "FAIL - WINE command was not used"; fail=1; }
+[[ ! -e "$work/wine.calls" ]] || { echo "FAIL - host wine ran despite WINE override"; fail=1; }
+rm -f "$WINEPREFIX/tracked_files"
+
 if ((fail)); then
     echo "[register-test] FAIL"
     exit 1
