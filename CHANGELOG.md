@@ -19,6 +19,12 @@ follow [Semantic Versioning](https://semver.org/).
   the game's own runner and container, leaving the prefix's `version` and
   `.update-timestamp` untouched. The README, the website and the uninstall
   instructions carry the same form.
+- The 32-bit WoW64 front end links again against Wine 11.16 and later. That
+  release added `tls.o` to `libwinecrt0.a`, which collided with mingw's own
+  TLS support on `__xl_a`/`__xl_z` because the driver's `_Thread_local` was
+  resolved from winecrt0 before mingw's runtime was searched. mingw's runtime
+  is the PE's entry point and owns TLS init, so it now owns those symbols too;
+  winecrt0 still supplies the unixlib call bridge.
 
 ### Changed
 
