@@ -6,6 +6,23 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- The driver shows up in volume mixers (#25). The node is now classed
+  `Stream/Output/Audio` and publishes `SPA_PARAM_Props` (`mute`, `volume`,
+  `channelVolumes`, `channelMap`) plus a node-level `Format`, which is what
+  pipewire-pulse needs to list a sink-input and what WirePlumber's mixer reads,
+  so pavucontrol, plasma-pa, pulsemixer and `wpctl` show the host with a
+  slider and mute. A mixer's write reaches the driver through `param_changed`,
+  is applied as a linear gain per output channel where the host's buffer is
+  copied into the graph (unity stays a plain copy), and is re-published so
+  mixers read the state back. Inputs are untouched. WirePlumber does not
+  auto-link the node (no `node.autoconnect`), so routing is unchanged, and it
+  restores the level per host as it does for any stream. Verified against
+  pipewire-pulse and `wpctl` on PipeWire 1.6.8 / WirePlumber 0.5.17; the
+  loopback suite gains a phase that sets per-channel volumes on the node and
+  decodes with the inverse, which fails to lock on a driver that ignores them.
+
 ### Fixed
 
 - `pipeasio-register` no longer runs host Wine inside a Proton prefix. The

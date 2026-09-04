@@ -60,7 +60,8 @@
         { "@type": "Question", "name": "Bluetooth headphones produce no sound?", "acceptedAnswer": { "@type": "Answer", "text": "Turn on follow device clock in the panel (or set PIPEASIO_FOLLOW_DEVICE_CLOCK=on). A Bluetooth sink's clock is the radio link and cannot always be slaved to the host, so the driver follows it instead, which also switches it to asynchronous scheduling and costs one buffer period. Some Bluetooth sinks do accept a forced quantum and work with the option off, so try it both ways." } },
         { "@type": "Question", "name": "FL Studio crackles or xruns constantly?", "acceptedAnswer": { "@type": "Answer", "text": "Turn Mix in buffer switch off in Options > Audio settings > Input / output. It makes FL Studio mix and run plugins inside the ASIO callback, which the driver delivers on the PipeWire data loop with one buffer period to return; a full mixer pass overruns that, and with follow device clock off the driver is scheduled synchronously, so the overrun stalls the graph rather than being absorbed. With it off, FL Studio mixes on its own threads and the callback only hands over ready buffers." } },
         { "@type": "Question", "name": "Does it conflict with WineASIO?", "acceptedAnswer": { "@type": "Answer", "text": "No. PipeASIO has its own CLSID and registry identity, so it installs side by side with WineASIO and hosts list them as separate drivers." } },
-        { "@type": "Question", "name": "How do I select it in my DAW?", "acceptedAnswer": { "@type": "Answer", "text": "After registering, pick PipeASIO from the host's ASIO device list. In FL Studio that is Options > Audio settings > Device." } }
+        { "@type": "Question", "name": "How do I select it in my DAW?", "acceptedAnswer": { "@type": "Answer", "text": "After registering, pick PipeASIO from the host's ASIO device list. In FL Studio that is Options > Audio settings > Device." } },
+        { "@type": "Question", "name": "Where is it in my volume mixer?", "acceptedAnswer": { "@type": "Answer", "text": "The driver's node is a playback stream, so it appears under the host's name in pavucontrol, plasma-pa, pulsemixer and wpctl with a volume slider and mute like any application. The slider scales what the host plays, per output channel, inside the driver; inputs are not affected. WirePlumber remembers the level per host the way it does for every stream. The node is not auto-routed by WirePlumber; the auto-connect and device settings still decide where it links." } }
       ]
     }
   ]
@@ -504,6 +505,10 @@ env WINEPREFIX=<span class="p">"$HOME/Faugus/&lt;game&gt;"</span> WINE=umu-run \
         <details>
           <summary>How do I select it in my DAW?</summary>
           <div class="ans">After registering, pick <b>PipeASIO</b> from the host's ASIO device list. In FL Studio that is Options &gt; Audio settings &gt; Device.</div>
+        </details>
+        <details>
+          <summary>Where is it in my volume mixer?</summary>
+          <div class="ans">The driver's node is a playback stream, so it appears under the host's name in pavucontrol, plasma-pa, pulsemixer and <code>wpctl</code> with a volume slider and mute like any application. The slider scales what the host plays, per output channel, inside the driver; inputs are not affected. WirePlumber remembers the level per host the way it does for every stream. The node is not auto-routed by WirePlumber; the auto-connect and device settings still decide where it links.</div>
         </details>
       </div>
     </div>

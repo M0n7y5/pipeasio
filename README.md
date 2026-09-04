@@ -672,6 +672,17 @@ another tab. The device combos on the **Settings** tab enumerate through
 
 **How do I select it in my DAW?** After registering, pick PipeASIO from the host's ASIO device list. In FL Studio that is Options > Audio settings > Device.
 
+**Where is it in my volume mixer?** The driver's node is a playback stream
+(`media.class = Stream/Output/Audio`), so it appears under the host's name in
+pavucontrol, plasma-pa, pulsemixer and `wpctl status`, with a volume slider and
+mute like any application. The slider scales what the host plays, per output
+channel, inside the driver; the host's inputs are not affected. WirePlumber
+remembers the level per host the way it does for every stream, so a level you
+set for FL Studio comes back the next time FL Studio starts the driver. The
+node is not auto-routed by WirePlumber (it carries no `node.autoconnect`);
+[`auto_connect`](#auto_connect) and the device settings still decide where it
+links.
+
 ## Uninstalling
 
 Unregister from each Wine prefix you registered, then remove the files:
