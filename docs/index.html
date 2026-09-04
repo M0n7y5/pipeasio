@@ -449,7 +449,18 @@ env WINEPREFIX=<span class="p">"$HOME/Faugus/&lt;game&gt;"</span> WINE=umu-run \
 <pre>PROTON_USE_WOW64=1 WINEDLLPATH=/home/&lt;you&gt;/.local/lib/wine %command%</pre>
       <p class="note">In Faugus, enable the <b>WoW64</b> option in the game's settings, or add <code>PROTON_USE_WOW64=1</code> to the same environment field as <code>WINEDLLPATH</code>. 64-bit games and hosts do not need this.</p>
 
-      <div class="step">5 / Configure with the panel</div>
+      <div class="step">5 / Bottles</div>
+      <p>Bottles runs each bottle with its own runner, and the Flatpak sandbox sees neither <code>/usr/lib/wine</code> nor <code>$HOME/.local/lib/wine</code>. Leave the driver where it is installed, give the bottle the PE stub and a <code>WINEDLLPATH</code>, and register through Bottles' own launcher so the bottle's runner does it:</p>
+<pre>flatpak override --user --filesystem=<span class="p">"$HOME/.local/lib/wine:ro"</span> com.usebottles.bottles
+flatpak override --user --filesystem=xdg-run/pipewire-0 com.usebottles.bottles
+BOTTLE=<span class="p">"$HOME/.var/app/com.usebottles.bottles/data/bottles/bottles/&lt;name&gt;"</span>
+CLI=<span class="p">"flatpak run --command=bottles-cli com.usebottles.bottles"</span>
+cp <span class="p">"$HOME/.local/lib/wine/x86_64-windows/pipeasio64.dll"</span> <span class="p">"$BOTTLE/drive_c/windows/system32/"</span>
+$CLI edit -b &lt;name&gt; --env-var <span class="p">"WINEDLLPATH=$HOME/.local/lib/wine"</span>
+$CLI shell -b &lt;name&gt; -i <span class="p">"regsvr32 /s pipeasio64.dll"</span></pre>
+      <p class="note">Native Bottles keeps its data under <code>~/.local/share/bottles/</code> and runs the same <code>bottles-cli</code> directly, without the <code>flatpak override</code> lines. <code>pipeasio-register</code> refuses a bottle for the same reason it refuses a Proton prefix. The README's Bottles section has the 32-bit step.</p>
+
+      <div class="step">6 / Configure with the panel</div>
       <p>The same install drops a native settings app, <code>pipeasio-settings</code> (built whenever Qt6 Widgets is present; the driver builds fine without it). Launch it to set channels, buffer size and device routing, and to watch the live Monitor. Saves apply within about a second, with no host restart.</p>
 <pre>pipeasio-settings</pre>
     </div>

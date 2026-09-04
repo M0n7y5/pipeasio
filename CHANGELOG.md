@@ -22,6 +22,14 @@ follow [Semantic Versioning](https://semver.org/).
   pipewire-pulse and `wpctl` on PipeWire 1.6.8 / WirePlumber 0.5.17; the
   loopback suite gains a phase that sets per-channel volumes on the node and
   decodes with the inverse, which fails to lock on a driver that ignores them.
+- Bottles instructions (#24), verified against the Flatpak with a Soda 11.0
+  runner. The driver stays in its install root; the bottle gets the PE stub in
+  `system32`, `WINEDLLPATH` through `bottles-cli edit --env-var`, and
+  `regsvr32` through `bottles-cli shell`, so the bottle's own runner
+  registers it. The Flatpak sandbox needs read access to the install root and
+  to `xdg-run/pipewire-0`. `pipeasio-register` refuses a bottle (anything with
+  a `bottle.yml`) when `WINE` is unset: host Wine re-stamps the bottle for the
+  host build and the next Bottles launch stamps it back.
 
 ### Fixed
 

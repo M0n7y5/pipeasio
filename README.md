@@ -310,8 +310,9 @@ set `WINEDLLPATH=<driver-install-root>` in the host's launch environment.
 
 The script runs whatever `wine` is on `PATH`; `WINE=<command>` substitutes
 another launcher, `umu-run` included. Proton prefixes (anything with a
-`tracked_files`) are refused unless `WINE` is set, see
-[Proton / Steam / Faugus](#proton--steam--faugus).
+`tracked_files`) and Bottles bottles (anything with a `bottle.yml`) are refused
+unless `WINE` is set, see [Proton / Steam / Faugus](#proton--steam--faugus) and
+[Bottles](#bottles).
 
 ## 32-bit applications (experimental)
 
@@ -443,6 +444,52 @@ a different build from the runner's, and the first host-Wine process in a
 prefix runs Wine's prefix update, rewriting the registry and `system32` for the
 host build ([#22](https://github.com/M0n7y5/pipeasio/issues/22)). Unregistering
 uses the same environment, see [Uninstalling](#uninstalling).
+
+## Bottles
+
+Bottles runs each bottle with its own downloaded runner (Soda, Caffe, a GE
+build), never the host's Wine, and the Flatpak build runs it inside a sandbox
+that sees neither `/usr/lib/wine` nor `$HOME/.local/lib/wine`. The driver
+stays where `cmake --install` put it; the bottle gets the PE stub and a
+`WINEDLLPATH` pointing at the ELF half, and registration runs through Bottles'
+own launcher so the bottle's runner is the Wine that registers it. Verified
+with the Flatpak (`com.usebottles.bottles` 67.2, Soda 11.0) against a driver
+installed under `$HOME/.local`:
+
+```sh
+# Once: let the sandbox read the driver and reach PipeWire at run time.
+flatpak override --user --filesystem="$HOME/.local/lib/wine:ro" com.usebottles.bottles
+flatpak override --user --filesystem=xdg-run/pipewire-0 com.usebottles.bottles
+
+BOTTLE="$HOME/.var/app/com.usebottles.bottles/data/bottles/bottles/<name>"
+CLI="flatpak run --command=bottles-cli com.usebottles.bottles"
+
+# The PE stub goes where regsvr32 finds it by name; the ELF half is reached
+# through WINEDLLPATH in the bottle's environment.
+cp "$HOME/.local/lib/wine/x86_64-windows/pipeasio64.dll" "$BOTTLE/drive_c/windows/system32/"
+$CLI edit -b <name> --env-var "WINEDLLPATH=$HOME/.local/lib/wine"
+$CLI shell -b <name> -i "regsvr32 /s pipeasio64.dll"
+$CLI shell -b <name> -i "reg query HKLM\\Software\\ASIO\\PipeASIO"
+
+# 32-bit hosts, if the install carries the 32-bit half:
+cp "$HOME/.local/lib/wine/i386-windows/pipeasio32.dll" "$BOTTLE/drive_c/windows/syswow64/"
+$CLI shell -b <name> -i "C:\\windows\\syswow64\\regsvr32.exe /s pipeasio32.dll"
+```
+
+`<name>` is the bottle's directory name under `data/bottles/bottles/`; `shell`
+needs the backslashes doubled as shown. The PipeWire override is what the
+driver needs at run time, not for registering: without it the sandbox holds an
+empty file at the socket's path. Native Bottles (the distribution package)
+keeps its data under `~/.local/share/bottles/` and runs the same `bottles-cli`
+directly, with no `flatpak override` lines. Copying the driver into the
+runner's own `lib/wine/` works as well but a runner update wipes it.
+
+`pipeasio-register` refuses a bottle (anything with a `bottle.yml`) when `WINE`
+is unset, for the reason given for Proton above: host Wine in a bottle
+re-stamps it for the host build, and the next Bottles launch stamps it back,
+so the two keep migrating the prefix between builds. For native Bottles
+`WINE=~/.local/share/bottles/runners/<runner>/bin/wine` makes the script
+register through the runner instead.
 
 ## Other distributions
 
