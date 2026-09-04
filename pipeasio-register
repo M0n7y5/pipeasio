@@ -5,12 +5,19 @@ WINEPREFIX=${WINEPREFIX:=~/.wine}
 
 wine=${WINE:-wine}
 
-# Host wine's first process in a Proton prefix migrates it to the host build (#22).
+# Host wine's first process in a prefix owned by another Wine (a Proton
+# prefix, a Bottles bottle) migrates it to the host build (#22, #24).
 if [ -z "${WINE:-}" ] \
    && { [ -e "${WINEPREFIX}/tracked_files" ] || [ -e "${WINEPREFIX}/../tracked_files" ]; }; then
     >&2 echo "[${me}] ${WINEPREFIX} is a Proton prefix; not running host wine in it."
     >&2 echo "[${me}] Host wine would migrate the prefix to its own build. Register through the runner:"
     >&2 echo "[${me}]   WINE=umu-run PROTONPATH=<runner dir> GAMEID=umu-<name> WINEPREFIX=${WINEPREFIX} ${me}"
+    exit 1
+fi
+if [ -z "${WINE:-}" ] && [ -e "${WINEPREFIX}/bottle.yml" ]; then
+    >&2 echo "[${me}] ${WINEPREFIX} is a Bottles bottle; not running host wine in it."
+    >&2 echo "[${me}] Host wine would migrate the bottle to its own build. Register through Bottles:"
+    >&2 echo "[${me}]   bottles-cli shell -b <bottle> -i \"regsvr32 /s pipeasio64.dll\"  (README: Bottles)"
     exit 1
 fi
 

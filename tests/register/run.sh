@@ -243,6 +243,15 @@ check "WINE override registers a Proton prefix" "$out" "registered in"
 [[ ! -e "$work/wine.calls" ]] || { echo "FAIL - host wine ran despite WINE override"; fail=1; }
 rm -f "$WINEPREFIX/tracked_files"
 
+# 7d. Bottles bottle (#24): bottle.yml beside drive_c, refused the same way.
+: > "$WINEPREFIX/bottle.yml"
+run "$root7" "$tc"
+check "bottles bottle refused" "$out" "is a Bottles bottle"
+check "refusal names bottles-cli" "$out" "bottles-cli shell"
+((status != 0)) || { echo "FAIL - bottle refusal should exit nonzero"; fail=1; }
+[[ ! -e "$work/wine.calls" ]] || { echo "FAIL - host wine was invoked in a bottle"; fail=1; }
+rm -f "$WINEPREFIX/bottle.yml"
+
 if ((fail)); then
     echo "[register-test] FAIL"
     exit 1
