@@ -17,6 +17,8 @@
 #   SIZES          : space-separated ASIO buffer sizes (default "0" = preferred)
 #   RATES          : space-separated forced rates, 0 = follow graph (default "0")
 #   SWEEP=1        : SIZES="128 256 512 1024", RATES="0 44100 96000"
+#   LOOP_GAIN      : "g0 g1" mixer volume set on the node's Props; the
+#                    analyzer decodes with the inverse (default unity)
 #
 # Exit: 0 pass, 2 fail, 77 skip (no PipeWire daemon / missing tools).
 
@@ -133,12 +135,20 @@ sink_pid=$!
 
 # Linker watch-loop: the driver's ports (re)appear per phase as buffers are
 # re-created, so just keep trying. pw-link is idempotent ("File exists").
+# The same loop pins the node's mixer volume: WirePlumber restores whatever
+# a previous run left, so the wanted channelVolumes are set every tick.
+read -r gain0 gain1 <<<"${LOOP_GAIN:-1 1}"
 (
     while :; do
         pw-link "$node:out_1" "$sink:playback_FL" 2>/dev/null || true
         pw-link "$node:out_2" "$sink:playback_FR" 2>/dev/null || true
         pw-link "$sink:monitor_FL" "$node:in_1"   2>/dev/null || true
         pw-link "$sink:monitor_FR" "$node:in_2"   2>/dev/null || true
+        id=$(pw-cli ls Node 2>/dev/null \
+             | awk -v n="$node" '/^\tid [0-9]+,/{id=$2} $0 ~ "node.name = \"" n "\"" {print id}' \
+             | tr -d ,)
+        [[ -n "$id" ]] && pw-cli set-param "$id" Props \
+            "{ channelVolumes: [ $gain0, $gain1 ] }" >/dev/null 2>&1 || true
         sleep 0.25
     done
 ) &

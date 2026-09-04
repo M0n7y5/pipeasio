@@ -78,15 +78,29 @@ main(void)
     TEST_GROUP("copy and silence publication")
     {
         fixture_init(&f);
-        EXPECT_TRUE(pipeasio_pw_publish_output(&f.pw, source, 4, true, true));
+        EXPECT_TRUE(pipeasio_pw_publish_output(&f.pw, source, 4, 1.0f, true, true));
         EXPECT_TRUE(!memcmp(f.storage, source, sizeof(source)));
         EXPECT_EQ(f.chunk.offset, 0);
         EXPECT_EQ(f.chunk.size, sizeof(source));
         EXPECT_EQ(f.chunk.stride, sizeof(float));
         memset(f.storage, 0xff, sizeof(source));
-        EXPECT_TRUE(pipeasio_pw_publish_output(&f.pw, source, 4, false, true));
+        EXPECT_TRUE(pipeasio_pw_publish_output(&f.pw, source, 4, 1.0f, false, true));
         for (size_t i = 0; i < sizeof(source); ++i)
             EXPECT_EQ(f.storage[i], 0);
+    }
+
+    TEST_GROUP("mixer gain scales, zero and mute silence")
+    {
+        const float *out = (const float *)f.storage;
+        fixture_init(&f);
+        EXPECT_TRUE(pipeasio_pw_publish_output(&f.pw, source, 4, 0.5f, true, true));
+        EXPECT_TRUE(out[0] == 0.5f && out[1] == -1.0f && out[2] == 1.5f && out[3] == -2.0f);
+        EXPECT_EQ(f.chunk.size, sizeof(source));
+        memset(f.storage, 0xff, sizeof(source));
+        EXPECT_TRUE(pipeasio_pw_publish_output(&f.pw, source, 4, 0.0f, true, true));
+        for (size_t i = 0; i < sizeof(source); ++i)
+            EXPECT_EQ(f.storage[i], 0);
+        EXPECT_EQ(f.chunk.size, sizeof(source));
     }
 
     TEST_GROUP("malformed output queues once and clears slot")
@@ -96,12 +110,14 @@ main(void)
         fixture_init(&f);
         f.data.maxsize = 3;
         atomic_init(&slot, &f.pw);
-        EXPECT_TRUE(!pipeasio_pw_finish_output(&slot, source, 4, true, true, fake_queue, &queue));
+        EXPECT_TRUE(
+                !pipeasio_pw_finish_output(&slot, source, 4, 1.0f, true, true, fake_queue, &queue));
         EXPECT_TRUE(atomic_load(&slot) == NULL);
         EXPECT_EQ(queue.calls, 1);
         EXPECT_TRUE(queue.buffer == &f.pw);
         EXPECT_EQ(f.chunk.size, 0);
-        EXPECT_TRUE(!pipeasio_pw_finish_output(&slot, source, 4, true, true, fake_queue, &queue));
+        EXPECT_TRUE(
+                !pipeasio_pw_finish_output(&slot, source, 4, 1.0f, true, true, fake_queue, &queue));
         EXPECT_EQ(queue.calls, 1);
     }
 

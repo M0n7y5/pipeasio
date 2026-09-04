@@ -42,6 +42,7 @@
 #include <spa/utils/json.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/latency-utils.h>
+#include <spa/param/props.h>
 #include <spa/pod/builder.h>
 
 #include <errno.h>
@@ -288,6 +289,13 @@ struct audio_client
     struct pw_filter *filter;
     struct spa_hook   filter_listener;
 
+    /* Mixer state from SPA_PARAM_Props; on the client because the node is
+     * recreated per activation. */
+    bool     muted;
+    float    volume;
+    float    channel_volumes[SPA_AUDIO_MAX_CHANNELS];
+    uint32_t n_channel_volumes;
+
     /* Registered-port array.  audio_port_register appends; audio_activate
      * walks this to build the filter, audio_deactivate frees it. */
     audio_port_t **ports;
@@ -391,6 +399,8 @@ struct audio_port
     enum pw_direction           direction;
     void                       *pw_filter_port; /* returned by pw_filter_add_port */
     _Atomic(struct pw_buffer *) cycle_buffer;
+    /* mute * volume * channelVolumes[i]; written on the filter loop, read by process. */
+    _Atomic float gain;
 
     /* --- PipeWire registry IDs (for audio_connect link-factory) -- */
 
@@ -468,6 +478,7 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
         goto fail_alloc;
     }
     atomic_init(&c->sample_rate, AUDIO_DEFAULT_SAMPLE_RATE);
+    c->volume = 1.0f;
     atomic_init(&c->last_clock_nsec, 0);
     atomic_init(&c->observed_quantum, 0);
     atomic_init(&c->graph_rate, 0);
@@ -698,6 +709,77 @@ audio_teardown_filter(audio_client_t *c)
     }
 }
 
+static float
+audio_channel_volume(const audio_client_t *c, uint32_t channel)
+{
+    if (!c->n_channel_volumes)
+        return 1.0f;
+    if (channel >= c->n_channel_volumes)
+        channel = c->n_channel_volumes - 1;
+    return c->channel_volumes[channel];
+}
+
+static void
+audio_apply_volume(audio_client_t *c)
+{
+    uint32_t channel = 0;
+    for (uint32_t i = 0; i < c->n_ports; ++i)
+    {
+        audio_port_t *p = c->ports[i];
+        if (p->direction != PW_DIRECTION_OUTPUT)
+            continue;
+        const float gain = c->muted ? 0.0f : c->volume * audio_channel_volume(c, channel++);
+        atomic_store_explicit(&p->gain, gain, memory_order_relaxed);
+    }
+}
+
+static uint32_t
+audio_output_layout(const audio_client_t *c, float *volumes, uint32_t *positions)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < c->n_ports && n < SPA_AUDIO_MAX_CHANNELS; ++i)
+    {
+        if (c->ports[i]->direction != PW_DIRECTION_OUTPUT)
+            continue;
+        volumes[n] = audio_channel_volume(c, n);
+        ++n;
+    }
+    for (uint32_t i = 0; i < n; ++i)
+        positions[i] = n == 1   ? SPA_AUDIO_CHANNEL_MONO
+                       : n == 2 ? (i == 0 ? SPA_AUDIO_CHANNEL_FL : SPA_AUDIO_CHANNEL_FR)
+                                : SPA_AUDIO_CHANNEL_AUX0 + i;
+    return n;
+}
+
+/* pw_filter forwards a set_param without storing it; what mixers read back
+ * is whatever we publish. */
+static struct spa_pod *
+audio_build_props(const audio_client_t *c, struct spa_pod_builder *b)
+{
+    float          volumes[SPA_AUDIO_MAX_CHANNELS];
+    uint32_t       positions[SPA_AUDIO_MAX_CHANNELS];
+    const uint32_t n = audio_output_layout(c, volumes, positions);
+    return spa_pod_builder_add_object(
+            b, SPA_TYPE_OBJECT_Props, SPA_PARAM_Props, SPA_PROP_mute, SPA_POD_Bool(c->muted),
+            SPA_PROP_volume, SPA_POD_Float(c->volume), SPA_PROP_channelVolumes,
+            SPA_POD_Array(sizeof(float), SPA_TYPE_Float, n, volumes), SPA_PROP_channelMap,
+            SPA_POD_Array(sizeof(uint32_t), SPA_TYPE_Id, n, positions));
+}
+
+/* pipewire-pulse lists a stream only with a node-level Format (collect.c,
+ * validate_device_info); a filter has none of its own. */
+static struct spa_pod *
+audio_build_format(const audio_client_t *c, struct spa_pod_builder *b)
+{
+    float                     volumes[SPA_AUDIO_MAX_CHANNELS];
+    struct spa_audio_info_raw info
+            = SPA_AUDIO_INFO_RAW_INIT(.format = SPA_AUDIO_FORMAT_F32P,
+                                      .rate   = atomic_load_explicit(&c->sample_rate,
+                                                                     memory_order_relaxed));
+    info.channels = audio_output_layout(c, volumes, info.position);
+    return spa_format_audio_raw_build(b, SPA_PARAM_Format, &info);
+}
+
 bool
 audio_activate(audio_client_t *c)
 {
@@ -718,11 +800,15 @@ audio_activate(audio_client_t *c)
     const size_t bsize_samples = c->buffer_size;
     const size_t bsize_bytes   = bsize_samples * sizeof(audio_sample_t);
 
-    /* FORCE_QUANTUM is skipped only when following the device clock. */
+    /* FORCE_QUANTUM is skipped only when following the device clock.
+     * Stream/Output/Audio puts the host in volume mixers (#25) without
+     * WirePlumber auto-linking it (that needs node.autoconnect=true);
+     * Audio/Duplex would make it a default-sink candidate. */
     struct pw_properties *filter_props = pw_properties_new(
             PW_KEY_NODE_NAME, c->name, PW_KEY_NODE_DESCRIPTION, c->name, PW_KEY_MEDIA_TYPE, "Audio",
-            PW_KEY_MEDIA_CATEGORY, "Duplex", PW_KEY_MEDIA_ROLE, "DSP", PW_KEY_NODE_ALWAYS_PROCESS,
-            "true", PW_KEY_NODE_GROUP, "group.dsp.0", "pipeasio.node", "1", NULL);
+            PW_KEY_MEDIA_CATEGORY, "Duplex", PW_KEY_MEDIA_ROLE, "DSP", PW_KEY_MEDIA_CLASS,
+            "Stream/Output/Audio", PW_KEY_NODE_ALWAYS_PROCESS, "true", PW_KEY_NODE_GROUP,
+            "group.dsp.0", "pipeasio.node", "1", NULL);
     if (!filter_props)
     {
         ERR("pw_properties_new (filter) failed\n");
@@ -809,7 +895,12 @@ audio_activate(audio_client_t *c)
      * published ourselves.  With the flag the values reach
      * audio_on_param_changed and GetLatencies can report the real device
      * delay. */
-    if (pw_filter_connect(c->filter, PW_FILTER_FLAG_CUSTOM_LATENCY, NULL, 0) < 0)
+    audio_apply_volume(c);
+    uint8_t                props_buf[1024];
+    struct spa_pod_builder props_b = SPA_POD_BUILDER_INIT(props_buf, sizeof props_buf);
+    const struct spa_pod  *props[]
+            = { audio_build_props(c, &props_b), audio_build_format(c, &props_b) };
+    if (pw_filter_connect(c->filter, PW_FILTER_FLAG_CUSTOM_LATENCY, props, 2) < 0)
     {
         pw_thread_loop_unlock(c->loop);
         ERR("pw_filter_connect failed\n");
@@ -1060,6 +1151,7 @@ audio_port_register(audio_client_t *c, const char *port_name, uint64_t flags, ui
     port->flags     = flags;
     port->direction = (flags & AUDIO_PORT_IS_INPUT) ? PW_DIRECTION_INPUT : PW_DIRECTION_OUTPUT;
     atomic_init(&port->cycle_buffer, NULL);
+    atomic_init(&port->gain, 1.0f);
     c->ports[c->n_ports++] = port;
     return port;
 }
@@ -1134,8 +1226,9 @@ audio_port_publish_output(audio_port_t *port, const audio_sample_t *source, audi
 {
     if (!port || port->direction != PW_DIRECTION_OUTPUT)
         return false;
-    return pipeasio_pw_finish_output(&port->cycle_buffer, source, frames, admitted, active,
-                                     audio_queue_output, port);
+    return pipeasio_pw_finish_output(&port->cycle_buffer, source, frames,
+                                     atomic_load_explicit(&port->gain, memory_order_relaxed),
+                                     admitted, active, audio_queue_output, port);
 }
 static bool
 audio_endpoint_key(const audio_port_t *port, char *out, size_t size)
@@ -1462,13 +1555,51 @@ audio_latency_info_samples(const struct spa_latency_info *info, uint32_t quantum
 }
 
 static void
+audio_on_props(audio_client_t *c, const struct spa_pod *param)
+{
+    const struct spa_pod_prop *prop;
+    if (!spa_pod_is_object_type(param, SPA_TYPE_OBJECT_Props))
+        return;
+    SPA_POD_OBJECT_FOREACH((const struct spa_pod_object *)param, prop)
+    {
+        switch (prop->key)
+        {
+        case SPA_PROP_mute:
+            spa_pod_get_bool(&prop->value, &c->muted);
+            break;
+        case SPA_PROP_volume:
+            spa_pod_get_float(&prop->value, &c->volume);
+            break;
+        case SPA_PROP_channelVolumes:
+            c->n_channel_volumes = spa_pod_copy_array(&prop->value, SPA_TYPE_Float,
+                                                      c->channel_volumes, SPA_AUDIO_MAX_CHANNELS);
+            break;
+        }
+    }
+    audio_apply_volume(c);
+    uint8_t                buf[1024];
+    struct spa_pod_builder b        = SPA_POD_BUILDER_INIT(buf, sizeof buf);
+    const struct spa_pod  *params[] = { audio_build_props(c, &b) };
+    pw_filter_update_params(c->filter, NULL, params, 1);
+    TRACE("props: mute=%d volume=%.3f channels=%u\n", (int)c->muted, (double)c->volume,
+          (unsigned)c->n_channel_volumes);
+}
+
+static void
 audio_on_param_changed(void *userdata, void *port_data, uint32_t id, const struct spa_pod *param)
 {
     audio_client_t         *c = userdata;
     struct spa_latency_info info;
 
+    if (!param)
+        return;
+    if (id == SPA_PARAM_Props && !port_data)
+    {
+        audio_on_props(c, param);
+        return;
+    }
     /* Global (port_data == NULL) params carry no port latency. */
-    if (id != SPA_PARAM_Latency || !param || !port_data)
+    if (id != SPA_PARAM_Latency || !port_data)
         return;
     if (spa_latency_parse(param, &info) < 0)
         return;
@@ -1753,7 +1884,7 @@ audio_cache_node(audio_client_t *c, uint32_t id, const struct spa_dict *props)
         || !audio_registry_property_valid(description) || !audio_registry_property_valid(nick))
         return;
 
-    /* Cache our own DSP/filter node even though it has no Audio media.class. */
+    /* Cache our own node by identity, whatever class it carries. */
     int is_ours = (c->our_node_id != SPA_ID_INVALID && id == c->our_node_id)
                   || (c->name && !strcmp(node_name, c->name));
 

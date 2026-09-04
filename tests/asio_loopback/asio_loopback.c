@@ -165,6 +165,9 @@ static float        *g_out_buf[NCH][2];
 static UINT32        g_out_counter; /* next value to write (starts 1) */
 static UINT64        g_in_index;    /* input frames consumed this phase */
 static chstat        g_ch[NCH];
+/* Inverse of the mixer volume run.sh sets per channel (LOOP_GAIN).  A
+ * power-of-two gain keeps the counter bit-exact after undoing it. */
+static float g_inv_gain[NCH] = { 1.0f, 1.0f };
 
 static void
 phase_reset(LONG bs)
@@ -181,7 +184,7 @@ phase_reset(LONG bs)
 static UINT32
 dec(float x, int ch, int *sign_ok)
 {
-    float a  = fabsf(x);
+    float a  = fabsf(x) * g_inv_gain[ch];
     *sign_ok = ch ? (x < 0.0f) : (x > 0.0f);
     UINT32 v = (UINT32)(a * SCALE + 0.5f);
     if (v < 1 || v >= (UINT32)SCALE)
@@ -505,6 +508,21 @@ main(void)
     int seconds = (argc > 1) ? atoi(argv[1]) : 6;
     if (seconds < 1)
         seconds = 1;
+
+    const char *gain = getenv("LOOP_GAIN");
+    if (gain)
+    {
+        float g0 = 0.0f, g1 = 0.0f;
+        if (sscanf(gain, "%f %f", &g0, &g1) != 2 || g0 <= 0.0f || g1 <= 0.0f)
+        {
+            fprintf(stderr, "[loop] LOOP_GAIN must be two positive floats, got \"%s\"\n", gain);
+            return 1;
+        }
+        g_inv_gain[0] = 1.0f / g0;
+        g_inv_gain[1] = 1.0f / g1;
+        fprintf(stderr, "[loop] mixer gain ch0=%g ch1=%g, decoding with the inverse\n", (double)g0,
+                (double)g1);
+    }
 
     HRESULT hr = CoInitialize(NULL);
     if (FAILED(hr))

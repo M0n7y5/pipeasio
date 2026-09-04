@@ -41,7 +41,7 @@ pipeasio_pw_validate_region(const struct pw_buffer *buffer, uint32_t frames, voi
 
 static inline bool
 pipeasio_pw_publish_output(struct pw_buffer *buffer, const float *source, uint32_t frames,
-                           bool admitted, bool active)
+                           float gain, bool admitted, bool active)
 {
     struct spa_data  *data;
     struct spa_chunk *chunk = NULL;
@@ -60,10 +60,16 @@ pipeasio_pw_publish_output(struct pw_buffer *buffer, const float *source, uint32
     chunk->stride = (int32_t)sizeof(float);
     chunk->flags  = 0;
     chunk->size   = (uint32_t)bytes;
-    if (admitted && active && source && (uintptr_t)source % _Alignof(float) == 0)
+    if (!admitted || !active || !source || (uintptr_t)source % _Alignof(float) || gain <= 0.0f)
+        memset(data->data, 0, bytes);
+    else if (gain == 1.0f)
         memcpy(data->data, source, bytes);
     else
-        memset(data->data, 0, bytes);
+    {
+        float *out = data->data;
+        for (uint32_t i = 0; i < frames; ++i)
+            out[i] = source[i] * gain;
+    }
     return true;
 malformed:
     if (chunk)
@@ -75,7 +81,7 @@ typedef int (*pipeasio_pw_queue_fn)(void *context, struct pw_buffer *buffer);
 
 static inline bool
 pipeasio_pw_finish_output(_Atomic(struct pw_buffer *) *cycle_slot, const float *source,
-                          uint32_t frames, bool admitted, bool active,
+                          uint32_t frames, float gain, bool admitted, bool active,
                           pipeasio_pw_queue_fn queue_fn, void *context)
 {
     struct pw_buffer *buffer = atomic_exchange_explicit(cycle_slot, NULL, memory_order_acq_rel);
@@ -83,7 +89,7 @@ pipeasio_pw_finish_output(_Atomic(struct pw_buffer *) *cycle_slot, const float *
     int               queued;
     if (!buffer)
         return false;
-    valid  = pipeasio_pw_publish_output(buffer, source, frames, admitted, active);
+    valid  = pipeasio_pw_publish_output(buffer, source, frames, gain, admitted, active);
     queued = queue_fn ? queue_fn(context, buffer) : 0;
     return valid && queued >= 0;
 }
