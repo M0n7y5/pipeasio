@@ -4,67 +4,48 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.6.0] - 2026-09-04
 
 ### Added
 
-- The driver shows up in volume mixers (#25). The node is now classed
-  `Stream/Output/Audio` and publishes `SPA_PARAM_Props` (`mute`, `volume`,
-  `channelVolumes`, `channelMap`) plus a node-level `Format`, which is what
-  pipewire-pulse needs to list a sink-input and what WirePlumber's mixer reads,
-  so pavucontrol, plasma-pa, pulsemixer and `wpctl` show the host with a
-  slider and mute. A mixer's write reaches the driver through `param_changed`,
-  is applied as a linear gain per output channel where the host's buffer is
-  copied into the graph (unity stays a plain copy), and is re-published so
-  mixers read the state back. Inputs are untouched. WirePlumber does not
-  auto-link the node (no `node.autoconnect`), so routing is unchanged, and it
-  restores the level per host as it does for any stream. Verified against
-  pipewire-pulse and `wpctl` on PipeWire 1.6.8 / WirePlumber 0.5.17; the
-  loopback suite gains a phase that sets per-channel volumes on the node and
-  decodes with the inverse, which fails to lock on a driver that ignores them.
+- The driver shows up in volume mixers (#25). Its node is a playback stream
+  (`Stream/Output/Audio`) with `Props` and a `Format`, so pavucontrol,
+  plasma-pa, pulsemixer and `wpctl` list the host with a slider and mute. The
+  level scales the host's output per channel inside the driver, inputs are
+  untouched, and WirePlumber restores it per host as for any stream. Routing is
+  unchanged: the node carries no `node.autoconnect`, so WirePlumber does not
+  link it.
 - Bottles instructions (#24), verified against the Flatpak with a Soda 11.0
-  runner. The driver stays in its install root; the bottle gets the PE stub in
-  `system32`, `WINEDLLPATH` through `bottles-cli edit --env-var`, and
-  `regsvr32` through `bottles-cli shell`, so the bottle's own runner
-  registers it. The Flatpak sandbox needs read access to the install root and
-  to `xdg-run/pipewire-0`. `pipeasio-register` refuses a bottle (anything with
-  a `bottle.yml`) when `WINE` is unset: host Wine re-stamps the bottle for the
-  host build and the next Bottles launch stamps it back.
-
-### Fixed
-
-- `pipeasio-register` no longer runs host Wine inside a Proton prefix. The
-  README's Proton section told users to register that way, and the first
-  host-Wine process in a prefix runs Wine's prefix update, rewriting the
-  registry and `system32` for a build the runner does not ship (#22). The
-  script now refuses a prefix that carries Proton's `tracked_files` (beside
-  `drive_c`, or one level up in Steam's `compatdata/<id>/pfx` layout) and
-  prints the runner form. `WINE=<command>` names the launcher to use in place
-  of `wine`; `WINE=umu-run` with `PROTONPATH` and `GAMEID` registers through
-  the game's own runner and container, leaving the prefix's `version` and
-  `.update-timestamp` untouched. The README, the website and the uninstall
-  instructions carry the same form.
-- The 32-bit WoW64 front end links again against Wine 11.16 and later. That
-  release added `tls.o` to `libwinecrt0.a`, which collided with mingw's own
-  TLS support on `__xl_a`/`__xl_z` because the driver's `_Thread_local` was
-  resolved from winecrt0 before mingw's runtime was searched. mingw's runtime
-  is the PE's entry point and owns TLS init, so it now owns those symbols too;
-  winecrt0 still supplies the unixlib call bridge.
+  runner: the PE stub goes into the bottle, `WINEDLLPATH` into its environment,
+  and `regsvr32` runs through `bottles-cli shell` so the bottle's own runner
+  registers it. `pipeasio-register` refuses a bottle (anything with a
+  `bottle.yml`) unless `WINE` names the runner, since host Wine re-stamps the
+  bottle for its own build.
 
 ### Changed
 
 - The settings panel names the scheduling mode. `follow_device_clock` has always
   set two properties at once (the target device drives the cycle, and the node
-  turns asynchronous), but the checkbox read "Follow device clock (Bluetooth)"
-  and its tooltip mentioned only the quantum, so the extra buffer period and the
-  synchronous to asynchronous switch stayed invisible until `pw-top` showed the
-  node as `=` instead of `+`. The checkbox is now "Follow device clock", the
-  tooltip names both effects, and a read-only `Scheduling` row reads
-  `synchronous` or `asynchronous (+1 period, 2.7 ms)`, tracking the checkbox and
-  the buffer period live.
+  turns asynchronous), but the checkbox and tooltip only mentioned the quantum.
+  The checkbox is now "Follow device clock", the tooltip names both effects,
+  and a read-only `Scheduling` row reads `synchronous` or
+  `asynchronous (+1 period, 2.7 ms)`, tracking the checkbox and the buffer
+  period live.
 
 ### Fixed
 
+- `pipeasio-register` no longer runs host Wine inside a Proton prefix (#22).
+  The README's Proton section said to register that way, and host Wine's first
+  process in a prefix rewrites its registry and `system32` for the host build,
+  not the runner's. The script refuses a prefix with Proton's `tracked_files`
+  (beside `drive_c`, or one level up in Steam's `compatdata/<id>/pfx`).
+  `WINE=<command>` substitutes another launcher; `WINE=umu-run` with
+  `PROTONPATH` and `GAMEID` registers through the game's runner and leaves the
+  prefix untouched. README, website and uninstall instructions use that form.
+- The 32-bit WoW64 front end links again against Wine 11.16 and later, whose
+  `libwinecrt0.a` gained a `tls.o` that collided with mingw's TLS support on
+  `__xl_a`/`__xl_z`. mingw's runtime owns TLS init, so it now owns those
+  symbols too.
 - The docs asserted that the driver "is scheduled synchronously" without
   qualification, which is wrong whenever `follow_device_clock` is on. The
   `realtime` section, the Performance list, the FL Studio troubleshooting entry
@@ -619,7 +600,8 @@ the driver loads inside the Steam Runtime container that Proton uses.
 - Hardened channel-count limits from both the INI and the environment overrides,
   and tightened COM teardown and several NULL and error paths.
 
-[Unreleased]: https://github.com/M0n7y5/pipeasio/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/M0n7y5/pipeasio/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.6.0
 [1.5.0]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.5.0
 [1.4.3]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.4.3
 [1.4.2]: https://github.com/M0n7y5/pipeasio/releases/tag/v1.4.2
