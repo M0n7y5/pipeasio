@@ -27,6 +27,7 @@
 #include "objbase.h"
 #include "unknwn.h"
 #include "pipeasio_guids.h"
+#include "pipeasio_rt.h"
 
 typedef struct
 {
@@ -191,8 +192,9 @@ DllMain(HINSTANCE hInstDLL, DWORD fdwReason, LPVOID lpvReserved)
     switch (fdwReason)
     {
     case DLL_PROCESS_ATTACH:
-        break;
+        return pipeasio_host_call_init();
     case DLL_PROCESS_DETACH:
+        pipeasio_host_call_fini();
         break;
     case DLL_THREAD_ATTACH:
         break;

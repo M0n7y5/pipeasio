@@ -412,7 +412,37 @@ static const IPipeASIOVtbl PipeASIO_Vtbl = { (void *)QueryInterface,
                                              (void *)THISCALL(ControlPanel),
                                              (void *)THISCALL(Future),
                                              (void *)THISCALL(OutputReady) };
-static _Thread_local pipeasio_host_call_token *host_token_top;
+/* The innermost token of the calling thread, a Win32 TLS slot rather than
+ * _Thread_local: every toolchain and arch has it, and it needs no CRT. */
+static DWORD host_token_slot = TLS_OUT_OF_INDEXES;
+
+bool
+pipeasio_host_call_init(void)
+{
+    host_token_slot = TlsAlloc();
+    return host_token_slot != TLS_OUT_OF_INDEXES;
+}
+
+void
+pipeasio_host_call_fini(void)
+{
+    if (host_token_slot != TLS_OUT_OF_INDEXES)
+        TlsFree(host_token_slot);
+    host_token_slot = TLS_OUT_OF_INDEXES;
+}
+
+static inline pipeasio_host_call_token *
+host_token_top(void)
+{
+    return host_token_slot == TLS_OUT_OF_INDEXES ? NULL : TlsGetValue(host_token_slot);
+}
+
+static inline void
+host_token_set(pipeasio_host_call_token *token)
+{
+    if (host_token_slot != TLS_OUT_OF_INDEXES)
+        TlsSetValue(host_token_slot, token);
+}
 
 static pipeasio_gate_owner
 next_gate_owner(IPipeASIOImpl *This)
@@ -652,9 +682,9 @@ pipeasio_host_call_begin(void *owner, pipeasio_host_call_kind kind, pipeasio_hos
     if (!callbacks)
         return false;
     token->callbacks = callbacks;
-    token->previous  = host_token_top;
-    host_token_top   = token;
-    token->admitted  = true;
+    token->previous  = host_token_top();
+    host_token_set(token);
+    token->admitted = true;
     return true;
 }
 
@@ -667,7 +697,7 @@ pipeasio_host_call_end(pipeasio_host_call_token *token)
     This = token->owner;
     if (token->admitted)
     {
-        host_token_top  = token->previous;
+        host_token_set(token->previous);
         token->admitted = false;
     }
     if (!token->counted)
@@ -678,15 +708,11 @@ pipeasio_host_call_end(pipeasio_host_call_token *token)
     pipeasio_gate_leave(&This->host_gate);
 }
 
-/* Prevent an inlined SysV TLS lookup from clobbering Windows-ABI `This`. */
-#if defined(__GNUC__)
-__attribute__((noinline))
-#endif
 bool
 pipeasio_host_call_is_reentrant(void *owner)
 {
     pipeasio_host_call_token *token;
-    for (token = host_token_top; token; token = token->previous)
+    for (token = host_token_top(); token; token = token->previous)
         if (token->owner == owner)
             return true;
     return false;

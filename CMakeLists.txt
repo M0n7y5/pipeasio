@@ -56,7 +56,18 @@ include(WineSdk)
 # - i386-windows/pipeasio32.dll:   the 32-bit front end (opt-in)
 # - <host>-unix/pipeasio<N>.so:    the unixlib, one per module name
 include(PeDriver)
-pipeasio_add_pe_driver(NAME pipeasio64 PE_ARCH x86_64)
+# The x86_64 front end is the driver on x86_64 hosts and an optional cross
+# build elsewhere; an ARM64 host's Wine ships no x86_64 import libraries.
+pipeasio_pe_arch_available(x86_64 _have_x86_64)
+if(_have_x86_64)
+    pipeasio_add_pe_driver(NAME pipeasio64 PE_ARCH x86_64)
+elseif(PIPEASIO_UNIX_ARCH STREQUAL "x86_64")
+    message(FATAL_ERROR "No toolchain for the x86_64 PE front end: install the mingw-w64 "
+                        "gcc and g++ (or clang and lld) and Wine's development package.")
+else()
+    message(STATUS "x86_64 front end skipped on ${PIPEASIO_UNIX_ARCH} (no "
+                   "${WINE_LIB_ROOT}/x86_64-windows import libraries)")
+endif()
 if(BUILD_WOW64_32)
     pipeasio_add_pe_driver(NAME pipeasio32 PE_ARCH i386)
 endif()

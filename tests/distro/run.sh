@@ -32,11 +32,11 @@ export PATH="${HOME}/.local/bin:${PATH}"
 # assert_lto    "yes" => fail if CFLAGS lacks -flto (Fedora / issue #6)
 # ---------------------------------------------------------------------------
 DISTRO_TABLE="
-fedora|registry.fedoraproject.org/fedora:latest|dnf install -y --setopt=install_weak_deps=False cmake ninja-build gcc g++ pkgconf mingw64-gcc wine-devel pipewire-devel redhat-rpm-config git|tests/distro/flags/fedora.sh|yes
-ubuntu|docker.io/library/ubuntu:latest|export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y --no-install-recommends cmake ninja-build gcc g++ pkg-config gcc-mingw-w64-x86-64 wine64-tools libwine-dev libpipewire-0.3-dev pipewire dpkg-dev git ca-certificates|tests/distro/flags/ubuntu.sh|no
-debian|docker.io/library/debian:stable|export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y --no-install-recommends cmake ninja-build gcc g++ pkg-config gcc-mingw-w64-x86-64 wine64-tools libwine-dev libpipewire-0.3-dev pipewire dpkg-dev git ca-certificates|tests/distro/flags/debian.sh|no
+fedora|registry.fedoraproject.org/fedora:latest|dnf install -y --setopt=install_weak_deps=False cmake ninja-build gcc g++ pkgconf mingw64-gcc mingw64-gcc-c++ wine-devel pipewire-devel redhat-rpm-config git|tests/distro/flags/fedora.sh|yes
+ubuntu|docker.io/library/ubuntu:latest|export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y --no-install-recommends cmake ninja-build gcc g++ pkg-config gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 wine64-tools libwine-dev libpipewire-0.3-dev pipewire dpkg-dev git ca-certificates|tests/distro/flags/ubuntu.sh|no
+debian|docker.io/library/debian:stable|export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y --no-install-recommends cmake ninja-build gcc g++ pkg-config gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 wine64-tools libwine-dev libpipewire-0.3-dev pipewire dpkg-dev git ca-certificates|tests/distro/flags/debian.sh|no
 arch|docker.io/library/archlinux:latest|pacman -Syu --noconfirm gcc cmake ninja pkgconf mingw-w64-gcc wine libpipewire pipewire git|tests/distro/flags/arch.sh|no
-steamrt4|registry.gitlab.steamos.cloud/steamrt/steamrt4/sdk@sha256:2c4c6520a268ef53255d511ae5988e35855b39a4b6c1e9865d56e5011c76ec3e|export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y --no-install-recommends cmake ninja-build gcc g++ pkg-config gcc-mingw-w64-x86-64 wine wine64-tools libwine-dev dpkg-dev git ca-certificates|tests/distro/flags/steamrt4.sh|no
+steamrt4|registry.gitlab.steamos.cloud/steamrt/steamrt4/sdk@sha256:2c4c6520a268ef53255d511ae5988e35855b39a4b6c1e9865d56e5011c76ec3e|export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y --no-install-recommends cmake ninja-build gcc g++ pkg-config gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 wine wine64-tools libwine-dev dpkg-dev git ca-certificates|tests/distro/flags/steamrt4.sh|no
 "
 
 usage() {

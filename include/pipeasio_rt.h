@@ -50,6 +50,10 @@ extern "C"
         struct pipeasio_host_call_token *previous;
     } pipeasio_host_call_token;
 
+    /* Per-thread token stack; the slot lives for the module's lifetime. */
+    bool pipeasio_host_call_init(void);
+    void pipeasio_host_call_fini(void);
+
     bool pipeasio_host_call_begin(void *owner, pipeasio_host_call_kind kind,
                                   pipeasio_host_call_token *token);
     void pipeasio_host_call_end(pipeasio_host_call_token *token);

@@ -28,12 +28,15 @@ follow [Semantic Versioning](https://semver.org/).
   buffer), same xrun count, `pw-top` ERR +0 on every `SCHED_FIFO` leg.
 - The PE half is linked by `winegcc` the way Wine links its own modules:
   Wine's headers and import libraries, no MinGW runtime, `ucrtbase` instead
-  of the MinGW api-set imports. Building needs a cross compiler for it: the
-  MinGW gcc for x86 targets (`mingw-w64-gcc` on Arch, `gcc-mingw-w64-x86-64`
-  on Debian/Ubuntu, `mingw64-gcc` on Fedora), previously only needed for the
-  opt-in 32-bit front end, or `clang` with `lld` for any target. The Wine
-  library root is probed (`lib/wine`, `lib64/wine`, `lib/<multiarch>/wine`)
-  rather than assumed.
+  of the MinGW api-set imports, and a Win32 TLS slot instead of
+  `_Thread_local`. Building needs a cross compiler for it: the MinGW gcc
+  and g++ for x86 targets (`mingw-w64-gcc` on Arch, `gcc-mingw-w64-x86-64`
+  plus `g++-mingw-w64-x86-64` on Debian/Ubuntu, `mingw64-gcc` plus
+  `mingw64-gcc-c++` on Fedora), previously only needed for the opt-in 32-bit
+  front end, or `clang` with `lld` for any target. The Wine library root is
+  probed (`lib/wine`, `lib64/wine-wow64/wine`, `lib/<multiarch>/wine`)
+  rather than assumed, and a bundled `unixlib.h` covers Debian and Ubuntu,
+  whose `libwine-dev` omits it.
 - **Upgrading from 1.6.0 or older: run `pipeasio-register` again in every
   prefix.** Those installs staged a 2 KB stub into `system32` that looks for
   the `.dll.so`, which the new install no longer ships; until re-registered

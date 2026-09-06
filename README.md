@@ -115,10 +115,12 @@ Requirements: `cmake` (3.20 or newer), `ninja` (recommended) or GNU make,
 `gcc`, `pkg-config`, the Wine SDK (headers, `winebuild`, `winegcc` and the
 `lib/wine/<arch>-windows` import libraries), a cross compiler for the PE
 half, and the PipeWire development headers. The cross compiler is either
-the MinGW gcc for x86 targets (`mingw-w64-gcc` on Arch,
-`gcc-mingw-w64-x86-64` on Debian/Ubuntu, `mingw64-gcc` on Fedora) or
+the MinGW gcc and g++ for x86 targets (`mingw-w64-gcc` on Arch,
+`gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64` on Debian/Ubuntu, `mingw64-gcc
+mingw64-gcc-c++` on Fedora; `winegcc` looks for both even for C) or
 `clang` with `lld`, which is what Wine itself cross-builds with and the
-only choice for ARM64; `PIPEASIO_PE_COMPILER=gcc|clang` forces one. The Qt6 settings panel is optional: it builds
+only choice for ARM64; `PIPEASIO_PE_COMPILER=gcc|clang` forces one. Debian
+and Ubuntu ship no `unixlib.h`; the build carries a copy for them. The Qt6 settings panel is optional: it builds
 when a C++ compiler and Qt6 Widgets are present and is skipped with a warning
 otherwise, which does not affect the driver. Pass `-DBUILD_SETTINGS_PANEL=OFF`
 to skip it deliberately and silence the warning.

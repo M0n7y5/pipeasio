@@ -77,7 +77,7 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -qq
           apt-get install -y --no-install-recommends \
-            cmake ninja-build gcc g++ pkg-config gcc-mingw-w64-x86-64 \
+            cmake ninja-build gcc g++ pkg-config gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
             wine wine64-tools libwine-dev git ca-certificates
       - name: Assert the PipeWire floor
         run: |
@@ -118,7 +118,7 @@ jobs:
             image: fedora:latest
             install: >-
               dnf install -y --setopt=install_weak_deps=False
-              cmake ninja-build gcc g++ pkgconf mingw64-gcc
+              cmake ninja-build gcc g++ pkgconf mingw64-gcc mingw64-gcc-c++
               wine-devel pipewire-devel redhat-rpm-config git
             # RPM optflags must expand -flto (issue #6 regression guard).
             flags: |
@@ -144,7 +144,7 @@ jobs:
               export DEBIAN_FRONTEND=noninteractive;
               apt-get update -qq &&
               apt-get install -y --no-install-recommends
-              cmake ninja-build gcc g++ pkg-config gcc-mingw-w64-x86-64
+              cmake ninja-build gcc g++ pkg-config gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
               wine64-tools libwine-dev libpipewire-0.3-dev pipewire
               dpkg-dev git ca-certificates
             flags: |
@@ -167,7 +167,7 @@ jobs:
               export DEBIAN_FRONTEND=noninteractive;
               apt-get update -qq &&
               apt-get install -y --no-install-recommends
-              cmake ninja-build gcc g++ pkg-config gcc-mingw-w64-x86-64
+              cmake ninja-build gcc g++ pkg-config gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
               wine64-tools libwine-dev libpipewire-0.3-dev pipewire
               dpkg-dev git ca-certificates
             flags: |
