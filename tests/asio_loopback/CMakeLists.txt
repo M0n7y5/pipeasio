@@ -3,7 +3,7 @@
 # loopback (see run.sh).  Checks bit-exactness, sample continuity,
 # channel mapping, and measured vs reported round-trip latency.
 
-# Same tool-name variants as cmake/WineDLL.cmake (cache-shared when in-tree).
+# Same tool-name variants as cmake/WineSdk.cmake (cache-shared when in-tree).
 find_program(WINEGCC
     NAMES winegcc winegcc-stable winegcc-development winegcc-staging
     PATHS /usr/lib/wine /opt/wine-devel/bin /opt/wine-stable/bin /opt/wine-staging/bin

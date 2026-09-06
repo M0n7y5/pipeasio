@@ -1,6 +1,6 @@
 # Wine PE probe host.
 
-# Same tool-name variants as cmake/WineDLL.cmake (cache-shared when in-tree).
+# Same tool-name variants as cmake/WineSdk.cmake (cache-shared when in-tree).
 find_program(WINEGCC
     NAMES winegcc winegcc-stable winegcc-development winegcc-staging
     PATHS /usr/lib/wine /opt/wine-devel/bin /opt/wine-stable/bin /opt/wine-staging/bin
@@ -18,22 +18,16 @@ endforeach()
 set(PROBE_SRC  "${CMAKE_CURRENT_SOURCE_DIR}/asio_probe.c")
 set(PROBE_OUT  "${CMAKE_CURRENT_BINARY_DIR}/asio_probe.exe.so")
 set(PROBE_PE   "${CMAKE_CURRENT_BINARY_DIR}/asio_probe.exe")
-add_wine_dll(
-    NAME      pipeasio64_stop_test
-    SPEC      ${CMAKE_SOURCE_DIR}/pipeasio.dll.spec
-    SOURCES   ${CMAKE_SOURCE_DIR}/src/asio.c
-              ${CMAKE_SOURCE_DIR}/src/audio.c
-              ${CMAKE_SOURCE_DIR}/src/config.c
-              ${CMAKE_SOURCE_DIR}/src/main.c
-              ${CMAKE_SOURCE_DIR}/src/regsvr.c
-    INCLUDES  ${CMAKE_SOURCE_DIR}/include
-              ${PIPEWIRE_INCLUDE_DIRS}
-    LIBS      odbc32 ole32 uuid winmm user32 kernelbase
-    LDFLAGS   ${PIPEWIRE_LINK_LIBRARIES} ${PIPEWIRE_LDFLAGS_OTHER}
-    DEFINES   PIPEASIO_TEST_STOP_BARRIER
-              PIPEASIO_TEST_GATE_BARRIER
-    NO_INSTALL
-)
+# The driver with the stop and gate barriers compiled in (asio.c), under its
+# own module name so a prefix can point the CLSID at it.
+pipeasio_add_pe_driver(
+    NAME            pipeasio64_stop_test
+    PE_ARCH         x86_64
+    TRIPLE          x86_64-w64-mingw32
+    WINEBUILD_FLAGS -m64
+    DEF             "${CMAKE_CURRENT_SOURCE_DIR}/pipeasio64_stop_test.def"
+    DEFINES         PIPEASIO_TEST_STOP_BARRIER PIPEASIO_TEST_GATE_BARRIER
+    NO_INSTALL)
 
 
 add_custom_command(

@@ -3,7 +3,7 @@
 set -euo pipefail
 
 hook_pe="@CMAKE_BINARY_DIR@/pipeasio64_stop_test.dll"
-hook_so="@CMAKE_BINARY_DIR@/pipeasio64_stop_test.dll.so"
+hook_so="@CMAKE_BINARY_DIR@/pipeasio64_stop_test.so"
 runner="@CMAKE_CURRENT_BINARY_DIR@/run.sh"
 
 for tool in wine wineboot pw-cli; do
@@ -21,9 +21,8 @@ staged="@CMAKE_CURRENT_BINARY_DIR@/stop-interleave-install"
 rm -rf -- "$staged"
 mkdir -p "$staged/lib/wine/x86_64-windows" "$staged/lib/wine/x86_64-unix"
 cp "$hook_pe" "$staged/lib/wine/x86_64-windows/pipeasio64_stop_test.dll"
-cp "$hook_so" "$staged/lib/wine/x86_64-unix/pipeasio64_stop_test.dll.so"
-cp "$hook_so" "$staged/lib/wine/x86_64-unix/pipeasio64.dll.so"
-cp "$hook_so" "$staged/lib/wine/x86_64-unix/pipeasio.dll.so"
+cp "$hook_so" "$staged/lib/wine/x86_64-unix/pipeasio64_stop_test.so"
+cp "$hook_so" "$staged/lib/wine/x86_64-unix/pipeasio64.so"
 
 export WINEPREFIX="$PROBE_PREFIX"
 if [[ ! -d "$WINEPREFIX/drive_c" ]]; then

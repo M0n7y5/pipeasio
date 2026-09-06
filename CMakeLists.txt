@@ -48,37 +48,22 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3>=1.4.2)
 message(STATUS "Found libpipewire-0.3 ${PIPEWIRE_VERSION} (minimum 1.4.2)")
 
-# Ahead of WineDLL: the SDK probe requires unixlib.h only when this is on.
 option(BUILD_WOW64_32 "Build the experimental 32-bit WoW64 PE front end + unixlib" OFF)
+include(WineSdk)
 
-
-include(WineDLL)
-
-add_wine_dll(
-    NAME      pipeasio64
-    SPEC      ${CMAKE_SOURCE_DIR}/pipeasio.dll.spec
-    SOURCES   src/asio.c
-              src/audio.c
-              src/config.c
-              src/main.c
-              src/regsvr.c
-    INCLUDES  ${CMAKE_SOURCE_DIR}/include
-              ${PIPEWIRE_INCLUDE_DIRS}
-    LIBS      odbc32 ole32 uuid winmm user32 kernelbase
-    LDFLAGS   ${PIPEWIRE_LINK_LIBRARIES} ${PIPEWIRE_LDFLAGS_OTHER}
-)
-
-# PE front end + unixlib builds (cmake/PeDriver.cmake).
+# The driver: PE front end + unixlib (cmake/PeDriver.cmake).
+# - pipeasio64.dll: x86_64 PE, installed under lib/wine/x86_64-windows
 # - pipeasio32.dll: i386 PE, installed under lib/wine/i386-windows (opt-in)
-# - pipeasio64.dll: x86_64 PE, the split layout for the 64-bit driver
-#   (experiment beside the hybrid add_wine_dll build, not installed)
 # - pipeasio<N>.so: the unixlib, one per front end, under lib/wine/<host>-unix
 set(WINE_LIB_ROOT "/usr/lib/wine" CACHE PATH
     "Wine lib/wine directory holding the <arch>-windows import libraries")
-option(PIPEASIO_SPLIT64 "Also build the 64-bit driver as PE + unixlib (measurement)" OFF)
-if(BUILD_WOW64_32 OR PIPEASIO_SPLIT64)
-    include(PeDriver)
-endif()
+include(PeDriver)
+pipeasio_add_pe_driver(
+    NAME            pipeasio64
+    PE_ARCH         x86_64
+    TRIPLE          x86_64-w64-mingw32
+    WINEBUILD_FLAGS -m64
+    DEF             "${CMAKE_SOURCE_DIR}/src/wow64/pipeasio64.def")
 if(BUILD_WOW64_32)
     pipeasio_add_pe_driver(
         NAME            pipeasio32
@@ -86,17 +71,6 @@ if(BUILD_WOW64_32)
         TRIPLE          i686-w64-mingw32
         WINEBUILD_FLAGS -m32
         DEF             "${CMAKE_SOURCE_DIR}/src/wow64/pipeasio32.def")
-endif()
-if(PIPEASIO_SPLIT64)
-    pipeasio_add_pe_driver(
-        NAME            pipeasio64
-        PE_ARCH         x86_64
-        TRIPLE          x86_64-w64-mingw32
-        WINEBUILD_FLAGS -m64
-        DEF             "${CMAKE_SOURCE_DIR}/src/wow64/pipeasio64.def"
-        OUT_DIR         "${CMAKE_BINARY_DIR}/split64"
-        TARGET          pipeasio64_split
-        NO_INSTALL)
 endif()
 
 include(GNUInstallDirs)
@@ -165,8 +139,8 @@ if(BUILD_TESTS)
     if(PIPEASIO_ASAN)
         find_program(BASH_EXECUTABLE bash REQUIRED)
         set(_pipeasio_sanitizer_artifacts
-            ${CMAKE_BINARY_DIR}/pipeasio64.dll.so
-            ${CMAKE_BINARY_DIR}/pipeasio64_stop_test.dll.so)
+            ${CMAKE_BINARY_DIR}/pipeasio64.so
+            ${CMAKE_BINARY_DIR}/pipeasio64_stop_test.so)
         if(BUILD_WOW64_32)
             list(APPEND _pipeasio_sanitizer_artifacts ${CMAKE_BINARY_DIR}/pipeasio32.so)
         endif()
