@@ -30,7 +30,7 @@
 #include <stdint.h>
 
 /* --- Product version (driver log + settings-panel title) ------------------ */
-#define PIPEASIO_VERSION "1.6.0"
+#define PIPEASIO_VERSION "1.7.0"
 
 /* --- File location (relative to $XDG_CONFIG_HOME, else $HOME/.config) ----- */
 #define PIPEASIO_CONFIG_DIR "pipeasio"
