@@ -5,8 +5,9 @@ set -euo pipefail
 : "${SRC:?SRC must be set}"
 : "${INC:?INC must be set}"
 
+# The host width (-m64 is x86-only; aarch64 cc rejects it).
 echo "[abi] 64-bit layout check"
-"$CC" -m64 -DEXPECTED_POINTER_SIZE=8 -I "$INC" -fsyntax-only "$SRC"
+"$CC" -DEXPECTED_POINTER_SIZE=8 -I "$INC" -fsyntax-only "$SRC"
 echo "[abi] 64-bit OK"
 
 # 32-bit needs gcc multilib; the probe includes a libc header so a missing
