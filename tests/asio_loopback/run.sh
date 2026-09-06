@@ -96,7 +96,12 @@ if [[ ! -d "$PROBE_PREFIX/drive_c" ]]; then
     echo "[loop] creating wineprefix at $PROBE_PREFIX"
     wineboot --init >/dev/null 2>&1
 fi
-if ! wine reg query 'HKLM\Software\ASIO\PipeASIO' >/dev/null 2>&1; then
+# Re-register when the PE staged in the prefix is not the installed one: a
+# prefix registered by an older install keeps a stale copy in system32.
+_installed_pe="${PIPEASIO_ROOT}/lib/wine/x86_64-windows/pipeasio64.dll"
+if ! wine reg query 'HKLM\Software\ASIO\PipeASIO' >/dev/null 2>&1 \
+   || { [[ -e "$_installed_pe" ]] \
+        && ! cmp -s "$_installed_pe" "$PROBE_PREFIX/drive_c/windows/system32/pipeasio64.dll"; }; then
     echo "[loop] registering PipeASIO in $PROBE_PREFIX"
     if [[ "$_sanitized" == 1 ]]; then
         PIPEASIO_REGISTER_WITHOUT_LOADING=1 \

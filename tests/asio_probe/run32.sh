@@ -71,10 +71,14 @@ if [[ ! -d "$PROBE_PREFIX/drive_c" ]]; then
     wineserver -w || true
 fi
 
-# Register the 32-bit CLSID view on first run.
+# Register on first run, or when either staged PE is not the installed one.
 if ! wine reg query \
         'HKCR\CLSID\{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}\InprocServer32' \
-        /reg:32 >/dev/null 2>&1; then
+        /reg:32 >/dev/null 2>&1 \
+   || ! cmp -s "${PIPEASIO_PREFIX}/lib/wine/x86_64-windows/pipeasio64.dll" \
+            "$PROBE_PREFIX/drive_c/windows/system32/pipeasio64.dll" \
+   || ! cmp -s "${PIPEASIO_PREFIX}/lib/wine/i386-windows/pipeasio32.dll" \
+            "$PROBE_PREFIX/drive_c/windows/syswow64/pipeasio32.dll"; then
     echo "[run32] registering PipeASIO (64- + 32-bit views) in $PROBE_PREFIX"
     if [[ "$_sanitized" == 1 ]]; then
         PIPEASIO_REGISTER_WITHOUT_LOADING=1 \

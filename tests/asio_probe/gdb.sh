@@ -49,7 +49,10 @@ if [[ "$mode" != "last" ]]; then
         echo "[gdb] creating wineprefix at $PROBE_PREFIX"
         wineboot --init >/dev/null 2>&1
     fi
-    if ! wine reg query 'HKLM\Software\ASIO\PipeASIO' >/dev/null 2>&1; then
+    _installed_pe="${PIPEASIO_ROOT}/lib/wine/x86_64-windows/pipeasio64.dll"
+    if ! wine reg query 'HKLM\Software\ASIO\PipeASIO' >/dev/null 2>&1 \
+       || { [[ -e "$_installed_pe" ]] \
+            && ! cmp -s "$_installed_pe" "$PROBE_PREFIX/drive_c/windows/system32/pipeasio64.dll"; }; then
         "${PIPEASIO_ROOT}/bin/pipeasio-register" \
             || { echo "[gdb] pipeasio-register failed"; exit 1; }
     fi
