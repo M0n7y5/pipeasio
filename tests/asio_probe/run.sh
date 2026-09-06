@@ -42,7 +42,10 @@ done
 if [[ "${PROBE_EXPECT_DEAD_DAEMON:-0}" != 1 ]]; then
     pw-cli info 0 >/dev/null 2>&1 || { echo "[run] SKIP: no PipeWire daemon"; exit 77; }
 fi
-[[ -f "${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio64.dll.so" ]] \
+# Unix half: pipeasio64.so (PE + unixlib) or pipeasio64.dll.so (hybrid).
+_installed_so="${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio64.so"
+[[ -f "$_installed_so" ]] || _installed_so="${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio64.dll.so"
+[[ -f "$_installed_so" ]] \
     || { echo "[run] SKIP: driver not installed under $PIPEASIO_ROOT (cmake --install)"; exit 77; }
 
 if [[ -n "${FRESH:-}" ]]; then
@@ -60,7 +63,6 @@ export WINEDEBUG
 export PIPEWIRE_DEBUG
 
 # Preload sanitizer runtimes before Wine loads an instrumented Unix half.
-_installed_so="${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio64.dll.so"
 _sanitized=0
 _imports="$(nm -D --undefined-only "$_installed_so" 2>/dev/null || true)"
 if grep -q '__asan_init' <<<"$_imports"; then

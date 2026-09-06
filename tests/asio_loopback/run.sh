@@ -54,7 +54,10 @@ for tool in pw-cli pw-link wine; do
     command -v "$tool" >/dev/null || { echo "[loop] SKIP: $tool not found"; exit 77; }
 done
 pw-cli info 0 >/dev/null 2>&1 || { echo "[loop] SKIP: no PipeWire daemon"; exit 77; }
-[[ -f "${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio64.dll.so" ]] \
+# Unix half: pipeasio64.so (PE + unixlib) or pipeasio64.dll.so (hybrid).
+_installed_so="${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio64.so"
+[[ -f "$_installed_so" ]] || _installed_so="${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio64.dll.so"
+[[ -f "$_installed_so" ]] \
     || { echo "[loop] SKIP: driver not installed under $PIPEASIO_ROOT (cmake --install)"; exit 77; }
 
 if [[ -n "${FRESH:-}" ]]; then
@@ -68,7 +71,6 @@ export WINEPREFIX="$PROBE_PREFIX"
 export WINEDLLOVERRIDES="mscoree,mshtml=${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
 export WINEDLLPATH="${PIPEASIO_ROOT}/lib/wine"
 export WINEDEBUG
-_installed_so="${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio64.dll.so"
 _sanitized=0
 _imports="$(nm -D --undefined-only "$_installed_so" 2>/dev/null || true)"
 if grep -q '__asan_init' <<<"$_imports"; then

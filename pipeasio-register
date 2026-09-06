@@ -81,7 +81,8 @@ fi
 found=()
 for p in "${candidates[@]}"; do
     [ -z "${p}" ] && continue
-    if [ -e "${p}/x86_64-unix/pipeasio64.dll.so" ] \
+    # Unix half: pipeasio64.so (PE + unixlib) or pipeasio64.dll.so (hybrid).
+    if { [ -e "${p}/x86_64-unix/pipeasio64.so" ] || [ -e "${p}/x86_64-unix/pipeasio64.dll.so" ]; } \
        && [ -e "${p}/x86_64-windows/pipeasio64.dll" ]; then
         canon=$(readlink -f "${p}")
         dup=0
