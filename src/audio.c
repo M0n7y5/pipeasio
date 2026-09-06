@@ -50,8 +50,6 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <unistd.h>
-#include <pmmintrin.h> /* _MM_SET_DENORMALS_ZERO_MODE */
-#include <xmmintrin.h> /* _MM_SET_FLUSH_ZERO_MODE */
 
 /* RT/data-loop thread id for diagnostics. */
 static unsigned long
