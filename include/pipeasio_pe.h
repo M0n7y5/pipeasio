@@ -17,7 +17,7 @@
  * this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* PE-side seams used when src/asio.c is built as the WoW64 i386 front end. */
+/* PE-side seams of src/asio.c: config and the callback buffer live in the unixlib. */
 #pragma once
 
 #include <stdbool.h>
@@ -32,14 +32,14 @@ extern "C"
 #endif
 
     /* Config is read by the unixlib. Native builds use src/config.c directly. */
-    bool pipeasio_wow64_load_config(struct pipeasio_config *out);
+    bool pipeasio_pe_load_config(struct pipeasio_config *out);
 
     /* Live-reload fingerprint.  Zero means no config file. */
-    uint64_t pipeasio_wow64_config_fingerprint(void);
+    uint64_t pipeasio_pe_config_fingerprint(void);
 
     /* Bind the shared callback buffer and channel masks to the unix RT loop. */
-    bool pipeasio_wow64_bind_rt(audio_client_t *client, float *buffer_base, int buffer_size,
-                                int n_in, int n_out, const bool *in_active, const bool *out_active);
+    bool pipeasio_pe_bind_rt(audio_client_t *client, float *buffer_base, int buffer_size, int n_in,
+                             int n_out, const bool *in_active, const bool *out_active);
 
 #ifdef __cplusplus
 }

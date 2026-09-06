@@ -17,7 +17,7 @@
  * this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* Scheduling policy shared by the native and WoW64 callback threads. */
+/* Scheduling policy of the thread that carries the host callback. */
 #pragma once
 
 #include <stdbool.h>

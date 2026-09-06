@@ -33,6 +33,6 @@ target_link_libraries(test_pw_buffer_region PRIVATE PkgConfig::PIPEWIRE)
 set_tests_properties(test_pw_buffer_region PROPERTIES TIMEOUT 10)
 
 pipeasio_add_unit_test(test_handle_table test_handle_table.c
-    ${CMAKE_SOURCE_DIR}/src/wow64/handle_table.c)
+    ${CMAKE_SOURCE_DIR}/src/unixlib/handle_table.c)
 target_link_libraries(test_handle_table PRIVATE Threads::Threads)
 set_tests_properties(test_handle_table PROPERTIES TIMEOUT 10)

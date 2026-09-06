@@ -25,12 +25,6 @@
 #include "pipeasio_offsets.h"
 #include "pipeasio_parse.h"
 #include "pipeasio_pw_buffer.h"
-#include "pipeasio_rt_priority.h"
-#ifndef PIPEASIO_AUDIO_UNIXLIB
-#define WIN32_LEAN_AND_MEAN
-#include "windef.h"
-#include "winbase.h"
-#endif
 #include "pipeasio_log.h"
 
 /* Printed by audio_open to identify the loaded binary. */
@@ -63,11 +57,7 @@
 static unsigned long
 audio_current_thread_id(void)
 {
-#ifdef PIPEASIO_AUDIO_UNIXLIB
     return (unsigned long)(uintptr_t)pthread_self();
-#else
-    return (unsigned long)GetCurrentThreadId();
-#endif
 }
 
 /* Defaults before host negotiation and graph callbacks. */
@@ -78,183 +68,6 @@ audio_current_thread_id(void)
 #define AUDIO_REGISTRY_MAX_PORTS 4096u
 #define AUDIO_REGISTRY_PROPERTY_MAX 1024u
 #define AUDIO_REGISTRY_METADATA_MAX 4096u
-
-/* Keep native and WoW64 scheduling values in sync. */
-#define AUDIO_RT_PRIO_MIN PIPEASIO_RT_PRIO_MIN
-#define AUDIO_RT_PRIO_MAX PIPEASIO_RT_PRIO_MAX
-/* The thread-utils bridge bypasses module-rt, so resolve its default request here. */
-#define AUDIO_RT_PRIO_DEFAULT PIPEASIO_RT_PRIO_DEFAULT
-
-#ifndef PIPEASIO_AUDIO_UNIXLIB
-/* Wine RT thread bridge for the PipeWire data loop. */
-
-struct audio_rt_state
-{
-    HANDLE      win_handle; /* Win32 handle for join() */
-    DWORD       win_tid;
-    pthread_t   ptid;            /* captured inside the spawned thread */
-    int         rt_priority;     /* current SCHED_FIFO priority, 0 = none */
-    bool        want_realtime;   /* from config.ini, PIPEASIO_RT_PRIORITY wins */
-    atomic_bool ready;           /* released once ptid is captured */
-    void *(*user_entry)(void *); /* PipeWire-provided entry */
-    void *user_arg;
-    void *user_ret;
-};
-
-static DWORD WINAPI
-audio_rt_trampoline(LPVOID raw)
-{
-    struct audio_rt_state *s = raw;
-
-    s->ptid = pthread_self();
-    atomic_store_explicit(&s->ready, true, memory_order_release);
-
-    TRACE("rt thread entry: tid=%lx\n", (unsigned long)GetCurrentThreadId());
-
-    /* Flush subnormal floats to zero on this RT thread: the ASIO host's DSP
-     * runs here, and denormals can stall the CPU for hundreds of cycles. */
-    _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
-    _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
-
-    s->user_ret = s->user_entry(s->user_arg);
-    return 0;
-}
-
-static struct spa_thread *
-audio_rt_create(void *data, const struct spa_dict *props, void *(*entry)(void *), void *arg)
-{
-    struct audio_rt_state *s = data;
-    (void)props;
-
-    TRACE("rt_create: ENTRY entry=%p arg=%p\n", (void *)entry, arg);
-    s->user_entry = entry;
-    s->user_arg   = arg;
-    atomic_store_explicit(&s->ready, false, memory_order_relaxed);
-
-    /* The ASIO host callback chain can exceed Wine's 1 MB default stack. */
-    s->win_handle = CreateThread(NULL, 8 * 1024 * 1024, audio_rt_trampoline, s,
-                                 STACK_SIZE_PARAM_IS_A_RESERVATION, &s->win_tid);
-    if (!s->win_handle)
-    {
-        ERR("CreateThread failed for PipeWire RT thread\n");
-        return NULL;
-    }
-
-    while (!atomic_load_explicit(&s->ready, memory_order_acquire))
-        sched_yield();
-
-    return (struct spa_thread *)(uintptr_t)s->ptid;
-}
-
-static int
-audio_rt_join(void *data, struct spa_thread *thread, void **retval)
-{
-    struct audio_rt_state *s = data;
-    (void)thread;
-
-    if (!s->win_handle)
-        return -1;
-
-    DWORD wait = WaitForSingleObject(s->win_handle, INFINITE);
-    if (retval)
-        *retval = s->user_ret;
-
-    CloseHandle(s->win_handle);
-    s->win_handle = NULL;
-    return (wait == WAIT_OBJECT_0) ? 0 : -1;
-}
-
-static int
-audio_rt_get_range(void *data, const struct spa_dict *props, int *min, int *max)
-{
-    (void)data;
-    (void)props;
-    *min = AUDIO_RT_PRIO_MIN;
-    *max = AUDIO_RT_PRIO_MAX;
-    return 0;
-}
-
-static int
-audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
-{
-    struct audio_rt_state *s = data;
-    (void)thread;
-
-    bool realtime = s->want_realtime;
-    switch (pipeasio_rt_env_override())
-    {
-    case 0:
-        realtime = false;
-        break;
-    case 1:
-        realtime = true;
-        break;
-    default:
-        break;
-    }
-
-    if (!realtime)
-    {
-        TRACE("rt thread left SCHED_OTHER (realtime disabled)\n");
-        return 0;
-    }
-
-    /* SPA contract: priority <= 0 means "apply the configured default".
-     * module-rt is bypassed by our thread-utils override, so map it here. */
-    if (priority <= 0)
-        priority = AUDIO_RT_PRIO_DEFAULT;
-    if (priority > AUDIO_RT_PRIO_MAX)
-        priority = AUDIO_RT_PRIO_MAX;
-
-    int err = pthread_setschedparam(s->ptid, SCHED_FIFO,
-                                    &(struct sched_param){ .sched_priority = priority });
-    if (err == EPERM)
-    {
-        /* RLIMIT_RTPRIO may cap us below the default. Retry at the cap. */
-        struct rlimit rl;
-        if (getrlimit(RLIMIT_RTPRIO, &rl) == 0 && rl.rlim_cur > 0 && rl.rlim_cur != RLIM_INFINITY
-            && rl.rlim_cur < (rlim_t)priority)
-        {
-            priority = (int)rl.rlim_cur;
-            err      = pthread_setschedparam(s->ptid, SCHED_FIFO,
-                                             &(struct sched_param){ .sched_priority = priority });
-        }
-    }
-    if (err)
-    {
-        WARN("pthread_setschedparam(SCHED_FIFO, %d) failed: %s\n", priority, strerror(err));
-        return -1;
-    }
-    s->rt_priority = priority;
-    TRACE("rt thread acquired SCHED_FIFO %d\n", priority);
-    return 0;
-}
-
-static int
-audio_rt_drop(void *data, struct spa_thread *thread)
-{
-    struct audio_rt_state *s = data;
-    (void)thread;
-
-    if (!s->rt_priority)
-        return 0;
-
-    int err = pthread_setschedparam(s->ptid, SCHED_OTHER,
-                                    &(struct sched_param){ .sched_priority = 0 });
-    if (err)
-    {
-        WARN("pthread_setschedparam(SCHED_OTHER) failed: %s\n", strerror(err));
-        return -1;
-    }
-    s->rt_priority = 0;
-    return 0;
-}
-
-static const struct spa_thread_utils_methods audio_rt_methods = {
-    SPA_VERSION_THREAD_UTILS_METHODS,   .create = audio_rt_create,      .join = audio_rt_join,
-    .get_rt_range = audio_rt_get_range, .acquire_rt = audio_rt_acquire, .drop_rt = audio_rt_drop,
-};
-#endif /* !PIPEASIO_AUDIO_UNIXLIB */
 
 /* Opaque types backing audio.h. */
 
@@ -271,11 +84,6 @@ struct audio_client
     struct pw_context     *ctx;
     struct pw_core        *core;
     struct pw_data_loop   *data_loop;
-
-#ifndef PIPEASIO_AUDIO_UNIXLIB
-    struct audio_rt_state   rt;
-    struct spa_thread_utils rt_iface;
-#endif
 
     audio_process_cb     process_cb;
     void                *process_cb_arg;
@@ -496,9 +304,6 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
     c->our_node_id          = SPA_ID_INVALID;
     c->default_metadata_id  = SPA_ID_INVALID;
     c->settings_metadata_id = SPA_ID_INVALID;
-#ifndef PIPEASIO_AUDIO_UNIXLIB
-    atomic_init(&c->rt.ready, false);
-#endif
 
     pw_init(NULL, NULL);
 
@@ -518,22 +323,10 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
         goto fail_loop;
     }
 
-    /* Native build: create the PipeWire RT thread through CreateThread so it
-     * has a Wine TEB before it calls back into the ASIO host. */
+    /* The context starts its data loop on acquire; this client starts it in
+     * audio_activate and stops it in teardown, so park it until then. */
     c->data_loop = pw_context_get_data_loop(c->ctx);
-
-    /* The context's acquire started the data loop with default pthread utils.
-     * Stop (and join) it through those SAME utils before installing the Wine
-     * bridge. Joining through the bridge would see win_handle == NULL and leak
-     * the original thread.  audio_activate restarts the loop through the
-     * bridge, so the RT thread is CreateThread'd and has a Wine TEB. */
     pw_data_loop_stop(c->data_loop);
-#ifndef PIPEASIO_AUDIO_UNIXLIB
-    c->rt.want_realtime = PIPEASIO_DEFAULT_REALTIME;
-    c->rt_iface.iface = SPA_INTERFACE_INIT(SPA_TYPE_INTERFACE_ThreadUtils, SPA_VERSION_THREAD_UTILS,
-                                           &audio_rt_methods, &c->rt);
-    pw_data_loop_set_thread_utils(c->data_loop, &c->rt_iface);
-#endif
 
     if (pw_thread_loop_start(c->loop) < 0)
     {
@@ -909,10 +702,9 @@ audio_activate(audio_client_t *c)
 
     /* Connecting without PW_FILTER_FLAG_RT_PROCESS sets both
      * node.loop.class=main and node.async=true.  Keep the first: it schedules
-     * this node on the loop passed to pw_filter_new_simple, our Wine-bridged
-     * data loop, so process() can call the host's COM bufferSwitch on a thread
-     * that has a TEB.  RT_PROCESS drops it for a PipeWire pool data-loop
-     * thread that has none, which segfaults in ntdll.  Drop the second: it
+     * this node on the loop passed to pw_filter_new_simple, the data loop this
+     * client starts and stops around activation; RT_PROCESS would move it to
+     * a PipeWire pool thread the client does not own.  Drop the second: it
      * makes every link carry an extra graph quantum, one buffer period of
      * round trip.  Clear it before any link exists, because connect always
      * sets it and impl-link latches link->async when a link is created.  A
@@ -1092,13 +884,10 @@ audio_set_follow_device(audio_client_t *c, bool follow)
 void
 audio_set_realtime(audio_client_t *c, bool realtime)
 {
-    if (!c)
-        return;
-#ifndef PIPEASIO_AUDIO_UNIXLIB
-    c->rt.want_realtime = realtime;
-#else
+    /* The PE pump thread raises itself inside PAU_WAIT_CALLBACK; the data
+     * loop stays at normal scheduling. */
+    (void)c;
     (void)realtime;
-#endif
 }
 
 audio_nframes_t

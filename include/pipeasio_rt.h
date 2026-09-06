@@ -17,7 +17,7 @@
  * this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* Host-callback entry points exported by src/asio.c for the WoW64 PE pump. */
+/* Host-callback entry points exported by src/asio.c for the PE pump thread. */
 #pragma once
 
 #include <stdint.h>

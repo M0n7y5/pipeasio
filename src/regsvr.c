@@ -31,10 +31,6 @@
 #include "objbase.h"
 #include "pipeasio_guids.h"
 
-#if defined(DEBUG) && !defined(PIPEASIO_WOW64_PE)
-#include "wine/debug.h"
-#endif
-
 /*
  * Near the bottom of this file are the exported DllRegisterServer and
  * DllUnregisterServer, which make all this worthwhile.

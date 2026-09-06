@@ -63,14 +63,14 @@ pipeasio_add_pe_driver(
     PE_ARCH         x86_64
     TRIPLE          x86_64-w64-mingw32
     WINEBUILD_FLAGS -m64
-    DEF             "${CMAKE_SOURCE_DIR}/src/wow64/pipeasio64.def")
+    DEF             "${CMAKE_SOURCE_DIR}/src/unixlib/pipeasio64.def")
 if(BUILD_WOW64_32)
     pipeasio_add_pe_driver(
         NAME            pipeasio32
         PE_ARCH         i386
         TRIPLE          i686-w64-mingw32
         WINEBUILD_FLAGS -m32
-        DEF             "${CMAKE_SOURCE_DIR}/src/wow64/pipeasio32.def")
+        DEF             "${CMAKE_SOURCE_DIR}/src/unixlib/pipeasio32.def")
 endif()
 
 include(GNUInstallDirs)
@@ -106,7 +106,7 @@ if(BUILD_TESTS)
     add_subdirectory(tests/asio_loopback)
     add_subdirectory(tests/unit)
     add_subdirectory(tests/pw_probe)
-    add_subdirectory(tests/wow64)
+    add_subdirectory(tests/unixlib)
 
     # pipeasio-register discovery/warning logic; self-contained (stubs wine).
     find_program(BASH_EXECUTABLE bash REQUIRED)

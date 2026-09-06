@@ -71,7 +71,7 @@ typedef int (*audio_sample_rate_cb)(audio_nframes_t nframes, void *arg);
 #define AUDIO_NULL_OPTION 0x00u
 #define AUDIO_NO_START_SERVER 0x01u
 
-/* Append-only values shared by the WoW64 PE and unixlib. */
+/* Append-only values shared by the PE front end and the unixlib. */
 #define AUDIO_STATUS_OK 0u
 #define AUDIO_STATUS_ERROR 1u
 #define AUDIO_STATUS_NO_MEMORY 2u

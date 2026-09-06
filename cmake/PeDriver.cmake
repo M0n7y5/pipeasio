@@ -10,7 +10,7 @@
 #       PE_ARCH    i386                 # Wine arch dir: i386 | x86_64 | aarch64 | arm64ec
 #       TRIPLE     i686-w64-mingw32     # mingw cross triple for the PE half
 #       WINEBUILD_FLAGS -m32            # how winebuild addresses this arch
-#       DEF        src/wow64/pipeasio32.def
+#       DEF        src/unixlib/pipeasio32.def
 #       [OUT_DIR   dir]                 # default CMAKE_BINARY_DIR
 #       [TARGET    name]                # CMake target name, default NAME
 #       [DEFINES   FOO BAR]             # extra -D for the PE half only
@@ -31,13 +31,13 @@ function(pipeasio_add_unixlib_objects)
     endif()
     # -fno-lto: same winebuild ld -r / .spec export hazard as add_wine_dll (issue #6).
     add_library(pipeasio_unix_objs OBJECT
-        src/wow64/audio_unix.c src/wow64/handle_table.c src/audio.c src/config.c)
+        src/unixlib/audio_unix.c src/unixlib/handle_table.c src/audio.c src/config.c)
     set_target_properties(pipeasio_unix_objs PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(pipeasio_unix_objs PRIVATE
-        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src/wow64
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src/unixlib
         ${PIPEWIRE_INCLUDE_DIRS} ${WINE_INCLUDE_DIRS})
     target_compile_options(pipeasio_unix_objs PRIVATE
-        -DPIPEASIO_AUDIO_UNIXLIB -D_REENTRANT
+        -D_REENTRANT
         -Wall -fno-strict-aliasing -Werror=implicit-function-declaration
         -fno-lto
         $<$<CONFIG:Release>:-O2> $<$<CONFIG:Release>:-DNDEBUG>
@@ -80,10 +80,10 @@ function(pipeasio_add_pe_driver)
 
     set(_dll  "${PA_OUT_DIR}/${PA_NAME}.dll")
     set(_so   "${PA_OUT_DIR}/${PA_NAME}.so")
-    set(_spec "${CMAKE_SOURCE_DIR}/src/wow64/pipeasio32_unixlib.spec")
+    set(_spec "${CMAKE_SOURCE_DIR}/src/unixlib/unixlib.spec")
     file(GLOB _headers CONFIGURE_DEPENDS
          "${CMAKE_SOURCE_DIR}/include/*.h"
-         "${CMAKE_SOURCE_DIR}/src/wow64/*.h")
+         "${CMAKE_SOURCE_DIR}/src/unixlib/*.h")
 
     # Wine's import libs must be copied, made writable, and re-indexed with the
     # target ranlib before the mingw linker accepts them.  Once per arch: two
@@ -115,7 +115,7 @@ function(pipeasio_add_pe_driver)
         add_custom_target(pipeasio_implibs_${PA_PE_ARCH} DEPENDS ${_imp_libs})
     endif()
 
-    set(_inc -I "${CMAKE_SOURCE_DIR}/include" -I "${CMAKE_SOURCE_DIR}/src/wow64")
+    set(_inc -I "${CMAKE_SOURCE_DIR}/include" -I "${CMAKE_SOURCE_DIR}/src/unixlib")
     foreach(_d ${WINE_INCLUDE_DIRS})
         list(APPEND _inc -I "${_d}")
     endforeach()
@@ -137,7 +137,7 @@ function(pipeasio_add_pe_driver)
         "${CMAKE_SOURCE_DIR}/src/main.c"
         "${CMAKE_SOURCE_DIR}/src/regsvr.c"
         "${CMAKE_SOURCE_DIR}/src/config.c"
-        "${CMAKE_SOURCE_DIR}/src/wow64/audio_proxy.c")
+        "${CMAKE_SOURCE_DIR}/src/unixlib/audio_proxy.c")
     # -lmingw32 first: its tlssup.o must own _tls_index, or Wine 11.16+'s winecrt0 tls.o collides.
     add_custom_command(
         OUTPUT  "${_dll}"
@@ -146,7 +146,7 @@ function(pipeasio_add_pe_driver)
                 "${PA_DEF}"
                 -lmingw32
                 "${_imp_root}/libwinecrt0-${PA_PE_ARCH}.a"
-                -DPIPEASIO_WOW64_PE
+                -DPIPEASIO_PE
                 ${_inc} ${_cflags} -static -static-libgcc
                 -o "${_dll}"
                 "${_imp_root}/libntdll-${PA_PE_ARCH}.a"

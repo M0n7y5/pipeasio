@@ -28,10 +28,6 @@
 #include "unknwn.h"
 #include "pipeasio_guids.h"
 
-#if defined(DEBUG) && !defined(PIPEASIO_WOW64_PE)
-#include "wine/debug.h"
-#endif
-
 typedef struct
 {
     const IClassFactoryVtbl *lpVtbl;

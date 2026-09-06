@@ -17,7 +17,7 @@
  * this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* 64-bit unixlib dispatch layer for the 32-bit WoW64 front end. */
+/* Unixlib dispatch layer serving the PE front ends. */
 
 #define WINE_UNIX_LIB
 #define WIN32_LEAN_AND_MEAN
@@ -336,7 +336,7 @@ bridge_invoke(client_ctx *cc, uint32_t kind, uint32_t index, uint32_t nframes, u
 /* Backend callbacks. */
 
 static int
-wow64_rt_process(audio_nframes_t nframes, void *arg)
+unix_rt_process(audio_nframes_t nframes, void *arg)
 {
     client_ctx *cc       = arg;
     bool        admitted = false;
@@ -386,7 +386,7 @@ wow64_rt_process(audio_nframes_t nframes, void *arg)
 }
 
 static int
-wow64_sample_rate_cb(audio_nframes_t nframes, void *arg)
+unix_sample_rate_cb(audio_nframes_t nframes, void *arg)
 {
     bridge_invoke((client_ctx *)arg, PAU_CB_SAMPLE_RATE, 0, 0, 0, (int32_t)nframes);
     return 0;
@@ -402,7 +402,7 @@ wow64_sample_rate_cb(audio_nframes_t nframes, void *arg)
     } while (0)
 
 static NTSTATUS
-wow64_open(void *args)
+unix_open(void *args)
 {
     pa_open_params *p = args;
     client_ctx     *cc;
@@ -441,7 +441,7 @@ wow64_open(void *args)
 }
 
 static NTSTATUS
-wow64_close(void *args)
+unix_close(void *args)
 {
     pa_simple_params *p = args;
     client_ctx       *cc;
@@ -464,7 +464,7 @@ wow64_close(void *args)
 }
 
 static NTSTATUS
-wow64_get_sample_rate(void *args)
+unix_get_sample_rate(void *args)
 {
     pa_simple_params *p = args;
     client_ctx       *cc;
@@ -478,7 +478,7 @@ wow64_get_sample_rate(void *args)
 }
 
 static NTSTATUS
-wow64_get_buffer_size(void *args)
+unix_get_buffer_size(void *args)
 {
     pa_simple_params *p = args;
     client_ctx       *cc;
@@ -492,7 +492,7 @@ wow64_get_buffer_size(void *args)
 }
 
 static NTSTATUS
-wow64_set_buffer_size(void *args)
+unix_set_buffer_size(void *args)
 {
     pa_set_u32_params *p = args;
     client_ctx        *cc;
@@ -506,7 +506,7 @@ wow64_set_buffer_size(void *args)
 }
 
 static NTSTATUS
-wow64_set_forced_rate(void *args)
+unix_set_forced_rate(void *args)
 {
     pa_set_u32_params *p = args;
     client_ctx        *cc;
@@ -521,7 +521,7 @@ wow64_set_forced_rate(void *args)
 }
 
 static NTSTATUS
-wow64_set_follow_device(void *args)
+unix_set_follow_device(void *args)
 {
     pa_set_u32_params *p = args;
     client_ctx        *cc;
@@ -536,7 +536,7 @@ wow64_set_follow_device(void *args)
 }
 
 static NTSTATUS
-wow64_set_realtime(void *args)
+unix_set_realtime(void *args)
 {
     pa_set_u32_params *p = args;
     client_ctx        *cc;
@@ -551,7 +551,7 @@ wow64_set_realtime(void *args)
 }
 
 static NTSTATUS
-wow64_observed_quantum(void *args)
+unix_observed_quantum(void *args)
 {
     pa_simple_params *p = args;
     client_ctx       *cc;
@@ -565,7 +565,7 @@ wow64_observed_quantum(void *args)
 }
 
 static NTSTATUS
-wow64_get_time_nsec(void *args)
+unix_get_time_nsec(void *args)
 {
     pa_time_params *p = args;
     client_ctx     *cc;
@@ -579,7 +579,7 @@ wow64_get_time_nsec(void *args)
 }
 
 static NTSTATUS
-wow64_default_changed(void *args)
+unix_default_changed(void *args)
 {
     pa_simple_params *p = args;
     client_ctx       *cc;
@@ -593,7 +593,7 @@ wow64_default_changed(void *args)
 }
 
 static NTSTATUS
-wow64_latency_changed(void *args)
+unix_latency_changed(void *args)
 {
     pa_simple_params *p = args;
     client_ctx       *cc;
@@ -607,7 +607,7 @@ wow64_latency_changed(void *args)
 }
 
 static NTSTATUS
-wow64_port_register(void *args)
+unix_port_register(void *args)
 {
     pa_port_register_params *p = args;
     client_ctx              *cc;
@@ -639,7 +639,7 @@ wow64_port_register(void *args)
 }
 
 static NTSTATUS
-wow64_port_unregister(void *args)
+unix_port_unregister(void *args)
 {
     pa_port_params *p = args;
     client_ctx     *cc;
@@ -673,7 +673,7 @@ wow64_port_unregister(void *args)
 }
 
 static NTSTATUS
-wow64_port_latency_range(void *args)
+unix_port_latency_range(void *args)
 {
     pa_port_params       *p = args;
     audio_port_t         *port;
@@ -690,7 +690,7 @@ wow64_port_latency_range(void *args)
 }
 
 static NTSTATUS
-wow64_get_device_ports(void *args)
+unix_get_device_ports(void *args)
 {
     pa_ports_params  *p = args;
     client_ctx       *cc;
@@ -736,7 +736,7 @@ wow64_get_device_ports(void *args)
 }
 
 static NTSTATUS
-wow64_connect(void *args)
+unix_connect(void *args)
 {
     pa_connect_params *p = args;
     client_ctx        *cc;
@@ -752,7 +752,7 @@ wow64_connect(void *args)
 }
 
 static NTSTATUS
-wow64_activate(void *args)
+unix_activate(void *args)
 {
     pa_simple_params *p = args;
     client_ctx       *cc;
@@ -766,7 +766,7 @@ wow64_activate(void *args)
 }
 
 static NTSTATUS
-wow64_deactivate(void *args)
+unix_deactivate(void *args)
 {
     pa_simple_params *p = args;
     client_ctx       *cc;
@@ -781,7 +781,7 @@ wow64_deactivate(void *args)
 }
 
 static NTSTATUS
-wow64_install_callbacks(void *args)
+unix_install_callbacks(void *args)
 {
     pa_simple_params *p = args;
     client_ctx       *cc;
@@ -791,8 +791,8 @@ wow64_install_callbacks(void *args)
     if (!cc)
         return STATUS_INVALID_HANDLE;
     bridge_reset(cc);
-    if (!audio_set_process_callback(cc->client, wow64_rt_process, cc)
-        || !audio_set_sample_rate_callback(cc->client, wow64_sample_rate_cb, cc))
+    if (!audio_set_process_callback(cc->client, unix_rt_process, cc)
+        || !audio_set_sample_rate_callback(cc->client, unix_sample_rate_cb, cc))
         return STATUS_UNSUCCESSFUL;
     cc->installed = true;
     p->result     = 1;
@@ -800,7 +800,7 @@ wow64_install_callbacks(void *args)
 }
 
 static NTSTATUS
-wow64_bind_rt(void *args)
+unix_bind_rt(void *args)
 {
     pa_bind_params *p = args;
     client_ctx     *cc;
@@ -843,7 +843,7 @@ wow64_bind_rt(void *args)
 }
 
 static NTSTATUS
-wow64_load_config(void *args)
+unix_load_config(void *args)
 {
     pa_config_params *p = args;
 
@@ -853,7 +853,7 @@ wow64_load_config(void *args)
 }
 
 static NTSTATUS
-wow64_config_fingerprint(void *args)
+unix_config_fingerprint(void *args)
 {
     pa_fingerprint_params *p = args;
     char                   path[4096];
@@ -874,7 +874,7 @@ wow64_config_fingerprint(void *args)
 }
 
 static NTSTATUS
-wow64_wait_callback(void *args)
+unix_wait_callback(void *args)
 {
     pa_wait_params *p = args;
     client_ctx     *cc;
@@ -920,7 +920,7 @@ wow64_wait_callback(void *args)
 }
 
 static NTSTATUS
-wow64_reply_callback(void *args)
+unix_reply_callback(void *args)
 {
     pa_reply_params *p = args;
     client_ctx      *cc;
@@ -947,7 +947,7 @@ wow64_reply_callback(void *args)
 }
 
 static NTSTATUS
-wow64_reserved(void *args)
+unix_reserved(void *args)
 {
     PAU_CHECK(args);
     return STATUS_NOT_SUPPORTED;
@@ -956,69 +956,69 @@ wow64_reserved(void *args)
 /* Call tables.  Order must match enum pa_call. */
 
 const unixlib_entry_t __wine_unix_call_funcs[] = {
-    wow64_open,
-    wow64_close,
-    wow64_get_sample_rate,
-    wow64_get_buffer_size,
-    wow64_set_buffer_size,
-    wow64_set_forced_rate,
-    wow64_set_follow_device,
-    wow64_observed_quantum,
-    wow64_get_time_nsec,
-    wow64_default_changed,
-    wow64_port_register,
-    wow64_port_unregister,
-    wow64_latency_changed,
-    wow64_reserved,
-    wow64_reserved,
-    wow64_port_latency_range,
-    wow64_reserved,
-    wow64_get_device_ports,
-    wow64_connect,
-    wow64_reserved,
-    wow64_activate,
-    wow64_deactivate,
-    wow64_install_callbacks,
-    wow64_bind_rt,
-    wow64_load_config,
-    wow64_config_fingerprint,
-    wow64_wait_callback,
-    wow64_reply_callback,
-    wow64_set_realtime,
+    unix_open,
+    unix_close,
+    unix_get_sample_rate,
+    unix_get_buffer_size,
+    unix_set_buffer_size,
+    unix_set_forced_rate,
+    unix_set_follow_device,
+    unix_observed_quantum,
+    unix_get_time_nsec,
+    unix_default_changed,
+    unix_port_register,
+    unix_port_unregister,
+    unix_latency_changed,
+    unix_reserved,
+    unix_reserved,
+    unix_port_latency_range,
+    unix_reserved,
+    unix_get_device_ports,
+    unix_connect,
+    unix_reserved,
+    unix_activate,
+    unix_deactivate,
+    unix_install_callbacks,
+    unix_bind_rt,
+    unix_load_config,
+    unix_config_fingerprint,
+    unix_wait_callback,
+    unix_reply_callback,
+    unix_set_realtime,
 };
 
 #ifdef _WIN64
 /* The i386 PE front end dispatches here. */
 const unixlib_entry_t __wine_unix_call_wow64_funcs[] = {
-    wow64_open,
-    wow64_close,
-    wow64_get_sample_rate,
-    wow64_get_buffer_size,
-    wow64_set_buffer_size,
-    wow64_set_forced_rate,
-    wow64_set_follow_device,
-    wow64_observed_quantum,
-    wow64_get_time_nsec,
-    wow64_default_changed,
-    wow64_port_register,
-    wow64_port_unregister,
-    wow64_latency_changed,
-    wow64_reserved,
-    wow64_reserved,
-    wow64_port_latency_range,
-    wow64_reserved,
-    wow64_get_device_ports,
-    wow64_connect,
-    wow64_reserved,
-    wow64_activate,
-    wow64_deactivate,
-    wow64_install_callbacks,
-    wow64_bind_rt,
-    wow64_load_config,
-    wow64_config_fingerprint,
-    wow64_wait_callback,
-    wow64_reply_callback,
-    wow64_set_realtime,
+    unix_open,
+    unix_close,
+    unix_get_sample_rate,
+    unix_get_buffer_size,
+    unix_set_buffer_size,
+    unix_set_forced_rate,
+    unix_set_follow_device,
+    unix_observed_quantum,
+    unix_get_time_nsec,
+    unix_default_changed,
+    unix_port_register,
+    unix_port_unregister,
+    unix_latency_changed,
+    unix_reserved,
+    unix_reserved,
+    unix_port_latency_range,
+    unix_reserved,
+    unix_get_device_ports,
+    unix_connect,
+    unix_reserved,
+    unix_activate,
+    unix_deactivate,
+    unix_install_callbacks,
+    unix_bind_rt,
+    unix_load_config,
+    unix_config_fingerprint,
+    unix_wait_callback,
+    unix_reply_callback,
+    unix_set_realtime,
 };
 _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0])
                        == PAU_CALL_COUNT,

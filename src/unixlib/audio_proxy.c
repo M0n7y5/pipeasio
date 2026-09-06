@@ -17,7 +17,7 @@
  * this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* 32-bit PE implementation of include/audio.h backed by the WoW64 unixlib. */
+/* PE-side implementation of include/audio.h: every call crosses into the unixlib. */
 
 #define WIN32_LEAN_AND_MEAN
 #define WIN32_NO_STATUS
@@ -37,7 +37,7 @@
 #include "pipeasio_config.h"
 #include "pipeasio_rt.h"
 #include "pipeasio_unix_abi.h"
-#include "pipeasio_wow64_pe.h"
+#include "pipeasio_pe.h"
 
 /* Unixlib bootstrap. */
 
@@ -624,7 +624,7 @@ audio_free_ports(const char **ports)
 /* PE seams used by src/asio.c. */
 
 bool
-pipeasio_wow64_load_config(struct pipeasio_config *out)
+pipeasio_pe_load_config(struct pipeasio_config *out)
 {
     pa_config_params p;
 
@@ -642,7 +642,7 @@ pipeasio_wow64_load_config(struct pipeasio_config *out)
 }
 
 uint64_t
-pipeasio_wow64_config_fingerprint(void)
+pipeasio_pe_config_fingerprint(void)
 {
     pa_fingerprint_params p;
 
@@ -656,8 +656,8 @@ pipeasio_wow64_config_fingerprint(void)
 }
 
 bool
-pipeasio_wow64_bind_rt(audio_client_t *client, float *buffer_base, int buffer_size, int n_in,
-                       int n_out, const bool *in_active, const bool *out_active)
+pipeasio_pe_bind_rt(audio_client_t *client, float *buffer_base, int buffer_size, int n_in,
+                    int n_out, const bool *in_active, const bool *out_active)
 {
     proxy_ctx     *ctx    = (proxy_ctx *)client;
     pa_bind_params params = { 0 };

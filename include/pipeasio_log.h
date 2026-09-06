@@ -17,14 +17,14 @@
  * this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* Raw stderr logging shared by native and WoW64 PE builds. */
+/* Raw stderr logging shared by the PE front end and the unixlib. */
 #pragma once
 
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-#ifdef PIPEASIO_WOW64_PE
+#ifdef PIPEASIO_PE
 extern int _write(int fd, const void *buf, unsigned int count);
 #define PIPEASIO_WRITE_ERR(buf, n) (void)_write(2, (buf), (unsigned)(n))
 #else

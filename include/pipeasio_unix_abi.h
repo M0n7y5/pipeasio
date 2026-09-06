@@ -17,7 +17,8 @@
  * this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* WoW64 unix-call ABI.  Structs must stay pointer-free and pack(4). */
+/* PE to unixlib call ABI.  Structs must stay pointer-free and pack(4) so an
+ * i386 and an x86_64 front end share one unixlib. */
 #pragma once
 
 #include <stdint.h>
