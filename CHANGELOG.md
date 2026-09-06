@@ -6,6 +6,15 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- ARM64 front ends (#23): `aarch64-windows/pipeasio64.dll` for native ARM64
+  Windows hosts and `arm64ec-windows/pipeasio64.dll` for x86_64 hosts under
+  Wine with FEX, over the one aarch64 unixlib. `BUILD_ARM64` (default on)
+  builds each when `clang`, `lld` and Wine's `<arch>-windows` import
+  libraries are present, and CI builds and registers them on an ARM64 runner.
+  Untested against a real audio host on ARM64 hardware; the README says so.
+
 ### Changed
 
 - The 64-bit driver is built as a PE front end plus a unixlib, the layout Wine
@@ -17,10 +26,14 @@ follow [Semantic Versioning](https://semver.org/).
   the `pipeasio.dll` symlinks are gone because the real PE does not need them.
   Measured against the single-ELF build at 128 frames: same round trip (one
   buffer), same xrun count, `pw-top` ERR +0 on every `SCHED_FIFO` leg.
-- Building now requires the `x86_64-w64-mingw32` MinGW cross compiler
-  (`mingw-w64-gcc` on Arch, `gcc-mingw-w64-x86-64` on Debian/Ubuntu,
-  `mingw64-gcc` on Fedora), previously only needed for the opt-in 32-bit
-  front end.
+- The PE half is linked by `winegcc` the way Wine links its own modules:
+  Wine's headers and import libraries, no MinGW runtime, `ucrtbase` instead
+  of the MinGW api-set imports. Building needs a cross compiler for it: the
+  MinGW gcc for x86 targets (`mingw-w64-gcc` on Arch, `gcc-mingw-w64-x86-64`
+  on Debian/Ubuntu, `mingw64-gcc` on Fedora), previously only needed for the
+  opt-in 32-bit front end, or `clang` with `lld` for any target. The Wine
+  library root is probed (`lib/wine`, `lib64/wine`, `lib/<multiarch>/wine`)
+  rather than assumed.
 - **Upgrading from 1.6.0 or older: run `pipeasio-register` again in every
   prefix.** Those installs staged a 2 KB stub into `system32` that looks for
   the `.dll.so`, which the new install no longer ships; until re-registered

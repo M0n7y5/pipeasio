@@ -14,7 +14,7 @@
   <a href="https://aur.archlinux.org/packages/pipeasio"><img alt="AUR version" src="https://img.shields.io/aur/version/pipeasio?label=AUR&amp;color=ff6a1f"></a>
   <a href="https://fluxer.gg/HbKTgk5V"><img alt="Fluxer guild" src="https://img.shields.io/badge/Fluxer-join%20the%20guild-4641D9"></a>
   <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-blue">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20x86__64-lightgrey">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20x86__64%20%7C%20ARM64%20(untested)-lightgrey">
   <img alt="PipeWire" src="https://img.shields.io/badge/PipeWire-1.4.2%2B-ff6a1f">
 </p>
 
@@ -103,18 +103,22 @@ Under Proton or Steam, also set `WINEDLLPATH=$HOME/.local/lib/wine` in the launc
 CMake only. The driver is 64-bit. Opt-in 32-bit (WoW64) support for 32-bit
 Windows hosts is covered in [32-bit applications](#32-bit-applications-experimental).
 
-The driver is two halves, the layout Wine uses for its own builtin modules:
-a PE DLL (`pipeasio64.dll`, the COM object and ASIO surface, built with the
-MinGW cross compiler) and a unixlib (`pipeasio64.so`, the PipeWire client,
-built with the host compiler) that the PE reaches through
-`__wine_unix_call`. Nothing in the PE half links libpipewire, and nothing in
-the unixlib knows about COM.
+The driver is two halves, the layout Wine uses for its own modules: a PE
+DLL (`pipeasio64.dll`, the COM object and ASIO surface) and a unixlib
+(`pipeasio64.so`, the PipeWire client) that the PE reaches through
+`__wine_unix_call`. The PE half is linked by `winegcc` exactly as Wine links
+its own DLLs, against Wine's headers and import libraries, with a cross
+compiler; the unixlib is built with the host compiler. Nothing in the PE
+half links libpipewire, and nothing in the unixlib knows about COM.
 
 Requirements: `cmake` (3.20 or newer), `ninja` (recommended) or GNU make,
-`gcc`, `pkg-config`, the Wine SDK (headers plus `winebuild` and `winegcc`),
-the `x86_64-w64-mingw32` MinGW cross compiler (`mingw-w64-gcc` on Arch,
-`gcc-mingw-w64-x86-64` on Debian/Ubuntu, `mingw64-gcc` on Fedora), and the
-PipeWire development headers. The Qt6 settings panel is optional: it builds
+`gcc`, `pkg-config`, the Wine SDK (headers, `winebuild`, `winegcc` and the
+`lib/wine/<arch>-windows` import libraries), a cross compiler for the PE
+half, and the PipeWire development headers. The cross compiler is either
+the MinGW gcc for x86 targets (`mingw-w64-gcc` on Arch,
+`gcc-mingw-w64-x86-64` on Debian/Ubuntu, `mingw64-gcc` on Fedora) or
+`clang` with `lld`, which is what Wine itself cross-builds with and the
+only choice for ARM64; `PIPEASIO_PE_COMPILER=gcc|clang` forces one. The Qt6 settings panel is optional: it builds
 when a C++ compiler and Qt6 Widgets are present and is skipped with a warning
 otherwise, which does not affect the driver. Pass `-DBUILD_SETTINGS_PANEL=OFF`
 to skip it deliberately and silence the warning.
@@ -498,6 +502,29 @@ re-stamps it for the host build, and the next Bottles launch stamps it back,
 so the two keep migrating the prefix between builds. For native Bottles
 `WINE=~/.local/share/bottles/runners/<runner>/bin/wine` makes the script
 register through the runner instead.
+
+## ARM64
+
+ARM64 Linux runs Windows audio hosts two ways, and the driver builds a PE
+front end for each: `aarch64-windows/pipeasio64.dll` for native ARM64
+Windows hosts (FL Studio 24.1+ has one), and `arm64ec-windows/pipeasio64.dll`
+for x86_64 hosts running under Wine with FEX (Ableton, older FL Studio,
+most of what exists). Both share the one aarch64 unixlib. Wine loads only
+this split layout on ARM64, which is why the driver moved to it
+([#23](https://github.com/M0n7y5/pipeasio/issues/23)).
+
+Building needs `clang` and `lld` (there is no MinGW gcc for these targets)
+and a Wine that was itself built for `aarch64` and `arm64ec`, so that
+`lib/wine/aarch64-windows/` and `lib/wine/arm64ec-windows/` carry the import
+libraries; Fedora's Wine does, and it is what Asahi Linux ships. `BUILD_ARM64`
+(default on) builds each front end whose toolchain and import libraries are
+present and reports the ones it skips. On an x86_64 host only the PE halves
+can be cross-built; the unixlib is always the host's.
+
+Status: the front ends build and register (CI does that on an ARM64 runner),
+but nobody has yet run an audio host through them on real hardware. Reports
+from an Asahi or other ARM64 machine are what moves this from "builds" to
+"works", on the tracking issue above.
 
 ## Other distributions
 
