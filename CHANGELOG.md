@@ -12,8 +12,11 @@ follow [Semantic Versioning](https://semver.org/).
   Windows hosts and `arm64ec-windows/pipeasio64.dll` for x86_64 hosts under
   Wine with FEX, over the one aarch64 unixlib. `BUILD_ARM64` (default on)
   builds each when `clang`, `lld` and Wine's `<arch>-windows` import
-  libraries are present, and CI builds and registers them on an ARM64 runner.
-  Untested against a real audio host on ARM64 hardware; the README says so.
+  libraries are present. CI builds the aarch64 pair on a Debian ARM64 runner
+  (Debian ships no arm64ec import libraries), runs the unit tests and the ABI
+  layout check there, and `regsvr32` in a throwaway prefix loads it as a
+  builtin and registers the CLSID. Untested against a real audio host on
+  ARM64 hardware; the README says so.
 
 ### Changed
 
@@ -36,7 +39,10 @@ follow [Semantic Versioning](https://semver.org/).
   front end, or `clang` with `lld` for any target. The Wine library root is
   probed (`lib/wine`, `lib64/wine-wow64/wine`, `lib/<multiarch>/wine`)
   rather than assumed, and a bundled `unixlib.h` covers Debian and Ubuntu,
-  whose `libwine-dev` omits it.
+  whose `libwine-dev` omits it. The unixlib is linked with the host compiler
+  the way Wine links its own (`-shared -Bsymbolic -z,defs`), and the two test
+  hosts are PE programs (`asio_probe.exe`, `asio_loopback.exe`) rather than
+  `winegcc` ELF `.exe.so` files: both `winegcc` ELF paths are x86-only.
 - **Upgrading from 1.6.0 or older: run `pipeasio-register` again in every
   prefix.** Those installs staged a 2 KB stub into `system32` that looks for
   the `.dll.so`, which the new install no longer ships; until re-registered
