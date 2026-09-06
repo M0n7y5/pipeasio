@@ -75,9 +75,10 @@ endif()
 # Validate the result, probed or user-supplied: a wrong -DWINE_INCLUDE_DIRS (the
 # install root instead of its include dirs) otherwise configures cleanly and
 # fails later on "wine/debug.h: No such file".  Only wine/debug.h may come from
-# the compiler's own /usr/include; windows.h and unixlib.h must be reachable
-# through -I, since the PE half is built by the mingw cross compiler.
-set(_wine_hdr_checks wine/debug.h windows.h unixlib.h)
+# the compiler's own /usr/include; windows.h must be reachable through -I,
+# since the PE half is built by a cross compiler.  unixlib.h is checked
+# separately: Debian and Ubuntu do not ship it, so a bundled copy stands in.
+set(_wine_hdr_checks wine/debug.h windows.h)
 set(_wine_hdr_missing "")
 foreach(_h ${_wine_hdr_checks})
     set(_wine_hdr_search ${WINE_INCLUDE_DIRS})
@@ -112,3 +113,22 @@ if(_wine_hdr_missing)
         "/opt/wine-devel/include/wine;/opt/wine-devel/include/wine/windows\"")
 endif()
 message(STATUS "Wine include dirs: ${WINE_INCLUDE_DIRS}")
+
+# Arch and Fedora install unixlib.h beside debug.h (found through the same
+# dirs, or the wine/ subdirectory on a Wine-default layout); Debian's
+# libwine-dev omits it.  WINE_UNIXLIB_INCLUDE_DIR is what a target adds to
+# reach it as <unixlib.h>.
+set(WINE_UNIXLIB_INCLUDE_DIR "")
+foreach(_d ${WINE_INCLUDE_DIRS} /usr/include/wine)
+    if(EXISTS "${_d}/unixlib.h")
+        set(WINE_UNIXLIB_INCLUDE_DIR "${_d}")
+        break()
+    elseif(EXISTS "${_d}/wine/unixlib.h")
+        set(WINE_UNIXLIB_INCLUDE_DIR "${_d}/wine")
+        break()
+    endif()
+endforeach()
+if(NOT WINE_UNIXLIB_INCLUDE_DIR)
+    set(WINE_UNIXLIB_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/include/compat")
+    message(STATUS "Wine SDK ships no unixlib.h; using the bundled copy")
+endif()

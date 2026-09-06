@@ -29,14 +29,17 @@ if(PIPEASIO_UNIX_ARCH STREQUAL "AMD64")
 endif()
 
 # Wine's library root, where <arch>-windows/lib*.a live: lib/wine on Arch,
-# lib64/wine on Fedora, lib/<multiarch>/wine on Debian, or the prefix's own
-# lib/wine for WineHQ packages.  Probed from winebuild's prefix, overridable.
+# lib64/wine-wow64/wine on Fedora, lib/<multiarch>/wine on Debian, or the
+# prefix's own lib/wine for WineHQ packages.  Probed from winebuild's prefix,
+# overridable.
 get_filename_component(_wine_prefix "${WINEBUILD}" DIRECTORY)
 get_filename_component(_wine_prefix "${_wine_prefix}" DIRECTORY)
 set(_wine_lib_candidates
     "${_wine_prefix}/lib/wine" "${_wine_prefix}/lib64/wine"
     "${_wine_prefix}/lib/${PIPEASIO_UNIX_ARCH}-linux-gnu/wine"
-    /usr/lib/wine /usr/lib64/wine "/usr/lib/${PIPEASIO_UNIX_ARCH}-linux-gnu/wine")
+    "${_wine_prefix}/lib64/wine-wow64/wine" "${_wine_prefix}/lib/wine-wow64/wine"
+    /usr/lib/wine /usr/lib64/wine "/usr/lib/${PIPEASIO_UNIX_ARCH}-linux-gnu/wine"
+    /usr/lib64/wine-wow64/wine /usr/lib/wine-wow64/wine)
 set(_wine_lib_default "/usr/lib/wine")
 foreach(_c ${_wine_lib_candidates})
     if(EXISTS "${_c}/${PIPEASIO_UNIX_ARCH}-windows/libwinecrt0.a")
@@ -97,7 +100,7 @@ function(pipeasio_add_unixlib_objects)
     set_target_properties(pipeasio_unix_objs PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(pipeasio_unix_objs PRIVATE
         ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src/unixlib
-        ${PIPEWIRE_INCLUDE_DIRS} ${WINE_INCLUDE_DIRS})
+        ${PIPEWIRE_INCLUDE_DIRS} ${WINE_INCLUDE_DIRS} ${WINE_UNIXLIB_INCLUDE_DIR})
     target_compile_options(pipeasio_unix_objs PRIVATE
         -D_REENTRANT
         -Wall -fno-strict-aliasing -Werror=implicit-function-declaration
@@ -165,14 +168,9 @@ function(pipeasio_add_pe_driver)
     foreach(_d ${PA_DEFINES})
         list(APPEND _cflags "-D${_d}")
     endforeach()
-    # winegcc adds Wine's windows/ and msvcrt/ headers itself; the root holds unixlib.h.
-    set(_inc -I "${CMAKE_SOURCE_DIR}/include" -I "${CMAKE_SOURCE_DIR}/src/unixlib")
-    foreach(_d ${WINE_INCLUDE_DIRS})
-        get_filename_component(_leaf "${_d}" NAME)
-        if(_leaf STREQUAL "wine")
-            list(APPEND _inc -I "${_d}")
-        endif()
-    endforeach()
+    # winegcc adds Wine's windows/ and msvcrt/ headers itself.
+    set(_inc -I "${CMAKE_SOURCE_DIR}/include" -I "${CMAKE_SOURCE_DIR}/src/unixlib"
+             -I "${WINE_UNIXLIB_INCLUDE_DIR}")
 
     add_custom_command(
         OUTPUT  "${_dll}"

@@ -198,34 +198,37 @@ jobs:
         if: failure()
         run: cat build/Testing/Temporary/LastTest.log || true
 
-  # Native ARM64 build (#23). Fedora is the ARM64 distribution that ships Wine
-  # with aarch64 and arm64ec PE support (Asahi), so it is the host that has
-  # the <arch>-windows import libraries. The runner has no PipeWire daemon:
+  # Native ARM64 build (#23). Debian is the ARM64 distribution whose Wine
+  # ships the aarch64-windows import libraries (Fedora does not build Wine for
+  # aarch64 at all; Asahi carries its own). Debian has no arm64ec-windows, so
+  # that front end is reported as skipped. The runner has no PipeWire daemon:
   # the unit tests and the ABI layout run, the Wine integration tests skip,
   # and regsvr32 in a throwaway prefix proves the loader pairs the aarch64 PE
   # with the aarch64 unixlib.
   build-arm64:
-    name: build (fedora, aarch64)
+    name: build (debian, aarch64)
     runs-on: ubuntu-24.04-arm
-    container: fedora:latest
+    container: docker.io/library/debian:stable
     steps:
       - name: Install toolchain
-        run: >-
-          dnf install -y --setopt=install_weak_deps=False
-          cmake ninja-build gcc g++ clang lld pkgconf
-          wine-devel wine-core pipewire-devel git
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            cmake ninja-build gcc g++ clang lld pkg-config \
+            wine wine64-tools libwine-dev libpipewire-0.3-dev pipewire git ca-certificates file
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Configure
         run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SETTINGS_PANEL=OFF
       - name: Build
         run: cmake --build build
-      - name: Assert the front ends and the unixlib
+      - name: Assert the aarch64 front end and unixlib
         run: |
           set -euo pipefail
-          ls -la build/aarch64-windows build/arm64ec-windows build/aarch64-unix
+          ls -la build/aarch64-windows build/aarch64-unix
           file build/aarch64-windows/pipeasio64.dll build/aarch64-unix/pipeasio64.so
-          test -f build/arm64ec-windows/pipeasio64.dll
+          test -d build/arm64ec-windows && echo "arm64ec front end built" || echo "arm64ec skipped: Debian ships no arm64ec-windows import libraries"
       - name: Test (integration tests skip without a PipeWire daemon)
         run: ctest --test-dir build --output-on-failure
       - name: Register in a throwaway prefix
