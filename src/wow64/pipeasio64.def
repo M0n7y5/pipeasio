@@ -1,0 +1,6 @@
+LIBRARY pipeasio64.dll
+EXPORTS
+DllCanUnloadNow
+DllGetClassObject
+DllRegisterServer
+DllUnregisterServer

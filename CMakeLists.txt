@@ -68,142 +68,35 @@ add_wine_dll(
     LDFLAGS   ${PIPEWIRE_LINK_LIBRARIES} ${PIPEWIRE_LDFLAGS_OTHER}
 )
 
-# Optional 32-bit WoW64 front end.
-# - pipeasio32.dll: i386 PE stub, installed under lib/wine/i386-windows
-# - pipeasio32.so:  x86_64 unixlib, installed under lib/wine/x86_64-unix
+# PE front end + unixlib builds (cmake/PeDriver.cmake).
+# - pipeasio32.dll: i386 PE, installed under lib/wine/i386-windows (opt-in)
+# - pipeasio64.dll: x86_64 PE, the split layout for the 64-bit driver
+#   (experiment beside the hybrid add_wine_dll build, not installed)
+# - pipeasio<N>.so: the unixlib, one per front end, under lib/wine/<host>-unix
+set(WINE_LIB_ROOT "/usr/lib/wine" CACHE PATH
+    "Wine lib/wine directory holding the <arch>-windows import libraries")
+option(PIPEASIO_SPLIT64 "Also build the 64-bit driver as PE + unixlib (measurement)" OFF)
+if(BUILD_WOW64_32 OR PIPEASIO_SPLIT64)
+    include(PeDriver)
+endif()
 if(BUILD_WOW64_32)
-    find_program(I686_W64_MINGW_GCC i686-w64-mingw32-gcc)
-    find_program(I686_W64_MINGW_RANLIB i686-w64-mingw32-ranlib)
-    set(WINE_LIB_ROOT "/usr/lib/wine" CACHE PATH
-        "Wine lib/wine directory holding the i386-windows import libraries")
-    if(NOT I686_W64_MINGW_GCC OR NOT I686_W64_MINGW_RANLIB)
-        message(FATAL_ERROR "BUILD_WOW64_32=ON requires i686-w64-mingw32-gcc and "
-                            "i686-w64-mingw32-ranlib (install mingw-w64-gcc).")
-    endif()
-    if(NOT EXISTS "${WINE_LIB_ROOT}/i386-windows/libwinecrt0.a")
-        message(FATAL_ERROR "BUILD_WOW64_32=ON: ${WINE_LIB_ROOT}/i386-windows/libwinecrt0.a "
-                            "not found; pass -DWINE_LIB_ROOT=<lib/wine>.")
-    endif()
-
-    set(PA32_DLL  "${CMAKE_BINARY_DIR}/pipeasio32.dll")
-    set(PA32_SO   "${CMAKE_BINARY_DIR}/pipeasio32.so")
-    set(PA32_DEF  "${CMAKE_SOURCE_DIR}/src/wow64/pipeasio32.def")
-    set(PA32_SPEC "${CMAKE_SOURCE_DIR}/src/wow64/pipeasio32_unixlib.spec")
-    file(GLOB PA32_SHARED_HEADERS CONFIGURE_DEPENDS
-         "${CMAKE_SOURCE_DIR}/include/*.h"
-         "${CMAKE_SOURCE_DIR}/src/wow64/*.h")
-
-    # The i386 Wine import libs must be copied, made writable, and re-indexed
-    # with the i686 ranlib before the mingw linker accepts them.
-    set(_pa32_imp_names winecrt0 ntdll ole32 uuid kernelbase)
-    set(_pa32_imp_libs "")
-    set(_pa32_imp_cmds "")
-    set(_pa32_imp_deps "")
-    foreach(_n ${_pa32_imp_names})
-        set(_src "${WINE_LIB_ROOT}/i386-windows/lib${_n}.a")
-        set(_dst "${CMAKE_BINARY_DIR}/lib${_n}-i386.a")
-        list(APPEND _pa32_imp_libs "${_dst}")
-        list(APPEND _pa32_imp_deps "${_src}")
-        list(APPEND _pa32_imp_cmds
-            COMMAND ${CMAKE_COMMAND} -E copy "${_src}" "${_dst}"
-            COMMAND chmod u+w "${_dst}"
-            COMMAND "${I686_W64_MINGW_RANLIB}" "${_dst}")
-    endforeach()
-    add_custom_command(
-        OUTPUT  ${_pa32_imp_libs}
-        ${_pa32_imp_cmds}
-        DEPENDS ${_pa32_imp_deps}
-        VERBATIM
-        COMMENT "index i386 Wine import libraries")
-
-    set(_pa32_inc -I "${CMAKE_SOURCE_DIR}/include" -I "${CMAKE_SOURCE_DIR}/src/wow64")
-    foreach(_d ${WINE_INCLUDE_DIRS})
-        list(APPEND _pa32_inc -I "${_d}")
-    endforeach()
-    set(_pa32_cflags -Wall -Wextra -Werror=implicit-function-declaration -msse3
-        $<$<CONFIG:Release>:-O2> $<$<CONFIG:Release>:-DNDEBUG>
-        $<$<CONFIG:RelWithDebInfo>:-O2> $<$<CONFIG:RelWithDebInfo>:-g>
-        $<$<CONFIG:RelWithDebInfo>:-DNDEBUG>
-        $<$<CONFIG:Debug>:-O0> $<$<CONFIG:Debug>:-g3> $<$<CONFIG:Debug>:-DDEBUG>
-        $<$<CONFIG:Debug>:-fno-omit-frame-pointer>)
-
-    # i386 PE front end.  The shared ASIO sources link against the WoW64
-    # proxy instead of src/audio.c.
-    # -lmingw32 first: its tlssup.o must own _tls_index, or Wine 11.16+'s winecrt0 tls.o collides.
-    add_custom_command(
-        OUTPUT  "${PA32_DLL}"
-        COMMAND "${I686_W64_MINGW_GCC}" -shared
-                "${CMAKE_SOURCE_DIR}/src/asio.c"
-                "${CMAKE_SOURCE_DIR}/src/main.c"
-                "${CMAKE_SOURCE_DIR}/src/regsvr.c"
-                "${CMAKE_SOURCE_DIR}/src/config.c"
-                "${CMAKE_SOURCE_DIR}/src/wow64/audio_proxy.c"
-                "${PA32_DEF}"
-                -lmingw32
-                "${CMAKE_BINARY_DIR}/libwinecrt0-i386.a"
-                -DPIPEASIO_WOW64_PE
-                ${_pa32_inc} ${_pa32_cflags} -static -static-libgcc
-                -o "${PA32_DLL}"
-                "${CMAKE_BINARY_DIR}/libntdll-i386.a"
-                "${CMAKE_BINARY_DIR}/libole32-i386.a"
-                "${CMAKE_BINARY_DIR}/libuuid-i386.a"
-                "${CMAKE_BINARY_DIR}/libkernelbase-i386.a"
-        COMMAND "${WINEBUILD}" -m32 --builtin "${PA32_DLL}"
-        DEPENDS "${CMAKE_SOURCE_DIR}/src/asio.c"
-                "${CMAKE_SOURCE_DIR}/src/main.c"
-                "${CMAKE_SOURCE_DIR}/src/regsvr.c"
-                "${CMAKE_SOURCE_DIR}/src/config.c"
-                "${CMAKE_SOURCE_DIR}/src/wow64/audio_proxy.c"
-                ${PA32_SHARED_HEADERS}
-                "${PA32_DEF}" ${_pa32_imp_libs}
-        VERBATIM COMMAND_EXPAND_LISTS
-        COMMENT "mingw pipeasio32.dll (32-bit WoW64 PE front end)")
-
-    # 64-bit unixlib hosting the real PipeWire backend.
-    # -fno-lto: same winebuild ld -r / .spec export hazard as add_wine_dll (issue #6).
-    add_library(pipeasio32_unix_objs OBJECT
-        src/wow64/audio_unix.c src/wow64/handle_table.c src/audio.c src/config.c)
-    set_target_properties(pipeasio32_unix_objs PROPERTIES POSITION_INDEPENDENT_CODE ON)
-    target_include_directories(pipeasio32_unix_objs PRIVATE
-        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src/wow64
-        ${PIPEWIRE_INCLUDE_DIRS} ${WINE_INCLUDE_DIRS})
-    target_compile_options(pipeasio32_unix_objs PRIVATE
-        -DPIPEASIO_AUDIO_UNIXLIB -D_REENTRANT
-        -Wall -fno-strict-aliasing -Werror=implicit-function-declaration
-        -fno-lto
-        $<$<CONFIG:Release>:-O2> $<$<CONFIG:Release>:-DNDEBUG>
-        $<$<CONFIG:Release>:-fvisibility=hidden>
-        $<$<CONFIG:RelWithDebInfo>:-O2> $<$<CONFIG:RelWithDebInfo>:-g>
-        $<$<CONFIG:RelWithDebInfo>:-DNDEBUG> $<$<CONFIG:RelWithDebInfo>:-fvisibility=hidden>
-        $<$<CONFIG:Debug>:-O0> $<$<CONFIG:Debug>:-g3> $<$<CONFIG:Debug>:-DDEBUG>
-        $<$<CONFIG:Debug>:-fno-omit-frame-pointer>)
-    set(_pa32_sanitize_libs "")
-    if(PIPEASIO_ASAN)
-        target_compile_options(pipeasio32_unix_objs PRIVATE
-            -fsanitize=address -fsanitize=undefined)
-        list(APPEND _pa32_sanitize_libs -lasan -lubsan)
-    endif()
-    add_custom_command(
-        OUTPUT  "${PA32_SO}"
-        COMMAND "${WINEGCC}" -shared
-                "${PA32_SPEC}"
-                $<TARGET_OBJECTS:pipeasio32_unix_objs>
-                -lpthread -ldl ${PIPEWIRE_LINK_LIBRARIES} ${PIPEWIRE_LDFLAGS_OTHER}
-                ${_pa32_sanitize_libs}
-                -o "${PA32_SO}"
-        DEPENDS pipeasio32_unix_objs "${PA32_SPEC}"
-                $<TARGET_OBJECTS:pipeasio32_unix_objs>
-        VERBATIM COMMAND_EXPAND_LISTS
-        COMMENT "winegcc pipeasio32.so (WoW64 unixlib)")
-
-    add_custom_target(pipeasio32_unix ALL DEPENDS "${PA32_SO}")
-    add_custom_target(pipeasio32 ALL DEPENDS "${PA32_DLL}")
-    add_dependencies(pipeasio32 pipeasio32_unix)
-
-    install(FILES "${PA32_DLL}" DESTINATION "${PA_WINE_DEST}/i386-windows")
-    install(FILES "${PA32_SO}" DESTINATION "${PA_WINE_DEST}/x86_64-unix"
-            PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
-                        GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+    pipeasio_add_pe_driver(
+        NAME            pipeasio32
+        PE_ARCH         i386
+        TRIPLE          i686-w64-mingw32
+        WINEBUILD_FLAGS -m32
+        DEF             "${CMAKE_SOURCE_DIR}/src/wow64/pipeasio32.def")
+endif()
+if(PIPEASIO_SPLIT64)
+    pipeasio_add_pe_driver(
+        NAME            pipeasio64
+        PE_ARCH         x86_64
+        TRIPLE          x86_64-w64-mingw32
+        WINEBUILD_FLAGS -m64
+        DEF             "${CMAKE_SOURCE_DIR}/src/wow64/pipeasio64.def"
+        OUT_DIR         "${CMAKE_BINARY_DIR}/split64"
+        TARGET          pipeasio64_split
+        NO_INSTALL)
 endif()
 
 include(GNUInstallDirs)
