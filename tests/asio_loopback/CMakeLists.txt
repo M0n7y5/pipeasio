@@ -21,7 +21,7 @@ set(LOOP_OUT  "${CMAKE_CURRENT_BINARY_DIR}/asio_loopback.exe.so")
 
 add_custom_command(
     OUTPUT  "${LOOP_OUT}"
-    COMMAND ${WINEGCC} -m64 -mno-cygwin -mconsole
+    COMMAND ${WINEGCC} -mno-cygwin -mconsole
                        ${_loop_wine_includes}
                        -O0 -g -Wall -Wextra
                        "${LOOP_SRC}"

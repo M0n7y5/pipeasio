@@ -32,7 +32,7 @@ endif()
 
 add_custom_command(
     OUTPUT  "${PROBE_OUT}"
-    COMMAND ${WINEGCC} -m64 -mno-cygwin -mconsole
+    COMMAND ${WINEGCC} -mno-cygwin -mconsole
                        ${_probe_wine_includes}
                        -O0 -g -Wall -Wextra
                        "${PROBE_SRC}"
