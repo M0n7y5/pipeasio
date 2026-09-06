@@ -151,12 +151,10 @@ function(pipeasio_add_pe_driver)
     set(_so_dir "${CMAKE_BINARY_DIR}/${PIPEASIO_UNIX_ARCH}-unix")
     file(MAKE_DIRECTORY "${_pe_dir}" "${_so_dir}")
     set(_dll  "${_pe_dir}/${PA_NAME}.dll")
-    set(_so   "${_so_dir}/${PA_NAME}.so")
     # The export directory, and so the unixlib the loader pairs with the PE, is
     # named after the spec file: it has to carry the module name.
     set(_spec "${_pe_dir}/${PA_NAME}.spec")
     configure_file("${CMAKE_SOURCE_DIR}/src/pipeasio.spec" "${_spec}" COPYONLY)
-    set(_unix_spec "${CMAKE_SOURCE_DIR}/src/unixlib/unixlib.spec")
     file(GLOB _headers CONFIGURE_DEPENDS
          "${CMAKE_SOURCE_DIR}/include/*.h"
          "${CMAKE_SOURCE_DIR}/src/unixlib/*.h")
@@ -196,27 +194,24 @@ function(pipeasio_add_pe_driver)
         COMMENT "winegcc ${PA_NAME}.dll (${PA_PE_ARCH} PE front end)")
 
     pipeasio_add_unixlib_objects()
-    set(_sanitize_libs "")
-    if(PIPEASIO_ASAN)
-        list(APPEND _sanitize_libs -lasan -lubsan)
-    endif()
+    # A unixlib is a plain ELF shared object the loader dlopens for
+    # __wine_unix_call_funcs; Wine links its own with the host compiler, not
+    # winegcc, whose spec path is x86-only.
     if(NOT TARGET ${PA_NAME}_unix)
-    add_custom_command(
-        OUTPUT  "${_so}"
-        COMMAND "${WINEGCC}" -shared
-                "${_unix_spec}"
-                $<TARGET_OBJECTS:pipeasio_unix_objs>
-                -lpthread -ldl ${PIPEWIRE_LINK_LIBRARIES} ${PIPEWIRE_LDFLAGS_OTHER}
-                ${_sanitize_libs}
-                -o "${_so}"
-        DEPENDS pipeasio_unix_objs "${_unix_spec}" $<TARGET_OBJECTS:pipeasio_unix_objs>
-        VERBATIM COMMAND_EXPAND_LISTS
-        COMMENT "winegcc ${PA_NAME}.so (unixlib)")
-    add_custom_target(${PA_NAME}_unix ALL DEPENDS "${_so}")
+    add_library(${PA_NAME}_unix SHARED $<TARGET_OBJECTS:pipeasio_unix_objs>)
+    set_target_properties(${PA_NAME}_unix PROPERTIES
+        OUTPUT_NAME "${PA_NAME}" PREFIX "" SUFFIX ".so"
+        LIBRARY_OUTPUT_DIRECTORY "${_so_dir}")
+    target_link_options(${PA_NAME}_unix PRIVATE -Wl,-Bsymbolic -Wl,-z,defs)
+    target_link_libraries(${PA_NAME}_unix PRIVATE
+        ${PIPEWIRE_LINK_LIBRARIES} ${PIPEWIRE_LDFLAGS_OTHER} pthread dl m)
+    if(PIPEASIO_ASAN)
+        target_link_options(${PA_NAME}_unix PRIVATE
+            -fsanitize=address -fsanitize=undefined)
+    endif()
     if(NOT PA_NO_INSTALL)
-        install(FILES "${_so}" DESTINATION "${PA_WINE_DEST}/${PIPEASIO_UNIX_ARCH}-unix"
-                PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
-                            GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+        install(TARGETS ${PA_NAME}_unix
+                LIBRARY DESTINATION "${PA_WINE_DEST}/${PIPEASIO_UNIX_ARCH}-unix")
     endif()
     endif()
 
