@@ -30,7 +30,7 @@
 #define CHECK(expr, msg) _Static_assert((expr), msg)
 
 CHECK(sizeof(void *) == EXPECTED_POINTER_SIZE, "unexpected compiler bitness");
-CHECK(PIPEASIO_UNIX_ABI_VERSION == 3, "ABI version changed - bump both halves");
+CHECK(PIPEASIO_UNIX_ABI_VERSION == 4, "ABI version changed - bump both halves");
 CHECK(PAU_RT_MAX_PORTS == 256, "RT channel cap changed");
 CHECK(PAU_ENDPOINT_MAX == 256, "endpoint cap changed");
 
@@ -101,10 +101,11 @@ CHECK(offsetof(struct pipeasio_config, node_name) == 535, "pipeasio_config node_
 CHECK(sizeof(pa_fingerprint_params) == 12, "pa_fingerprint_params size");
 CHECK(offsetof(pa_fingerprint_params, fp) == 4, "pa_fingerprint_params fp offset");
 
-CHECK(sizeof(pa_bind_params) == 540, "pa_bind_params size");
-CHECK(offsetof(pa_bind_params, in_active) == 24, "pa_bind_params in_active offset");
-CHECK(offsetof(pa_bind_params, out_active) == 280, "pa_bind_params out_active offset");
-CHECK(offsetof(pa_bind_params, result) == 536, "pa_bind_params result offset");
+CHECK(sizeof(pa_bind_params) == 544, "pa_bind_params size");
+CHECK(offsetof(pa_bind_params, buffer_base) == 8, "pa_bind_params buffer_base offset");
+CHECK(offsetof(pa_bind_params, in_active) == 28, "pa_bind_params in_active offset");
+CHECK(offsetof(pa_bind_params, out_active) == 284, "pa_bind_params out_active offset");
+CHECK(offsetof(pa_bind_params, result) == 540, "pa_bind_params result offset");
 
 CHECK(sizeof(pa_wait_params) == 56, "pa_wait_params size");
 CHECK(offsetof(pa_wait_params, seq) == 8, "pa_wait_params seq offset");

@@ -25,7 +25,7 @@
 #include "pipeasio_config.h"
 
 /* Version 3 makes endpoint and callback delivery transactional. */
-#define PIPEASIO_UNIX_ABI_VERSION 3
+#define PIPEASIO_UNIX_ABI_VERSION 4
 
 typedef uint32_t pa_handle;
 
@@ -201,13 +201,13 @@ typedef struct
 } pa_fingerprint_params;
 
 /* PAU_BIND_RT: hand the PE-allocated shared callback buffer + channel activity
- * to the unix RT loop.  buffer_base is the 32-bit PE pointer (WoW64 single
- * address space) cast back to a real pointer unix-side. */
+ * to the unix RT loop.  buffer_base is the PE pointer (one address space),
+ * widened so a 64-bit front end fits, cast back to a real pointer unix-side. */
 typedef struct
 {
     uint32_t  version;
     pa_handle client;
-    uint32_t  buffer_base; /* (float *) host callback_audio_buffer */
+    pa_i64    buffer_base; /* (float *) host callback_audio_buffer */
     uint32_t  buffer_size; /* samples per channel-half             */
     uint32_t  n_in;
     uint32_t  n_out;

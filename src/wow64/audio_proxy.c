@@ -666,7 +666,7 @@ pipeasio_wow64_bind_rt(audio_client_t *client, float *buffer_base, int buffer_si
         return false;
     params.version     = PIPEASIO_UNIX_ABI_VERSION;
     params.client      = ctx->unix_client;
-    params.buffer_base = (uint32_t)(uintptr_t)buffer_base;
+    params.buffer_base = pa_i64_from((uintptr_t)buffer_base);
     params.buffer_size = (uint32_t)buffer_size;
     params.n_in        = (uint32_t)n_in;
     params.n_out       = (uint32_t)n_out;

@@ -810,7 +810,7 @@ wow64_bind_rt(void *args)
     cc        = cc_get(p->client);
     if (!cc)
         return STATUS_INVALID_HANDLE;
-    if (!p->buffer_base || !p->buffer_size || p->n_in > PAU_RT_MAX_PORTS
+    if (!pa_i64_to(p->buffer_base) || !p->buffer_size || p->n_in > PAU_RT_MAX_PORTS
         || p->n_out > PAU_RT_MAX_PORTS)
         return STATUS_INVALID_PARAMETER;
     for (uint32_t i = 0; i < p->n_in; ++i)
@@ -820,7 +820,7 @@ wow64_bind_rt(void *args)
         if (!cc->out_port[i])
             return STATUS_INVALID_PARAMETER;
     pthread_mutex_lock(&cc->prod_mutex);
-    cc->buffer_base = (audio_sample_t *)(uintptr_t)p->buffer_base;
+    cc->buffer_base = (audio_sample_t *)(uintptr_t)pa_i64_to(p->buffer_base);
     cc->buffer_size = p->buffer_size;
     cc->n_in        = p->n_in;
     cc->n_out       = p->n_out;
