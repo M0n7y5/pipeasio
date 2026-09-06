@@ -22,6 +22,15 @@
 #
 #   pipeasio_pe_arch_available(<arch> <out var>)
 #       TRUE when a compiler and Wine's import libraries exist for <arch>.
+#
+#   pipeasio_add_pe_program(
+#       NAME     asio_probe           # <NAME>.exe in the current binary dir
+#       SOURCES  asio_probe.c
+#       [LIBS    ole32]
+#       [OUT     var]                 # receives the .exe path
+#   )
+#       A console program for this host's arch, linked like Wine's own
+#       programs.  winegcc's ELF winelib form is x86-only; this one is not.
 
 set(PIPEASIO_UNIX_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
 if(PIPEASIO_UNIX_ARCH STREQUAL "AMD64")
@@ -213,5 +222,36 @@ function(pipeasio_add_pe_driver)
     add_dependencies(${PA_TARGET} ${PA_NAME}_unix)
     if(NOT PA_NO_INSTALL)
         install(FILES "${_dll}" DESTINATION "${PA_WINE_DEST}/${PA_PE_ARCH}-windows")
+    endif()
+endfunction()
+
+function(pipeasio_add_pe_program)
+    cmake_parse_arguments(PA "" "NAME;OUT" "SOURCES;LIBS" ${ARGN})
+    if(NOT PA_NAME OR NOT PA_SOURCES)
+        message(FATAL_ERROR "pipeasio_add_pe_program: NAME and SOURCES are required.")
+    endif()
+    _pipeasio_pe_target_args(${PIPEASIO_UNIX_ARCH} _target_args)
+    set(_imp_dir "${WINE_LIB_ROOT}/${PIPEASIO_UNIX_ARCH}-windows")
+    if(NOT _target_args OR NOT EXISTS "${_imp_dir}/libwinecrt0.a")
+        message(FATAL_ERROR "${PA_NAME}: no PE toolchain for ${PIPEASIO_UNIX_ARCH} "
+                            "(a cross compiler and ${_imp_dir}/libwinecrt0.a).")
+    endif()
+    set(_exe "${CMAKE_CURRENT_BINARY_DIR}/${PA_NAME}.exe")
+    set(_libs "")
+    foreach(_l ${PA_LIBS})
+        list(APPEND _libs "-l${_l}")
+    endforeach()
+    add_custom_command(
+        OUTPUT  "${_exe}"
+        COMMAND "${WINEGCC}" ${_target_args} -mconsole
+                ${PA_SOURCES} -O0 -g -Wall -Wextra
+                -L "${_imp_dir}" ${_libs}
+                -o "${_exe}"
+        DEPENDS ${PA_SOURCES}
+        VERBATIM COMMAND_EXPAND_LISTS
+        COMMENT "winegcc ${PA_NAME}.exe (${PIPEASIO_UNIX_ARCH} PE host)")
+    add_custom_target(${PA_NAME} ALL DEPENDS "${_exe}")
+    if(PA_OUT)
+        set(${PA_OUT} "${_exe}" PARENT_SCOPE)
     endif()
 endfunction()

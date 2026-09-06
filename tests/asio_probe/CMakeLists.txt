@@ -1,23 +1,8 @@
-# Wine PE probe host.
+# Wine PE probe host: a console program for this host's arch (cmake/PeDriver.cmake).
 
-# Same tool-name variants as cmake/WineSdk.cmake (cache-shared when in-tree).
-find_program(WINEGCC
-    NAMES winegcc winegcc-stable winegcc-development winegcc-staging
-    PATHS /usr/lib/wine /opt/wine-devel/bin /opt/wine-stable/bin /opt/wine-staging/bin
-    REQUIRED)
+set(PROBE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/asio_probe.c")
+pipeasio_add_pe_program(NAME asio_probe SOURCES "${PROBE_SRC}" LIBS ole32)
 
-# winegcc compiles this host from source, so it needs the same probed Wine SDK
-# include dirs the driver objects get: its builtin header path misses layouts
-# like Debian's libwine-dev split or a WineHQ /opt SDK ("windows.h: No such
-# file or directory").  Empty when the probe used winegcc's own prefix.
-set(_probe_wine_includes "")
-foreach(_dir IN LISTS WINE_INCLUDE_DIRS)
-    list(APPEND _probe_wine_includes "-I${_dir}")
-endforeach()
-
-set(PROBE_SRC  "${CMAKE_CURRENT_SOURCE_DIR}/asio_probe.c")
-set(PROBE_OUT  "${CMAKE_CURRENT_BINARY_DIR}/asio_probe.exe.so")
-set(PROBE_PE   "${CMAKE_CURRENT_BINARY_DIR}/asio_probe.exe")
 # The driver with the stop and gate barriers compiled in (asio.c), under its
 # own module name so a prefix can point the CLSID at it.
 pipeasio_pe_arch_available(x86_64 _have_x86_64)
@@ -28,22 +13,6 @@ pipeasio_add_pe_driver(
     DEFINES  PIPEASIO_TEST_STOP_BARRIER PIPEASIO_TEST_GATE_BARRIER
     NO_INSTALL)
 endif()
-
-
-add_custom_command(
-    OUTPUT  "${PROBE_OUT}"
-    COMMAND ${WINEGCC} -mno-cygwin -mconsole
-                       ${_probe_wine_includes}
-                       -O0 -g -Wall -Wextra
-                       "${PROBE_SRC}"
-                       -lole32
-                       -o "${PROBE_OUT}"
-    DEPENDS "${PROBE_SRC}"
-    COMMENT "winegcc asio_probe (Wine PE)"
-    VERBATIM
-)
-
-add_custom_target(asio_probe ALL DEPENDS "${PROBE_OUT}")
 
 # Copy runners next to the probe.
 configure_file(

@@ -25,7 +25,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-probe="${here}/asio_loopback.exe.so"
+probe="${here}/asio_loopback.exe"
 [[ -x "$probe" ]] || { echo "asio_loopback not built: $probe"; exit 1; }
 
 seconds="${1:-6}"

@@ -3,36 +3,8 @@
 # loopback (see run.sh).  Checks bit-exactness, sample continuity,
 # channel mapping, and measured vs reported round-trip latency.
 
-# Same tool-name variants as cmake/WineSdk.cmake (cache-shared when in-tree).
-find_program(WINEGCC
-    NAMES winegcc winegcc-stable winegcc-development winegcc-staging
-    PATHS /usr/lib/wine /opt/wine-devel/bin /opt/wine-stable/bin /opt/wine-staging/bin
-    REQUIRED)
-
-# Same Wine SDK include propagation as tests/asio_probe: bare winegcc cannot
-# compile windows.h on Debian/WineHQ header layouts.
-set(_loop_wine_includes "")
-foreach(_dir IN LISTS WINE_INCLUDE_DIRS)
-    list(APPEND _loop_wine_includes "-I${_dir}")
-endforeach()
-
-set(LOOP_SRC  "${CMAKE_CURRENT_SOURCE_DIR}/asio_loopback.c")
-set(LOOP_OUT  "${CMAKE_CURRENT_BINARY_DIR}/asio_loopback.exe.so")
-
-add_custom_command(
-    OUTPUT  "${LOOP_OUT}"
-    COMMAND ${WINEGCC} -mno-cygwin -mconsole
-                       ${_loop_wine_includes}
-                       -O0 -g -Wall -Wextra
-                       "${LOOP_SRC}"
-                       -lole32
-                       -o "${LOOP_OUT}"
-    DEPENDS "${LOOP_SRC}"
-    COMMENT "winegcc asio_loopback (Wine PE)"
-    VERBATIM
-)
-
-add_custom_target(asio_loopback ALL DEPENDS "${LOOP_OUT}")
+pipeasio_add_pe_program(NAME asio_loopback
+    SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/asio_loopback.c" LIBS ole32)
 
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/run.sh"

@@ -14,7 +14,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-probe="${here}/asio_probe.exe.so"
+probe="${here}/asio_probe.exe"
 [[ -x "$probe" ]] || { echo "asio_probe not built: $probe"; exit 1; }
 
 seconds="${1:-5}"

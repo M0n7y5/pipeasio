@@ -3,10 +3,10 @@
 # the systemd-coredump capture.
 #
 # Why this path: live-attach via winedbg --gdb only shows PE DLLs, not
-# the Linux libc / ntdll-unix / pipewire / pipeasio.dll.so halves where
+# the Linux libc / ntdll-unix / pipewire / pipeasio64.so halves where
 # the smash actually lives.  systemd-coredump captures the abort, and
 # `coredumpctl info` resolves symbols (including OUR static functions
-# in pipeasio.dll.so, via DWARF in the unstripped Debug build) for every
+# in pipeasio64.so, via DWARF in the unstripped Debug build) for every
 # thread.  Zero gdb gymnastics.
 #
 # Usage:
@@ -21,7 +21,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-probe="${here}/asio_probe.exe.so"
+probe="${here}/asio_probe.exe"
 [[ -x "$probe" ]] || { echo "asio_probe not built: $probe"; exit 1; }
 
 mode="${1:-summary}"
