@@ -197,3 +197,49 @@ jobs:
       - name: Show test log on failure
         if: failure()
         run: cat build/Testing/Temporary/LastTest.log || true
+
+  # Native ARM64 build (#23). Fedora is the ARM64 distribution that ships Wine
+  # with aarch64 and arm64ec PE support (Asahi), so it is the host that has
+  # the <arch>-windows import libraries. The runner has no PipeWire daemon:
+  # the unit tests and the ABI layout run, the Wine integration tests skip,
+  # and regsvr32 in a throwaway prefix proves the loader pairs the aarch64 PE
+  # with the aarch64 unixlib.
+  build-arm64:
+    name: build (fedora, aarch64)
+    runs-on: ubuntu-24.04-arm
+    container: fedora:latest
+    steps:
+      - name: Install toolchain
+        run: >-
+          dnf install -y --setopt=install_weak_deps=False
+          cmake ninja-build gcc g++ clang lld pkgconf
+          wine-devel wine-core pipewire-devel git
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SETTINGS_PANEL=OFF
+      - name: Build
+        run: cmake --build build
+      - name: Assert the front ends and the unixlib
+        run: |
+          set -euo pipefail
+          ls -la build/aarch64-windows build/arm64ec-windows build/aarch64-unix
+          file build/aarch64-windows/pipeasio64.dll build/aarch64-unix/pipeasio64.so
+          test -f build/arm64ec-windows/pipeasio64.dll
+      - name: Test (integration tests skip without a PipeWire daemon)
+        run: ctest --test-dir build --output-on-failure
+      - name: Register in a throwaway prefix
+        run: |
+          set -euo pipefail
+          cmake --install build --prefix "$HOME/.local"
+          export WINEPREFIX="$HOME/pfx" WINEDLLPATH="$HOME/.local/lib/wine"
+          export WINEDLLOVERRIDES="mscoree,mshtml=" WINEDEBUG=-all,+loaddll,err+all
+          wineboot --init
+          cp "$HOME/.local/lib/wine/aarch64-windows/pipeasio64.dll" "$WINEPREFIX/drive_c/windows/system32/"
+          wine regsvr32 /s pipeasio64.dll 2>&1 | tee regsvr.log
+          grep -q 'Successfully registered' regsvr.log
+          wine reg query 'HKLM\Software\ASIO\PipeASIO' | grep -q 2D3CA9E2
+          wineserver -w
+      - name: Show test log on failure
+        if: failure()
+        run: cat build/Testing/Temporary/LastTest.log || true

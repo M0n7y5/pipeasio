@@ -28,7 +28,23 @@ if(PIPEASIO_UNIX_ARCH STREQUAL "AMD64")
     set(PIPEASIO_UNIX_ARCH x86_64)
 endif()
 
-set(WINE_LIB_ROOT "/usr/lib/wine" CACHE PATH
+# Wine's library root, where <arch>-windows/lib*.a live: lib/wine on Arch,
+# lib64/wine on Fedora, lib/<multiarch>/wine on Debian, or the prefix's own
+# lib/wine for WineHQ packages.  Probed from winebuild's prefix, overridable.
+get_filename_component(_wine_prefix "${WINEBUILD}" DIRECTORY)
+get_filename_component(_wine_prefix "${_wine_prefix}" DIRECTORY)
+set(_wine_lib_candidates
+    "${_wine_prefix}/lib/wine" "${_wine_prefix}/lib64/wine"
+    "${_wine_prefix}/lib/${PIPEASIO_UNIX_ARCH}-linux-gnu/wine"
+    /usr/lib/wine /usr/lib64/wine "/usr/lib/${PIPEASIO_UNIX_ARCH}-linux-gnu/wine")
+set(_wine_lib_default "/usr/lib/wine")
+foreach(_c ${_wine_lib_candidates})
+    if(EXISTS "${_c}/${PIPEASIO_UNIX_ARCH}-windows/libwinecrt0.a")
+        set(_wine_lib_default "${_c}")
+        break()
+    endif()
+endforeach()
+set(WINE_LIB_ROOT "${_wine_lib_default}" CACHE PATH
     "Wine lib/wine directory holding the <arch>-windows import libraries")
 set(PIPEASIO_PE_COMPILER "auto" CACHE STRING
     "Cross compiler for the PE half: auto | gcc (<triple>-gcc) | clang (needs lld)")
