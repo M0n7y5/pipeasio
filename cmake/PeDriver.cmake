@@ -84,8 +84,10 @@ function(_pipeasio_pe_target_args arch out)
             set(_args -b ${_triple})
         endif()
     endif()
+    # No <arch>-windows-gcc exists, so winegcc falls through to clang on PATH
+    # (Wine 10 and 11 alike; --cc-cmd only arrived in 11.3).
     if(NOT _args AND PIPEASIO_CLANG AND NOT PIPEASIO_PE_COMPILER STREQUAL "gcc")
-        set(_args -b ${arch}-windows --cc-cmd=${PIPEASIO_CLANG})
+        set(_args -b ${arch}-windows)
     endif()
     set(${out} "${_args}" PARENT_SCOPE)
 endfunction()
