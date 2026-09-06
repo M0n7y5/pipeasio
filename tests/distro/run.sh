@@ -266,10 +266,10 @@ run_one() {
         cmake --build $(printf %q "$bdir")
         # Guard against a silent partial build (e.g. wine headers missing so
         # only unit tests link while the DLL target fails elsewhere).
-        test -f $(printf %q "$bdir")/pipeasio64.dll \
-            || { echo 'missing pipeasio64.dll after build' >&2; exit 1; }
-        test -f $(printf %q "$bdir")/pipeasio64.so \
-            || { echo 'missing pipeasio64.so after build' >&2; exit 1; }
+        test -f $(printf %q "$bdir")/x86_64-windows/pipeasio64.dll \
+            || { echo 'missing x86_64-windows/pipeasio64.dll after build' >&2; exit 1; }
+        test -f $(printf %q "$bdir")/x86_64-unix/pipeasio64.so \
+            || { echo 'missing x86_64-unix/pipeasio64.so after build' >&2; exit 1; }
         ctest --test-dir $(printf %q "$bdir") --output-on-failure
     " || {
         log "${name}: build/test FAILED"

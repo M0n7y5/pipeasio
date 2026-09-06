@@ -482,7 +482,7 @@ static struct regsvr_coclass const coclass_list[] = {
       "pipeasio32.dll",
 #endif
       "Apartment", NULL, NULL, NULL },
-    { NULL } /* list terminator */
+    { 0 } /* list terminator */
 };
 
 /***********************************************************************
@@ -490,7 +490,7 @@ static struct regsvr_coclass const coclass_list[] = {
  */
 
 static struct regsvr_interface const interface_list[] = {
-    { NULL } /* list terminator */
+    { 0 } /* list terminator */
 };
 
 /***********************************************************************

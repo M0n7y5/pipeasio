@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -euo pipefail
 
-hook_pe="@CMAKE_BINARY_DIR@/pipeasio64_stop_test.dll"
-hook_so="@CMAKE_BINARY_DIR@/pipeasio64_stop_test.so"
+hook_pe="@CMAKE_BINARY_DIR@/x86_64-windows/pipeasio64_stop_test.dll"
+hook_so="@CMAKE_BINARY_DIR@/@PIPEASIO_UNIX_ARCH@-unix/pipeasio64_stop_test.so"
 runner="@CMAKE_CURRENT_BINARY_DIR@/run.sh"
 
 for tool in wine wineboot pw-cli; do

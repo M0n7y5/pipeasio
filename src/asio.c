@@ -53,8 +53,8 @@
 #include "pipeasio_admission_gate.h"
 #include "pipeasio_pe.h"
 
-/* Enough GUID formatting for TRACE diagnostics. */
-static inline const char *
+/* Enough GUID formatting for TRACE diagnostics; unreferenced in release builds. */
+static inline __attribute__((unused)) const char *
 wine_dbgstr_guid(const GUID *id)
 {
     static char buf[48];

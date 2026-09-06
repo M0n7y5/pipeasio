@@ -1,6 +1,0 @@
-LIBRARY pipeasio64_stop_test.dll
-EXPORTS
-DllCanUnloadNow
-DllGetClassObject
-DllRegisterServer
-DllUnregisterServer

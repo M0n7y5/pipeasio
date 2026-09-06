@@ -56,7 +56,7 @@ jobs:
             exit 1
           }
           tests/distro/check_pipewire_imports.sh "${floor_lib[0]}" \
-            build32/pipeasio64.so build32/pipeasio32.so
+            build32/x86_64-unix/pipeasio64.so build32/x86_64-unix/pipeasio32.so
       - name: Test
         run: ctest --test-dir build32 --output-on-failure
       - name: Show test log on failure
@@ -97,7 +97,7 @@ jobs:
       - name: Audit PipeWire imports against 1.4.2
         run: |
           floor_lib="$(pkg-config --variable=libdir libpipewire-0.3)/libpipewire-0.3.so.0"
-          tests/distro/check_pipewire_imports.sh "$floor_lib" build/pipeasio64.so
+          tests/distro/check_pipewire_imports.sh "$floor_lib" build/x86_64-unix/pipeasio64.so
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Show test log on failure

@@ -1,35 +1,81 @@
 # PE front end + unixlib: the builtin layout Wine has used since 8 and the
 # only one aarch64/arm64ec Wine loads.  Every driver build goes through it.
 #
+# The PE half is linked the way Wine links its own modules: winegcc drives a
+# cross compiler with Wine's headers and -nodefaultlibs, links winecrt0 and
+# the import libraries from lib/wine/<arch>-windows, and marks the builtin.
+#
 #   pipeasio_add_unixlib_objects()
 #       Compiles the Unix half (PipeWire client) once, as an object library
 #       shared by every front end built for this host.
 #
 #   pipeasio_add_pe_driver(
-#       NAME       pipeasio32           # module name; <NAME>.dll and <NAME>.so
-#       PE_ARCH    i386                 # Wine arch dir: i386 | x86_64 | aarch64 | arm64ec
-#       TRIPLE     i686-w64-mingw32     # mingw cross triple for the PE half
-#       WINEBUILD_FLAGS -m32            # how winebuild addresses this arch
-#       DEF        src/unixlib/pipeasio32.def
-#       [OUT_DIR   dir]                 # default CMAKE_BINARY_DIR
-#       [TARGET    name]                # CMake target name, default NAME
-#       [DEFINES   FOO BAR]             # extra -D for the PE half only
+#       NAME       pipeasio64          # module name; <NAME>.dll and <NAME>.so
+#       PE_ARCH    x86_64              # i386 | x86_64 | aarch64 | arm64ec
+#       [TARGET    name]               # CMake target name, default NAME
+#       [DEFINES   FOO BAR]            # extra -D for the PE half only
 #       [NO_INSTALL]
 #   )
-#       Produces <OUT_DIR>/<NAME>.dll (real PE, marked builtin) and
-#       <OUT_DIR>/<NAME>.so (the unixlib, linked from the shared objects),
-#       installed under lib/wine/<PE_ARCH>-windows and lib/wine/<host>-unix.
+#       Produces ${CMAKE_BINARY_DIR}/<PE_ARCH>-windows/<NAME>.dll and
+#       ${CMAKE_BINARY_DIR}/<host>-unix/<NAME>.so (one unixlib per NAME, shared
+#       by every arch), installed under lib/wine with the same layout.
+#
+#   pipeasio_pe_arch_available(<arch> <out var>)
+#       TRUE when a compiler and Wine's import libraries exist for <arch>.
 
 set(PIPEASIO_UNIX_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
 if(PIPEASIO_UNIX_ARCH STREQUAL "AMD64")
     set(PIPEASIO_UNIX_ARCH x86_64)
 endif()
 
+set(WINE_LIB_ROOT "/usr/lib/wine" CACHE PATH
+    "Wine lib/wine directory holding the <arch>-windows import libraries")
+set(PIPEASIO_PE_COMPILER "auto" CACHE STRING
+    "Cross compiler for the PE half: auto | gcc (<triple>-gcc) | clang (needs lld)")
+set_property(CACHE PIPEASIO_PE_COMPILER PROPERTY STRINGS auto gcc clang)
+find_program(PIPEASIO_CLANG NAMES clang)
+
+# The mingw triple a gcc cross compiler answers to; empty where none exists.
+function(_pipeasio_pe_triple arch out)
+    if(arch STREQUAL "i386")
+        set(${out} i686-w64-mingw32 PARENT_SCOPE)
+    elseif(arch STREQUAL "x86_64")
+        set(${out} x86_64-w64-mingw32 PARENT_SCOPE)
+    else()
+        set(${out} "" PARENT_SCOPE)
+    endif()
+endfunction()
+
+# winegcc's target arguments for <arch>, or empty when no compiler serves it.
+function(_pipeasio_pe_target_args arch out)
+    _pipeasio_pe_triple(${arch} _triple)
+    set(_args "")
+    if(_triple AND NOT PIPEASIO_PE_COMPILER STREQUAL "clang")
+        find_program(PIPEASIO_MINGW_GCC_${arch} ${_triple}-gcc)
+        if(PIPEASIO_MINGW_GCC_${arch})
+            set(_args -b ${_triple})
+        endif()
+    endif()
+    if(NOT _args AND PIPEASIO_CLANG AND NOT PIPEASIO_PE_COMPILER STREQUAL "gcc")
+        set(_args -b ${arch}-windows --cc-cmd=${PIPEASIO_CLANG})
+    endif()
+    set(${out} "${_args}" PARENT_SCOPE)
+endfunction()
+
+function(pipeasio_pe_arch_available arch out)
+    _pipeasio_pe_target_args(${arch} _args)
+    if(_args AND EXISTS "${WINE_LIB_ROOT}/${arch}-windows/libwinecrt0.a")
+        set(${out} TRUE PARENT_SCOPE)
+    else()
+        set(${out} FALSE PARENT_SCOPE)
+    endif()
+endfunction()
+
 function(pipeasio_add_unixlib_objects)
     if(TARGET pipeasio_unix_objs)
         return()
     endif()
-    # -fno-lto: same winebuild ld -r / .spec export hazard as add_wine_dll (issue #6).
+    # -fno-lto: same winebuild ld -r / .spec export hazard as before (issue #6).
     add_library(pipeasio_unix_objs OBJECT
         src/unixlib/audio_unix.c src/unixlib/handle_table.c src/audio.c src/config.c)
     set_target_properties(pipeasio_unix_objs PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -53,24 +99,17 @@ function(pipeasio_add_unixlib_objects)
 endfunction()
 
 function(pipeasio_add_pe_driver)
-    cmake_parse_arguments(PA "NO_INSTALL" "NAME;PE_ARCH;TRIPLE;DEF;OUT_DIR;TARGET" "WINEBUILD_FLAGS;DEFINES" ${ARGN})
-    if(NOT PA_NAME OR NOT PA_PE_ARCH OR NOT PA_TRIPLE OR NOT PA_DEF)
-        message(FATAL_ERROR "pipeasio_add_pe_driver: NAME, PE_ARCH, TRIPLE and DEF are required.")
-    endif()
-    if(NOT PA_OUT_DIR)
-        set(PA_OUT_DIR "${CMAKE_BINARY_DIR}")
+    cmake_parse_arguments(PA "NO_INSTALL" "NAME;PE_ARCH;TARGET" "DEFINES" ${ARGN})
+    if(NOT PA_NAME OR NOT PA_PE_ARCH)
+        message(FATAL_ERROR "pipeasio_add_pe_driver: NAME and PE_ARCH are required.")
     endif()
     if(NOT PA_TARGET)
         set(PA_TARGET "${PA_NAME}")
     endif()
-    file(MAKE_DIRECTORY "${PA_OUT_DIR}")
-
-    find_program(${PA_TRIPLE}_GCC ${PA_TRIPLE}-gcc)
-    find_program(${PA_TRIPLE}_RANLIB ${PA_TRIPLE}-ranlib)
-    set(_gcc "${${PA_TRIPLE}_GCC}")
-    set(_ranlib "${${PA_TRIPLE}_RANLIB}")
-    if(NOT _gcc OR NOT _ranlib)
-        message(FATAL_ERROR "${PA_NAME}: ${PA_TRIPLE}-gcc and ${PA_TRIPLE}-ranlib not found.")
+    _pipeasio_pe_target_args(${PA_PE_ARCH} _target_args)
+    if(NOT _target_args)
+        message(FATAL_ERROR "${PA_NAME}: no cross compiler for ${PA_PE_ARCH} "
+                            "(install the mingw-w64 gcc for x86 targets, or clang and lld).")
     endif()
     set(_imp_dir "${WINE_LIB_ROOT}/${PA_PE_ARCH}-windows")
     if(NOT EXISTS "${_imp_dir}/libwinecrt0.a")
@@ -78,47 +117,26 @@ function(pipeasio_add_pe_driver)
                             "pass -DWINE_LIB_ROOT=<lib/wine>.")
     endif()
 
-    set(_dll  "${PA_OUT_DIR}/${PA_NAME}.dll")
-    set(_so   "${PA_OUT_DIR}/${PA_NAME}.so")
-    set(_spec "${CMAKE_SOURCE_DIR}/src/unixlib/unixlib.spec")
+    set(_pe_dir "${CMAKE_BINARY_DIR}/${PA_PE_ARCH}-windows")
+    set(_so_dir "${CMAKE_BINARY_DIR}/${PIPEASIO_UNIX_ARCH}-unix")
+    file(MAKE_DIRECTORY "${_pe_dir}" "${_so_dir}")
+    set(_dll  "${_pe_dir}/${PA_NAME}.dll")
+    set(_so   "${_so_dir}/${PA_NAME}.so")
+    # The export directory, and so the unixlib the loader pairs with the PE, is
+    # named after the spec file: it has to carry the module name.
+    set(_spec "${_pe_dir}/${PA_NAME}.spec")
+    configure_file("${CMAKE_SOURCE_DIR}/src/pipeasio.spec" "${_spec}" COPYONLY)
+    set(_unix_spec "${CMAKE_SOURCE_DIR}/src/unixlib/unixlib.spec")
     file(GLOB _headers CONFIGURE_DEPENDS
          "${CMAKE_SOURCE_DIR}/include/*.h"
          "${CMAKE_SOURCE_DIR}/src/unixlib/*.h")
+    set(_pe_sources
+        "${CMAKE_SOURCE_DIR}/src/asio.c"
+        "${CMAKE_SOURCE_DIR}/src/main.c"
+        "${CMAKE_SOURCE_DIR}/src/regsvr.c"
+        "${CMAKE_SOURCE_DIR}/src/config.c"
+        "${CMAKE_SOURCE_DIR}/src/unixlib/audio_proxy.c")
 
-    # Wine's import libs must be copied, made writable, and re-indexed with the
-    # target ranlib before the mingw linker accepts them.  Once per arch: two
-    # front ends generating the same files in parallel corrupt them.
-    set(_imp_root "${CMAKE_BINARY_DIR}/implibs")
-    set(_imp_libs "")
-    foreach(_n winecrt0 ntdll ole32 uuid kernelbase)
-        list(APPEND _imp_libs "${_imp_root}/lib${_n}-${PA_PE_ARCH}.a")
-    endforeach()
-    if(NOT TARGET pipeasio_implibs_${PA_PE_ARCH})
-        file(MAKE_DIRECTORY "${_imp_root}")
-        set(_imp_cmds "")
-        set(_imp_deps "")
-        foreach(_n winecrt0 ntdll ole32 uuid kernelbase)
-            set(_src "${_imp_dir}/lib${_n}.a")
-            set(_dst "${_imp_root}/lib${_n}-${PA_PE_ARCH}.a")
-            list(APPEND _imp_deps "${_src}")
-            list(APPEND _imp_cmds
-                COMMAND ${CMAKE_COMMAND} -E copy "${_src}" "${_dst}"
-                COMMAND chmod u+w "${_dst}"
-                COMMAND "${_ranlib}" "${_dst}")
-        endforeach()
-        add_custom_command(
-            OUTPUT  ${_imp_libs}
-            ${_imp_cmds}
-            DEPENDS ${_imp_deps}
-            VERBATIM
-            COMMENT "index ${PA_PE_ARCH} Wine import libraries")
-        add_custom_target(pipeasio_implibs_${PA_PE_ARCH} DEPENDS ${_imp_libs})
-    endif()
-
-    set(_inc -I "${CMAKE_SOURCE_DIR}/include" -I "${CMAKE_SOURCE_DIR}/src/unixlib")
-    foreach(_d ${WINE_INCLUDE_DIRS})
-        list(APPEND _inc -I "${_d}")
-    endforeach()
     set(_cflags -Wall -Wextra -Werror=implicit-function-declaration
         $<$<CONFIG:Release>:-O2> $<$<CONFIG:Release>:-DNDEBUG>
         $<$<CONFIG:RelWithDebInfo>:-O2> $<$<CONFIG:RelWithDebInfo>:-g>
@@ -126,63 +144,60 @@ function(pipeasio_add_pe_driver)
         $<$<CONFIG:Debug>:-O0> $<$<CONFIG:Debug>:-g3> $<$<CONFIG:Debug>:-DDEBUG>
         $<$<CONFIG:Debug>:-fno-omit-frame-pointer>)
     if(PA_PE_ARCH MATCHES "^(i386|x86_64)$")
-        list(APPEND _cflags -msse3)
+        list(APPEND _cflags -msse3) # the pump thread's FTZ/DAZ intrinsics
     endif()
     foreach(_d ${PA_DEFINES})
         list(APPEND _cflags "-D${_d}")
     endforeach()
+    # winegcc adds Wine's windows/ and msvcrt/ headers itself; the root holds unixlib.h.
+    set(_inc -I "${CMAKE_SOURCE_DIR}/include" -I "${CMAKE_SOURCE_DIR}/src/unixlib")
+    foreach(_d ${WINE_INCLUDE_DIRS})
+        get_filename_component(_leaf "${_d}" NAME)
+        if(_leaf STREQUAL "wine")
+            list(APPEND _inc -I "${_d}")
+        endif()
+    endforeach()
 
-    set(_pe_sources
-        "${CMAKE_SOURCE_DIR}/src/asio.c"
-        "${CMAKE_SOURCE_DIR}/src/main.c"
-        "${CMAKE_SOURCE_DIR}/src/regsvr.c"
-        "${CMAKE_SOURCE_DIR}/src/config.c"
-        "${CMAKE_SOURCE_DIR}/src/unixlib/audio_proxy.c")
-    # -lmingw32 first: its tlssup.o must own _tls_index, or Wine 11.16+'s winecrt0 tls.o collides.
     add_custom_command(
         OUTPUT  "${_dll}"
-        COMMAND "${_gcc}" -shared
+        COMMAND "${WINEGCC}" ${_target_args} -shared "${_spec}"
                 ${_pe_sources}
-                "${PA_DEF}"
-                -lmingw32
-                "${_imp_root}/libwinecrt0-${PA_PE_ARCH}.a"
-                -DPIPEASIO_PE
-                ${_inc} ${_cflags} -static -static-libgcc
+                -DPIPEASIO_PE ${_inc} ${_cflags}
+                -L "${_imp_dir}" -lole32 -luuid -luser32 -lkernelbase
+                -Wl,--wine-builtin
                 -o "${_dll}"
-                "${_imp_root}/libntdll-${PA_PE_ARCH}.a"
-                "${_imp_root}/libole32-${PA_PE_ARCH}.a"
-                "${_imp_root}/libuuid-${PA_PE_ARCH}.a"
-                "${_imp_root}/libkernelbase-${PA_PE_ARCH}.a"
-        COMMAND "${WINEBUILD}" ${PA_WINEBUILD_FLAGS} --builtin "${_dll}"
-        DEPENDS ${_pe_sources} ${_headers} "${PA_DEF}" pipeasio_implibs_${PA_PE_ARCH}
+        DEPENDS ${_pe_sources} ${_headers} "${_spec}"
         VERBATIM COMMAND_EXPAND_LISTS
-        COMMENT "mingw ${PA_NAME}.dll (${PA_PE_ARCH} PE front end)")
+        COMMENT "winegcc ${PA_NAME}.dll (${PA_PE_ARCH} PE front end)")
 
     pipeasio_add_unixlib_objects()
     set(_sanitize_libs "")
     if(PIPEASIO_ASAN)
         list(APPEND _sanitize_libs -lasan -lubsan)
     endif()
+    if(NOT TARGET ${PA_NAME}_unix)
     add_custom_command(
         OUTPUT  "${_so}"
         COMMAND "${WINEGCC}" -shared
-                "${_spec}"
+                "${_unix_spec}"
                 $<TARGET_OBJECTS:pipeasio_unix_objs>
                 -lpthread -ldl ${PIPEWIRE_LINK_LIBRARIES} ${PIPEWIRE_LDFLAGS_OTHER}
                 ${_sanitize_libs}
                 -o "${_so}"
-        DEPENDS pipeasio_unix_objs "${_spec}" $<TARGET_OBJECTS:pipeasio_unix_objs>
+        DEPENDS pipeasio_unix_objs "${_unix_spec}" $<TARGET_OBJECTS:pipeasio_unix_objs>
         VERBATIM COMMAND_EXPAND_LISTS
         COMMENT "winegcc ${PA_NAME}.so (unixlib)")
-
-    add_custom_target(${PA_TARGET}_unix ALL DEPENDS "${_so}")
-    add_custom_target(${PA_TARGET} ALL DEPENDS "${_dll}")
-    add_dependencies(${PA_TARGET} ${PA_TARGET}_unix)
-
+    add_custom_target(${PA_NAME}_unix ALL DEPENDS "${_so}")
     if(NOT PA_NO_INSTALL)
-        install(FILES "${_dll}" DESTINATION "${PA_WINE_DEST}/${PA_PE_ARCH}-windows")
         install(FILES "${_so}" DESTINATION "${PA_WINE_DEST}/${PIPEASIO_UNIX_ARCH}-unix"
                 PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
                             GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+    endif()
+    endif()
+
+    add_custom_target(${PA_TARGET} ALL DEPENDS "${_dll}")
+    add_dependencies(${PA_TARGET} ${PA_NAME}_unix)
+    if(NOT PA_NO_INSTALL)
+        install(FILES "${_dll}" DESTINATION "${PA_WINE_DEST}/${PA_PE_ARCH}-windows")
     endif()
 endfunction()

@@ -52,25 +52,31 @@ option(BUILD_WOW64_32 "Build the experimental 32-bit WoW64 PE front end + unixli
 include(WineSdk)
 
 # The driver: PE front end + unixlib (cmake/PeDriver.cmake).
-# - pipeasio64.dll: x86_64 PE, installed under lib/wine/x86_64-windows
-# - pipeasio32.dll: i386 PE, installed under lib/wine/i386-windows (opt-in)
-# - pipeasio<N>.so: the unixlib, one per front end, under lib/wine/<host>-unix
-set(WINE_LIB_ROOT "/usr/lib/wine" CACHE PATH
-    "Wine lib/wine directory holding the <arch>-windows import libraries")
+# - <arch>-windows/pipeasio64.dll: the 64-bit PE front end per architecture
+# - i386-windows/pipeasio32.dll:   the 32-bit front end (opt-in)
+# - <host>-unix/pipeasio<N>.so:    the unixlib, one per module name
 include(PeDriver)
-pipeasio_add_pe_driver(
-    NAME            pipeasio64
-    PE_ARCH         x86_64
-    TRIPLE          x86_64-w64-mingw32
-    WINEBUILD_FLAGS -m64
-    DEF             "${CMAKE_SOURCE_DIR}/src/unixlib/pipeasio64.def")
+pipeasio_add_pe_driver(NAME pipeasio64 PE_ARCH x86_64)
 if(BUILD_WOW64_32)
-    pipeasio_add_pe_driver(
-        NAME            pipeasio32
-        PE_ARCH         i386
-        TRIPLE          i686-w64-mingw32
-        WINEBUILD_FLAGS -m32
-        DEF             "${CMAKE_SOURCE_DIR}/src/unixlib/pipeasio32.def")
+    pipeasio_add_pe_driver(NAME pipeasio32 PE_ARCH i386)
+endif()
+
+# ARM64 front ends: aarch64 for native ARM64 Windows hosts, arm64ec for x86_64
+# hosts under FEX.  Both need clang + lld and Wine's <arch>-windows import
+# libraries; an ARM64 host's Wine ships those, an x86_64 host can only
+# cross-build the PE halves (the unixlib is the host's).
+option(BUILD_ARM64 "Build the aarch64 and arm64ec PE front ends when the toolchain allows" ON)
+if(BUILD_ARM64)
+    foreach(_arch aarch64 arm64ec)
+        pipeasio_pe_arch_available(${_arch} _have)
+        if(_have)
+            pipeasio_add_pe_driver(NAME pipeasio64 PE_ARCH ${_arch} TARGET pipeasio64_${_arch})
+            message(STATUS "ARM64 front end: ${_arch}")
+        else()
+            message(STATUS "ARM64 front end: ${_arch} skipped (no clang+lld or no "
+                           "${WINE_LIB_ROOT}/${_arch}-windows/libwinecrt0.a)")
+        endif()
+    endforeach()
 endif()
 
 include(GNUInstallDirs)
@@ -139,10 +145,10 @@ if(BUILD_TESTS)
     if(PIPEASIO_ASAN)
         find_program(BASH_EXECUTABLE bash REQUIRED)
         set(_pipeasio_sanitizer_artifacts
-            ${CMAKE_BINARY_DIR}/pipeasio64.so
-            ${CMAKE_BINARY_DIR}/pipeasio64_stop_test.so)
+            ${CMAKE_BINARY_DIR}/${PIPEASIO_UNIX_ARCH}-unix/pipeasio64.so
+            ${CMAKE_BINARY_DIR}/${PIPEASIO_UNIX_ARCH}-unix/pipeasio64_stop_test.so)
         if(BUILD_WOW64_32)
-            list(APPEND _pipeasio_sanitizer_artifacts ${CMAKE_BINARY_DIR}/pipeasio32.so)
+            list(APPEND _pipeasio_sanitizer_artifacts ${CMAKE_BINARY_DIR}/${PIPEASIO_UNIX_ARCH}-unix/pipeasio32.so)
         endif()
         foreach(_target test_offsets test_config test_admission_gate
                          test_pw_buffer_region test_handle_table pw_filter_probe

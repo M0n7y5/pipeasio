@@ -21,12 +21,9 @@ set(PROBE_PE   "${CMAKE_CURRENT_BINARY_DIR}/asio_probe.exe")
 # The driver with the stop and gate barriers compiled in (asio.c), under its
 # own module name so a prefix can point the CLSID at it.
 pipeasio_add_pe_driver(
-    NAME            pipeasio64_stop_test
-    PE_ARCH         x86_64
-    TRIPLE          x86_64-w64-mingw32
-    WINEBUILD_FLAGS -m64
-    DEF             "${CMAKE_CURRENT_SOURCE_DIR}/pipeasio64_stop_test.def"
-    DEFINES         PIPEASIO_TEST_STOP_BARRIER PIPEASIO_TEST_GATE_BARRIER
+    NAME     pipeasio64_stop_test
+    PE_ARCH  x86_64
+    DEFINES  PIPEASIO_TEST_STOP_BARRIER PIPEASIO_TEST_GATE_BARRIER
     NO_INSTALL)
 
 

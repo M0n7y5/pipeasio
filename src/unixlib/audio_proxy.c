@@ -30,8 +30,13 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+/* arm64ec defines __x86_64__ as well, so it has to be tested first. */
+#if defined(__aarch64__) || defined(__arm64ec__)
+#include <arm_acle.h>
+#elif defined(__x86_64__) || defined(__i386__)
 #include <pmmintrin.h>
 #include <xmmintrin.h>
+#endif
 
 #include "audio.h"
 #include "pipeasio_config.h"
@@ -95,8 +100,13 @@ pump_proc(void *arg)
     proxy_ctx *ctx = arg;
 
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    /* Denormals cost cycles the callback does not have; flush them. */
+#if defined(__aarch64__) || defined(__arm64ec__)
+    __arm_wsr64("fpcr", __arm_rsr64("fpcr") | (1u << 24)); /* FPCR.FZ */
+#elif defined(__x86_64__) || defined(__i386__)
     _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
     _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+#endif
 
     for (;;)
     {
