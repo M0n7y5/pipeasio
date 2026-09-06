@@ -4,6 +4,32 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- The 64-bit driver is built as a PE front end plus a unixlib, the layout Wine
+  uses for its own modules and the only one aarch64 and arm64ec Wine load
+  (#23). Until now it was a single `winegcc` ELF (`pipeasio64.dll.so`) behind a
+  fake PE stub; the 32-bit front end already had the split layout, and the
+  64-bit build now goes through the same code. The install is
+  `x86_64-windows/pipeasio64.dll` (a real PE) and `x86_64-unix/pipeasio64.so`;
+  the `pipeasio.dll` symlinks are gone because the real PE does not need them.
+  Measured against the single-ELF build at 128 frames: same round trip (one
+  buffer), same xrun count, `pw-top` ERR +0 on every `SCHED_FIFO` leg.
+- Building now requires the `x86_64-w64-mingw32` MinGW cross compiler
+  (`mingw-w64-gcc` on Arch, `gcc-mingw-w64-x86-64` on Debian/Ubuntu,
+  `mingw64-gcc` on Fedora), previously only needed for the opt-in 32-bit
+  front end.
+- **Upgrading from 1.6.0 or older: run `pipeasio-register` again in every
+  prefix.** Those installs staged a 2 KB stub into `system32` that looks for
+  the `.dll.so`, which the new install no longer ships; until re-registered
+  the driver fails to load with `c0000135`. The test runners re-register a
+  prefix automatically when its staged PE is not the installed one.
+- The unixlib ABI is at version 4: the host's callback buffer pointer is
+  carried as a 64-bit value so the x86_64 front end fits the same unixlib as
+  the i386 one.
+
 ## [1.6.0] - 2026-09-04
 
 ### Added

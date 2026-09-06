@@ -11,7 +11,7 @@ jobs:
     container: archlinux:latest
     steps:
       - name: Install toolchain
-        run: pacman -Syu --noconfirm gcc cmake ninja pkgconf git clang wine libpipewire pipewire qt6-base
+        run: pacman -Syu --noconfirm gcc cmake ninja pkgconf git clang wine libpipewire pipewire qt6-base mingw-w64-gcc
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Format check (core tree only; tests/ are intentionally hand-aligned)
@@ -56,7 +56,7 @@ jobs:
             exit 1
           }
           tests/distro/check_pipewire_imports.sh "${floor_lib[0]}" \
-            build32/pipeasio64.dll.so build32/pipeasio32.so
+            build32/pipeasio64.so build32/pipeasio32.so
       - name: Test
         run: ctest --test-dir build32 --output-on-failure
       - name: Show test log on failure
@@ -77,7 +77,7 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -qq
           apt-get install -y --no-install-recommends \
-            cmake ninja-build gcc g++ pkg-config \
+            cmake ninja-build gcc g++ pkg-config gcc-mingw-w64-x86-64 \
             wine wine64-tools libwine-dev git ca-certificates
       - name: Assert the PipeWire floor
         run: |
@@ -97,7 +97,7 @@ jobs:
       - name: Audit PipeWire imports against 1.4.2
         run: |
           floor_lib="$(pkg-config --variable=libdir libpipewire-0.3)/libpipewire-0.3.so.0"
-          tests/distro/check_pipewire_imports.sh "$floor_lib" build/pipeasio64.dll.so
+          tests/distro/check_pipewire_imports.sh "$floor_lib" build/pipeasio64.so
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Show test log on failure
@@ -118,7 +118,7 @@ jobs:
             image: fedora:latest
             install: >-
               dnf install -y --setopt=install_weak_deps=False
-              cmake ninja-build gcc g++ pkgconf
+              cmake ninja-build gcc g++ pkgconf mingw64-gcc
               wine-devel pipewire-devel redhat-rpm-config git
             # RPM optflags must expand -flto (issue #6 regression guard).
             flags: |
@@ -144,7 +144,7 @@ jobs:
               export DEBIAN_FRONTEND=noninteractive;
               apt-get update -qq &&
               apt-get install -y --no-install-recommends
-              cmake ninja-build gcc g++ pkg-config
+              cmake ninja-build gcc g++ pkg-config gcc-mingw-w64-x86-64
               wine64-tools libwine-dev libpipewire-0.3-dev pipewire
               dpkg-dev git ca-certificates
             flags: |
@@ -167,7 +167,7 @@ jobs:
               export DEBIAN_FRONTEND=noninteractive;
               apt-get update -qq &&
               apt-get install -y --no-install-recommends
-              cmake ninja-build gcc g++ pkg-config
+              cmake ninja-build gcc g++ pkg-config gcc-mingw-w64-x86-64
               wine64-tools libwine-dev libpipewire-0.3-dev pipewire
               dpkg-dev git ca-certificates
             flags: |

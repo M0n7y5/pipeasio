@@ -56,7 +56,7 @@
       "mainEntity": [
         { "@type": "Question", "name": "No sound, or the driver does not load under Proton?", "acceptedAnswer": { "@type": "Answer", "text": "Proton's container cannot see /usr/lib/wine. Install under $HOME and set WINEDLLPATH in the game's launch options - Steam: WINEDLLPATH=/home/<you>/.local/lib/wine %command%, Faugus: the same variable in the per-game environment field - then register in that prefix." } },
         { "@type": "Question", "name": "A 32-bit game or host does not list PipeASIO under Proton?", "acceptedAnswer": { "@type": "Answer", "text": "Proton runs 32-bit apps through classic split WoW64 by default, which cannot load the 32-bit front end. In Steam, add PROTON_USE_WOW64=1 alongside WINEDLLPATH in the game's launch options: PROTON_USE_WOW64=1 WINEDLLPATH=/home/<you>/.local/lib/wine %command%. In Faugus, enable the WoW64 option in the game's settings. The install must also include the 32-bit half (-DBUILD_WOW64_32=ON)." } },
-        { "@type": "Question", "name": "Registering fails with status c0000135?", "acceptedAnswer": { "@type": "Answer", "text": "Wine could not find the unified PE name. The install creates pipeasio.dll symlinks next to pipeasio64.dll for Wine 10+, so re-run cmake --install to create them, then register again." } },
+        { "@type": "Question", "name": "Registering fails with status c0000135?", "acceptedAnswer": { "@type": "Answer", "text": "Wine loaded the PE half but could not load its unixlib (pipeasio64.so). Either Wine is not looking where it is installed (set WINEDLLPATH to the install's lib/wine, or install into Wine's own library dir), or the unixlib was built against a different Wine or glibc than the one running. An install from 1.6.0 or older that was never re-registered fails the same way: run pipeasio-register again." } },
         { "@type": "Question", "name": "Bluetooth headphones produce no sound?", "acceptedAnswer": { "@type": "Answer", "text": "Turn on follow device clock in the panel (or set PIPEASIO_FOLLOW_DEVICE_CLOCK=on). A Bluetooth sink's clock is the radio link and cannot always be slaved to the host, so the driver follows it instead, which also switches it to asynchronous scheduling and costs one buffer period. Some Bluetooth sinks do accept a forced quantum and work with the option off, so try it both ways." } },
         { "@type": "Question", "name": "FL Studio crackles or xruns constantly?", "acceptedAnswer": { "@type": "Answer", "text": "Turn Mix in buffer switch off in Options > Audio settings > Input / output. It makes FL Studio mix and run plugins inside the ASIO callback, which the driver delivers on the PipeWire data loop with one buffer period to return; a full mixer pass overruns that, and with follow device clock off the driver is scheduled synchronously, so the overrun stalls the graph rather than being absorbed. With it off, FL Studio mixes on its own threads and the callback only hands over ready buffers." } },
         { "@type": "Question", "name": "Does it conflict with WineASIO?", "acceptedAnswer": { "@type": "Answer", "text": "No. PipeASIO has its own CLSID and registry identity, so it installs side by side with WineASIO and hosts list them as separate drivers." } },
@@ -404,7 +404,9 @@ pipeasio-register</pre>
       <p class="note">Plain Wine users are done. For Proton the system-wide install is invisible inside the container, so follow steps 1-2 (user-local) and step 4 instead. Everyone else, build from source:</p>
 
       <div class="step">1 / Build</div>
-<pre><span class="c"># clone and build (Release)</span>
+<pre><span class="c"># needs the Wine SDK, PipeWire headers and the x86_64 MinGW cross compiler</span>
+<span class="c"># (mingw-w64-gcc on Arch, gcc-mingw-w64-x86-64 on Debian/Ubuntu, mingw64-gcc on Fedora)</span>
+<span class="c"># clone and build (Release)</span>
 git clone https://github.com/M0n7y5/pipeasio.git &amp;&amp; cd pipeasio
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build</pre>
@@ -499,7 +501,7 @@ $CLI shell -b &lt;name&gt; -i <span class="p">"regsvr32 /s pipeasio64.dll"</span
         </details>
         <details>
           <summary>Registering fails with status <code>c0000135</code>?</summary>
-          <div class="ans">Wine could not find the unified PE name. The install creates <code>pipeasio.dll</code> symlinks next to <code>pipeasio64.dll</code> for Wine 10+, so re-run <code>cmake --install</code> to create them, then register again.</div>
+          <div class="ans">Wine loaded the PE half but could not load its unixlib (<code>pipeasio64.so</code>). Either Wine is not looking where it is installed (set <code>WINEDLLPATH</code> to the install's <code>lib/wine</code>, or install into Wine's own library dir), or the unixlib was built against a different Wine or glibc than the one running. An install from 1.6.0 or older that was never re-registered fails the same way: run <code>pipeasio-register</code> again.</div>
         </details>
         <details>
           <summary>Bluetooth headphones produce no sound?</summary>

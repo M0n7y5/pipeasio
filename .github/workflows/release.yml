@@ -55,7 +55,7 @@ jobs:
             exit 1
           }
           tests/distro/check_pipewire_imports.sh "${floor_lib[0]}" \
-            stage/usr/lib/wine/x86_64-unix/pipeasio64.dll.so \
+            stage/usr/lib/wine/x86_64-unix/pipeasio64.so \
             stage/usr/lib/wine/x86_64-unix/pipeasio32.so
 
       - name: Write BUILD-INFO.txt
@@ -69,14 +69,14 @@ jobs:
             "Wine (build SDK): $(wine --version)" \
             "glibc:            ${glibc}" \
             "libpipewire-0.3:  $(pkg-config --modversion libpipewire-0.3) (built against; minimum 1.4.2)" \
-            "MinGW (i386 PE):  $(i686-w64-mingw32-gcc -dumpversion)" \
+            "MinGW (PE halves): $(x86_64-w64-mingw32-gcc -dumpversion)" \
             "Kernel:           $(uname -sr)" \
             "" \
             "Contents:" \
-            "  lib/wine/x86_64-windows/pipeasio64.dll   (+ pipeasio.dll symlink)" \
-            "  lib/wine/x86_64-unix/pipeasio64.dll.so   (+ pipeasio.dll.so symlink)" \
+            "  lib/wine/x86_64-windows/pipeasio64.dll   (PE front end)" \
+            "  lib/wine/x86_64-unix/pipeasio64.so       (unixlib: the PipeWire client)" \
             "  lib/wine/i386-windows/pipeasio32.dll     (opt-in 32-bit WoW64 PE front end)" \
-            "  lib/wine/x86_64-unix/pipeasio32.so       (32-bit WoW64 unixlib)" \
+            "  lib/wine/x86_64-unix/pipeasio32.so       (its unixlib)" \
             "  bin/pipeasio-register, bin/pipeasio-settings" \
             "" \
             "Install (system-wide):  sudo tar -xzf <this>.tar.gz -C /usr && pipeasio-register" \

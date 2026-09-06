@@ -103,9 +103,18 @@ Under Proton or Steam, also set `WINEDLLPATH=$HOME/.local/lib/wine` in the launc
 CMake only. The driver is 64-bit. Opt-in 32-bit (WoW64) support for 32-bit
 Windows hosts is covered in [32-bit applications](#32-bit-applications-experimental).
 
+The driver is two halves, the layout Wine uses for its own builtin modules:
+a PE DLL (`pipeasio64.dll`, the COM object and ASIO surface, built with the
+MinGW cross compiler) and a unixlib (`pipeasio64.so`, the PipeWire client,
+built with the host compiler) that the PE reaches through
+`__wine_unix_call`. Nothing in the PE half links libpipewire, and nothing in
+the unixlib knows about COM.
+
 Requirements: `cmake` (3.20 or newer), `ninja` (recommended) or GNU make,
-`gcc`, `pkg-config`, the Wine SDK (headers plus `winebuild` and `winegcc`), and
-the PipeWire development headers. The Qt6 settings panel is optional: it builds
+`gcc`, `pkg-config`, the Wine SDK (headers plus `winebuild` and `winegcc`),
+the `x86_64-w64-mingw32` MinGW cross compiler (`mingw-w64-gcc` on Arch,
+`gcc-mingw-w64-x86-64` on Debian/Ubuntu, `mingw64-gcc` on Fedora), and the
+PipeWire development headers. The Qt6 settings panel is optional: it builds
 when a C++ compiler and Qt6 Widgets are present and is skipped with a warning
 otherwise, which does not affect the driver. Pass `-DBUILD_SETTINGS_PANEL=OFF`
 to skip it deliberately and silence the warning.
@@ -258,15 +267,14 @@ cmake --install build --prefix "$HOME/.local"
 Either one lays down:
 
 ```
-<prefix>/lib/wine/x86_64-windows/pipeasio64.dll
-<prefix>/lib/wine/x86_64-windows/pipeasio.dll    -> pipeasio64.dll
-<prefix>/lib/wine/x86_64-unix/pipeasio64.dll.so
-<prefix>/lib/wine/x86_64-unix/pipeasio.dll.so    -> pipeasio64.dll.so
+<prefix>/lib/wine/x86_64-windows/pipeasio64.dll   (PE front end)
+<prefix>/lib/wine/x86_64-unix/pipeasio64.so       (unixlib)
 ```
 
-The `pipeasio.dll{,.so}` symlinks satisfy the unified PE name that Wine 10+
-expects. Without them, `regsvr32 pipeasio64.dll` fails with status `c0000135` on
-newer Wine.
+Upgrading from 1.6.0 or older: those installs staged a 2 KB PE stub into
+every registered prefix's `system32`, and the new layout has no `.dll.so`
+for that stub to find. Run `pipeasio-register` again in each prefix; it
+replaces the stub with the real PE.
 
 By default the driver installs under `<prefix>/lib/wine`, matching Wine's
 upstream layout (`CMAKE_INSTALL_LIBDIR` does not move it);
@@ -318,10 +326,10 @@ unless `WINE` is set, see [Proton / Steam / Faugus](#proton--steam--faugus) and
 
 PipeASIO is 64-bit by default. A front end for **32-bit** Windows ASIO hosts
 (foobar2000 `foo_out_asio`, older REAPER builds, ...) can be built opt-in via
-Wine's *new WoW64*: the 32-bit half is a thin PE thunk that forwards every ASIO
-call to the same 64-bit PipeWire backend over `__wine_unix_call`. There is no
-32-bit libpipewire and no 32-bit Linux userspace - only the Windows-facing half
-is i386.
+Wine's *new WoW64*: it is the same PE front end compiled for i386, over a
+unixlib built from the same sources as the 64-bit one. There is no 32-bit
+libpipewire and no 32-bit Linux userspace - only the Windows-facing half is
+i386.
 
 > **Experimental, off by default.** The 64-bit driver is byte-for-byte
 > unaffected. The 32-bit path is validated end-to-end by the `asio_probe32`
@@ -330,10 +338,10 @@ is i386.
 > selected hardware, and live config reload all work. Bit-exact loopback
 > validation on 32-bit is still pending.
 
-It needs a MinGW cross-compiler on top of the normal build requirements:
+It needs the i686 MinGW cross-compiler on top of the normal build
+requirements (`mingw-w64-gcc` on Arch covers both; Debian/Ubuntu split it):
 
 ```sh
-sudo pacman -S mingw-w64-gcc          # Arch / CachyOS
 sudo apt install gcc-mingw-w64-i686   # Debian / Ubuntu
 ```
 
@@ -348,7 +356,7 @@ cmake --build build
 Installing then lays the 32-bit halves alongside the 64-bit ones:
 
 ```
-<prefix>/lib/wine/i386-windows/pipeasio32.dll    (PE thunk, builtin)
+<prefix>/lib/wine/i386-windows/pipeasio32.dll    (PE front end)
 <prefix>/lib/wine/x86_64-unix/pipeasio32.so      (unixlib, 64-bit ELF)
 ```
 
@@ -507,10 +515,9 @@ and are the usual causes of trouble elsewhere:
   import libraries at build time and does not affect install locations. A
   user-local `--prefix "$HOME/.local"` install plus `WINEDLLPATH` sidesteps
   the question entirely.
-- **Wine version.** The 64-bit driver runs on current Wine. Wine 10+ needs the
-  `pipeasio.dll` symlinks the install creates (see [Installing](#installing)).
-  The experimental 32-bit front end additionally requires Wine's *new WoW64*.
-  Older or split-WoW64 Wine cannot load it.
+- **Wine version.** The 64-bit driver runs on current Wine. The experimental
+  32-bit front end additionally requires Wine's *new WoW64*. Older or
+  split-WoW64 Wine cannot load it.
 - **PipeWire version.** 1.4.2 or newer, the version Steam Runtime 4 and Debian
   13 ship; configure refuses anything older. The forced quantum/rate that pins
   low latency is not what sets this floor - those properties have existed since
@@ -709,7 +716,7 @@ another tab. The device combos on the **Settings** tab enumerate through
 
 **A 32-bit game or host does not list PipeASIO under Proton.** Proton runs 32-bit apps through classic split WoW64 by default, which cannot load the 32-bit front end. In Steam, add `PROTON_USE_WOW64=1` alongside `WINEDLLPATH` in the game's launch options (`PROTON_USE_WOW64=1 WINEDLLPATH=/home/<you>/.local/lib/wine %command%`). In Faugus, enable the WoW64 option in the game's settings. The install must also include the 32-bit half (`-DBUILD_WOW64_32=ON`).
 
-**Registering fails with status `c0000135`.** Wine could not find the unified PE name. The install creates `pipeasio.dll` symlinks next to `pipeasio64.dll` for Wine 10+, so re-run `cmake --install` to create them, then register again.
+**Registering fails with status `c0000135`.** Wine loaded the PE half but could not load its unixlib (`pipeasio64.so`). Either Wine is not looking where it is installed (set `WINEDLLPATH` to the install's `lib/wine`, or install into Wine's own library dir, see [Registering](#registering)), or the unixlib was built against a different Wine or glibc than the one running (a prebuilt tarball on the wrong host; rebuild from source). An install from 1.6.0 or older that was never re-registered fails the same way, since the stub it left in `system32` looks for a `.dll.so` that no longer exists: run `pipeasio-register` again.
 
 **Bluetooth headphones produce no sound.** Turn on `follow_device_clock` (or set `PIPEASIO_FOLLOW_DEVICE_CLOCK=on`). A Bluetooth sink's clock is the radio link and cannot always be slaved to the host, so the driver follows it instead. Some Bluetooth sinks do accept a forced quantum and work with the option off, which keeps the synchronous scheduling and its lower latency, so try it both ways.
 
@@ -764,6 +771,17 @@ The driver has its own COM identity: CLSID
 `{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}`, ASIO registration under
 `HKCU\Software\ASIO\PipeASIO`, and DLL filename `pipeasio64.dll`. That is why
 it coexists with WineASIO: neither overrides the other.
+
+It is built the way Wine builds its own modules: a PE half (`src/asio.c`,
+`src/main.c`, `src/regsvr.c`, `src/unixlib/audio_proxy.c`, cross-compiled with
+MinGW) and a unixlib (`src/audio.c`, `src/unixlib/audio_unix.c`, host gcc)
+that talk over the call table in `include/pipeasio_unix_abi.h`. The ABI is
+handles and fixed-width integers, never pointers, so one unixlib serves both
+the x86_64 and the i386 front end. The PipeWire data loop runs in the
+unixlib; a PE-side pump thread blocks in `PAU_WAIT_CALLBACK`, is woken once
+per cycle, and carries the host's `bufferSwitch`. Measured against the older
+single-ELF build at 128 frames, the handoff costs no round-trip latency and
+no xruns. The split is also what aarch64 and arm64ec Wine require.
 
 ### Testing
 
