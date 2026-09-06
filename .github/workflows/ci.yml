@@ -235,8 +235,11 @@ jobs:
         run: |
           set -euo pipefail
           cmake --install build --prefix "$HOME/.local"
+          # $HOME is the runner's mount, owned by another uid; Wine refuses to
+          # create a prefix under it but accepts one that already exists.
           export WINEPREFIX="$HOME/pfx" WINEDLLPATH="$HOME/.local/lib/wine"
           export WINEDLLOVERRIDES="mscoree,mshtml=" WINEDEBUG=-all,+loaddll,err+all
+          mkdir -p "$WINEPREFIX"
           wineboot --init
           cp "$HOME/.local/lib/wine/aarch64-windows/pipeasio64.dll" "$WINEPREFIX/drive_c/windows/system32/"
           wine regsvr32 /s pipeasio64.dll 2>&1 | tee regsvr.log
