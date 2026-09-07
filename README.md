@@ -518,7 +518,9 @@ this split layout on ARM64, which is why the driver moved to it
 Building needs `clang` and `lld` (there is no MinGW gcc for these targets)
 and a Wine that was itself built for `aarch64` and `arm64ec`, so that
 `lib/wine/aarch64-windows/` and `lib/wine/arm64ec-windows/` carry the import
-libraries; Fedora's Wine does, and it is what Asahi Linux ships. `BUILD_ARM64`
+libraries. Debian's `libwine-dev` on arm64 ships the `aarch64` set (no
+`arm64ec`); Fedora does not build Wine for aarch64 at all; a Wine built from
+source with `--enable-archs=aarch64,arm64ec` ships both. `BUILD_ARM64`
 (default on) builds each front end whose toolchain and import libraries are
 present and reports the ones it skips. On an x86_64 host only the PE halves
 can be cross-built; the unixlib is always the host's.
