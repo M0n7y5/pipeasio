@@ -25,6 +25,8 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
+arch=$(uname -m)
+case $arch in amd64) arch=x86_64 ;; arm64) arch=aarch64 ;; esac
 probe="${here}/asio_loopback.exe"
 [[ -x "$probe" ]] || { echo "asio_loopback not built: $probe"; exit 1; }
 
@@ -55,8 +57,8 @@ for tool in pw-cli pw-link wine; do
 done
 pw-cli info 0 >/dev/null 2>&1 || { echo "[loop] SKIP: no PipeWire daemon"; exit 77; }
 # Unix half: pipeasio64.so (PE + unixlib) or pipeasio64.dll.so (hybrid).
-_installed_so="${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio64.so"
-[[ -f "$_installed_so" ]] || _installed_so="${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio64.dll.so"
+_installed_so="${PIPEASIO_ROOT}/lib/wine/$arch-unix/pipeasio64.so"
+[[ -f "$_installed_so" ]] || _installed_so="${PIPEASIO_ROOT}/lib/wine/$arch-unix/pipeasio64.dll.so"
 [[ -f "$_installed_so" ]] \
     || { echo "[loop] SKIP: driver not installed under $PIPEASIO_ROOT (cmake --install)"; exit 77; }
 
@@ -98,7 +100,7 @@ if [[ ! -d "$PROBE_PREFIX/drive_c" ]]; then
 fi
 # Re-register when the PE staged in the prefix is not the installed one: a
 # prefix registered by an older install keeps a stale copy in system32.
-_installed_pe="${PIPEASIO_ROOT}/lib/wine/x86_64-windows/pipeasio64.dll"
+_installed_pe="${PIPEASIO_ROOT}/lib/wine/$arch-windows/pipeasio64.dll"
 if ! wine reg query 'HKLM\Software\ASIO\PipeASIO' >/dev/null 2>&1 \
    || { [[ -e "$_installed_pe" ]] \
         && ! cmp -s "$_installed_pe" "$PROBE_PREFIX/drive_c/windows/system32/pipeasio64.dll"; }; then

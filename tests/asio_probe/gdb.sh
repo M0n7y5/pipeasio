@@ -21,6 +21,8 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
+arch=$(uname -m)
+case $arch in amd64) arch=x86_64 ;; arm64) arch=aarch64 ;; esac
 probe="${here}/asio_probe.exe"
 [[ -x "$probe" ]] || { echo "asio_probe not built: $probe"; exit 1; }
 
@@ -32,7 +34,7 @@ seconds="${PROBE_SECONDS:-3}"
 : "${PROBE_PREFIX:=$HOME/.cache/pipeasio-probe}"
 : "${PIPEASIO_ROOT:=$HOME/.local}"
 : "${PIPEWIRE_DEBUG:=2}"
-: "${WINEDEBUG:=-all,+pipeasio,err+all}"
+: "${WINEDEBUG:=-all,err+all}"
 err_log="$PROBE_PREFIX/probe.err"
 
 # Run the probe unless told to inspect the previous core.
@@ -49,7 +51,7 @@ if [[ "$mode" != "last" ]]; then
         echo "[gdb] creating wineprefix at $PROBE_PREFIX"
         wineboot --init >/dev/null 2>&1
     fi
-    _installed_pe="${PIPEASIO_ROOT}/lib/wine/x86_64-windows/pipeasio64.dll"
+    _installed_pe="${PIPEASIO_ROOT}/lib/wine/$arch-windows/pipeasio64.dll"
     if ! wine reg query 'HKLM\Software\ASIO\PipeASIO' >/dev/null 2>&1 \
        || { [[ -e "$_installed_pe" ]] \
             && ! cmp -s "$_installed_pe" "$PROBE_PREFIX/drive_c/windows/system32/pipeasio64.dll"; }; then

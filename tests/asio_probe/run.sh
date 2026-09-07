@@ -7,13 +7,16 @@
 #
 # Env knobs:
 #   PIPEWIRE_DEBUG : forwarded to the daemon's client side (default 2)
-#   WINEDEBUG      : forwarded to Wine (default -all,+pipeasio,err+all)
+#   WINEDEBUG      : forwarded to Wine (default -all,err+all)
+#   PIPEASIO_DEBUG : the driver's own trace lines on stderr (off by default)
 #   PROBE_PREFIX   : wineprefix to use (default /tmp/pipeasio-probe)
 #   PIPEASIO_ROOT  : install root for the .so (default $HOME/.local)
 
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
+arch=$(uname -m)
+case $arch in amd64) arch=x86_64 ;; arm64) arch=aarch64 ;; esac
 probe="${here}/asio_probe.exe"
 [[ -x "$probe" ]] || { echo "asio_probe not built: $probe"; exit 1; }
 
@@ -32,7 +35,7 @@ fi
 PIPEASIO_PREFIX="$PIPEASIO_ROOT"
 export PIPEASIO_ROOT PIPEASIO_PREFIX
 : "${PIPEWIRE_DEBUG:=2}"
-: "${WINEDEBUG:=-all,+pipeasio,err+all}"
+: "${WINEDEBUG:=-all,err+all}"
 
 # --- preconditions (77 = CTest SKIP) -----------------------------------------
 for tool in wine pw-cli; do
@@ -43,8 +46,8 @@ if [[ "${PROBE_EXPECT_DEAD_DAEMON:-0}" != 1 ]]; then
     pw-cli info 0 >/dev/null 2>&1 || { echo "[run] SKIP: no PipeWire daemon"; exit 77; }
 fi
 # Unix half: pipeasio64.so (PE + unixlib) or pipeasio64.dll.so (hybrid).
-_installed_so="${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio64.so"
-[[ -f "$_installed_so" ]] || _installed_so="${PIPEASIO_ROOT}/lib/wine/x86_64-unix/pipeasio64.dll.so"
+_installed_so="${PIPEASIO_ROOT}/lib/wine/$arch-unix/pipeasio64.so"
+[[ -f "$_installed_so" ]] || _installed_so="${PIPEASIO_ROOT}/lib/wine/$arch-unix/pipeasio64.dll.so"
 [[ -f "$_installed_so" ]] \
     || { echo "[run] SKIP: driver not installed under $PIPEASIO_ROOT (cmake --install)"; exit 77; }
 
@@ -93,7 +96,7 @@ fi
 # Register PipeASIO if not already.
 # Re-register when the PE staged in the prefix is not the installed one: a
 # prefix registered by an older install keeps a stale copy in system32.
-_installed_pe="${PIPEASIO_ROOT}/lib/wine/x86_64-windows/pipeasio64.dll"
+_installed_pe="${PIPEASIO_ROOT}/lib/wine/$arch-windows/pipeasio64.dll"
 if ! wine reg query 'HKLM\Software\ASIO\PipeASIO' >/dev/null 2>&1 \
    || { [[ -e "$_installed_pe" ]] \
         && ! cmp -s "$_installed_pe" "$PROBE_PREFIX/drive_c/windows/system32/pipeasio64.dll"; }; then

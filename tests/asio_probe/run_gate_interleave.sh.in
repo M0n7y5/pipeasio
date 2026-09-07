@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -euo pipefail
 
-hook_pe="@CMAKE_BINARY_DIR@/x86_64-windows/pipeasio64_stop_test.dll"
+hook_pe="@CMAKE_BINARY_DIR@/@PIPEASIO_UNIX_ARCH@-windows/pipeasio64_stop_test.dll"
 hook_so="@CMAKE_BINARY_DIR@/@PIPEASIO_UNIX_ARCH@-unix/pipeasio64_stop_test.so"
 runner="@CMAKE_CURRENT_BINARY_DIR@/run.sh"
 
@@ -19,10 +19,10 @@ base=${PROBE_PREFIX:-"$HOME/.cache/pipeasio-probe"}
 export PROBE_PREFIX="${base}-gate-interleave"
 staged="@CMAKE_CURRENT_BINARY_DIR@/gate-interleave-install"
 rm -rf -- "$staged"
-mkdir -p "$staged/lib/wine/x86_64-windows" "$staged/lib/wine/x86_64-unix"
-cp "$hook_pe" "$staged/lib/wine/x86_64-windows/pipeasio64_stop_test.dll"
-cp "$hook_so" "$staged/lib/wine/x86_64-unix/pipeasio64_stop_test.so"
-cp "$hook_so" "$staged/lib/wine/x86_64-unix/pipeasio64.so"
+mkdir -p "$staged/lib/wine/@PIPEASIO_UNIX_ARCH@-windows" "$staged/lib/wine/@PIPEASIO_UNIX_ARCH@-unix"
+cp "$hook_pe" "$staged/lib/wine/@PIPEASIO_UNIX_ARCH@-windows/pipeasio64_stop_test.dll"
+cp "$hook_so" "$staged/lib/wine/@PIPEASIO_UNIX_ARCH@-unix/pipeasio64_stop_test.so"
+cp "$hook_so" "$staged/lib/wine/@PIPEASIO_UNIX_ARCH@-unix/pipeasio64.so"
 
 export WINEPREFIX="$PROBE_PREFIX"
 if [[ ! -d "$WINEPREFIX/drive_c" ]]; then

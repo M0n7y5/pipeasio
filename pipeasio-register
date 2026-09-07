@@ -5,6 +5,15 @@ WINEPREFIX=${WINEPREFIX:=~/.wine}
 
 wine=${WINE:-wine}
 
+# The 64-bit arch whose <arch>-unix/<arch>-windows pair is registered: the
+# host's, which is what the unixlib was built for (aarch64 on ARM64, #23).
+arch=$(uname -m)
+case ${arch} in
+    amd64) arch=x86_64 ;;
+    arm64) arch=aarch64 ;;
+esac
+arch=${PIPEASIO_ARCH:-${arch}}
+
 # Host wine's first process in a prefix owned by another Wine (a Proton
 # prefix, a Bottles bottle) migrates it to the host build (#22, #24).
 if [ -z "${WINE:-}" ] \
@@ -40,7 +49,7 @@ else
         "/usr/local/lib/wine"
         "/usr/lib/wine"
         "/usr/lib64/wine"
-        "/usr/lib/x86_64-linux-gnu/wine"
+        "/usr/lib/${arch}-linux-gnu/wine"
         "/opt/wine-devel/lib/wine"
         "/opt/wine-devel/lib64/wine"
         "/opt/wine-stable/lib/wine"
@@ -61,8 +70,8 @@ if [ -n "${wine_cmd}" ]; then
     # only accept a dir that carries the 64-bit layout. A PipeASIO-only
     # install creates those arch dirs bare, so require a real Wine payload.
     for d in "${wine_root}/lib/wine" "${wine_root}/lib64/wine" \
-             "${wine_root}/lib/x86_64-linux-gnu/wine"; do
-        if [ -e "${d}/x86_64-unix/ntdll.so" ] || [ -e "${d}/x86_64-windows/ntdll.dll" ]; then
+             "${wine_root}/lib/${arch}-linux-gnu/wine"; do
+        if [ -e "${d}/${arch}-unix/ntdll.so" ] || [ -e "${d}/${arch}-windows/ntdll.dll" ]; then
             wine_libdir=$(readlink -f "${d}")
             break
         fi
@@ -82,8 +91,8 @@ found=()
 for p in "${candidates[@]}"; do
     [ -z "${p}" ] && continue
     # Unix half: pipeasio64.so (PE + unixlib) or pipeasio64.dll.so (hybrid).
-    if { [ -e "${p}/x86_64-unix/pipeasio64.so" ] || [ -e "${p}/x86_64-unix/pipeasio64.dll.so" ]; } \
-       && [ -e "${p}/x86_64-windows/pipeasio64.dll" ]; then
+    if { [ -e "${p}/${arch}-unix/pipeasio64.so" ] || [ -e "${p}/${arch}-unix/pipeasio64.dll.so" ]; } \
+       && [ -e "${p}/${arch}-windows/pipeasio64.dll" ]; then
         canon=$(readlink -f "${p}")
         dup=0
         for q in ${found[@]+"${found[@]}"}; do
@@ -112,7 +121,7 @@ if [ -n "${wine_libdir}" ] && ((${#found[@]} > 1)); then
 fi
 
 if [ -z "${prefix}" ]; then
-    >&2 echo "[${me}] PipeASIO install not found in any candidate root."
+    >&2 echo "[${me}] PipeASIO install not found in any candidate root (${arch}-unix/pipeasio64.so + ${arch}-windows/pipeasio64.dll)."
     >&2 echo "[${me}] Searched: ${candidates[*]}"
     >&2 echo "[${me}] Set PIPEASIO_PREFIX=<install-prefix> or run 'cmake --install'."
     exit 1
@@ -127,7 +136,7 @@ fi
 >&2 echo "[${me}] using PipeASIO install at ${prefix}"
 
 # Stage the PE half where regsvr32 can LoadLibrary it by name.
-cp -v --no-preserve mode "${prefix}/x86_64-windows/pipeasio64.dll" \
+cp -v --no-preserve mode "${prefix}/${arch}-windows/pipeasio64.dll" \
                          "${WINEPREFIX}/drive_c/windows/system32/" || exit $?
 
 # Let Wine find the ELF half next to the PE half.
@@ -162,7 +171,7 @@ fi
 # Optional 32-bit WoW64 registration.
 if [ ${code} -eq 0 ] \
    && [ -e "${prefix}/i386-windows/pipeasio32.dll" ] \
-   && [ -e "${prefix}/x86_64-unix/pipeasio32.so" ]; then
+   && [ -e "${prefix}/${arch}-unix/pipeasio32.so" ]; then
     >&2 echo "[${me}] registering experimental WoW64 32-bit front end"
     mkdir -p "${WINEPREFIX}/drive_c/windows/syswow64" || exit $?
     cp -v --no-preserve mode "${prefix}/i386-windows/pipeasio32.dll" \

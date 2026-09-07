@@ -5,11 +5,11 @@ pipeasio_add_pe_program(NAME asio_probe SOURCES "${PROBE_SRC}" LIBS ole32)
 
 # The driver with the stop and gate barriers compiled in (asio.c), under its
 # own module name so a prefix can point the CLSID at it.
-pipeasio_pe_arch_available(x86_64 _have_x86_64)
-if(_have_x86_64)
+pipeasio_pe_arch_available(${PIPEASIO_UNIX_ARCH} _have_host_pe)
+if(_have_host_pe)
 pipeasio_add_pe_driver(
     NAME     pipeasio64_stop_test
-    PE_ARCH  x86_64
+    PE_ARCH  ${PIPEASIO_UNIX_ARCH}
     DEFINES  PIPEASIO_TEST_STOP_BARRIER PIPEASIO_TEST_GATE_BARRIER
     NO_INSTALL)
 endif()

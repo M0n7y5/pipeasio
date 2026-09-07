@@ -203,8 +203,8 @@ jobs:
   # aarch64 at all; Asahi carries its own). Debian has no arm64ec-windows, so
   # that front end is reported as skipped. The runner has no PipeWire daemon:
   # the unit tests and the ABI layout run, the Wine integration tests skip,
-  # and regsvr32 in a throwaway prefix proves the loader pairs the aarch64 PE
-  # with the aarch64 unixlib.
+  # and pipeasio-register in a throwaway prefix proves the script finds the
+  # aarch64 pair and the loader pairs the aarch64 PE with the aarch64 unixlib.
   build-arm64:
     name: build (debian, aarch64)
     runs-on: ubuntu-24.04-arm
@@ -241,9 +241,9 @@ jobs:
           export WINEDLLOVERRIDES="mscoree,mshtml=" WINEDEBUG=-all,+loaddll,err+all
           mkdir -p "$WINEPREFIX"
           wineboot --init
-          cp "$HOME/.local/lib/wine/aarch64-windows/pipeasio64.dll" "$WINEPREFIX/drive_c/windows/system32/"
-          wine regsvr32 /s pipeasio64.dll 2>&1 | tee regsvr.log
+          PIPEASIO_PREFIX="$HOME/.local" "$HOME/.local/bin/pipeasio-register" 2>&1 | tee regsvr.log
           grep -q 'Successfully registered' regsvr.log
+          grep -q 'aarch64-windows/pipeasio64.dll' regsvr.log
           wine reg query 'HKLM\Software\ASIO\PipeASIO' | grep -q 2D3CA9E2
           wineserver -w
       - name: Show test log on failure

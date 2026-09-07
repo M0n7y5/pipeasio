@@ -30,6 +30,10 @@ fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
+# The script registers the host's 64-bit arch pair; fixtures follow it.
+arch=$(uname -m)
+case $arch in amd64) arch=x86_64 ;; arm64) arch=aarch64 ;; esac
+
 fail=0
 
 # Point PATH at a fresh fake Wine root: bin/ holds the stubs, the caller
@@ -53,17 +57,17 @@ export HOME="$work/home"
 mkdir -p "$HOME"
 
 mkpair() { # <wine lib dir>
-    mkdir -p "$1/x86_64-unix" "$1/x86_64-windows"
-    : > "$1/x86_64-unix/pipeasio64.dll.so"
-    : > "$1/x86_64-windows/pipeasio64.dll"
+    mkdir -p "$1/$arch-unix" "$1/$arch-windows"
+    : > "$1/$arch-unix/pipeasio64.dll.so"
+    : > "$1/$arch-windows/pipeasio64.dll"
 }
 
 # Real Wine payload sentinels: pipeasio-register only accepts a libdir that
 # has one, so scenarios exercising the libdir check must plant these.
 mkwine() { # <wine lib dir>
-    mkdir -p "$1/x86_64-unix" "$1/x86_64-windows"
-    : > "$1/x86_64-unix/ntdll.so"
-    : > "$1/x86_64-windows/ntdll.dll"
+    mkdir -p "$1/$arch-unix" "$1/$arch-windows"
+    : > "$1/$arch-unix/ntdll.so"
+    : > "$1/$arch-windows/ntdll.dll"
 }
 
 check() { # <desc> <haystack> <expected substring>
@@ -153,11 +157,11 @@ rm -rf "$other"
 # 5. Debian-style multiarch libdir is selected.
 root5="$work/root5"
 use_root "$root5"
-mkwine "$root5/lib/x86_64-linux-gnu/wine"
+mkwine "$root5/lib/$arch-linux-gnu/wine"
 probe="$work/probe"
 mkpair "$probe/lib/wine"
 run "$probe" "$tc"
-check "multiarch libdir selected" "$out" "outside wine's library dir ($root5/lib/x86_64-linux-gnu/wine)"
+check "multiarch libdir selected" "$out" "outside wine's library dir ($root5/lib/$arch-linux-gnu/wine)"
 
 # 5b. #19 regression: the bad --prefix /usr install created bare arch dirs in
 #     lib/wine; the real Wine payload lives in the multiarch dir. The bare
@@ -165,10 +169,10 @@ check "multiarch libdir selected" "$out" "outside wine's library dir ($root5/lib
 root5b="$work/root5b"
 use_root "$root5b"
 mkpair "$root5b/lib/wine"               # bare: only PipeASIO, no Wine payload
-mkwine "$root5b/lib/x86_64-linux-gnu/wine"
+mkwine "$root5b/lib/$arch-linux-gnu/wine"
 run "$root5b" "$tc"
 check "bare arch dirs do not fake the libdir" "$out" \
-      "outside wine's library dir ($root5b/lib/x86_64-linux-gnu/wine)"
+      "outside wine's library dir ($root5b/lib/$arch-linux-gnu/wine)"
 
 # 6a. The override replaces the built-in list: a pair in the second of two
 #     override entries is found even though it matches no default location.
@@ -197,7 +201,7 @@ rm -rf "$HOME/.local/lib/wine"
 
 # 6e. The built-in defaults themselves (static; an override-less run would
 #     depend on what the host has installed).
-for d in /usr/local/lib/wine /usr/lib/x86_64-linux-gnu/wine \
+for d in /usr/local/lib/wine '/usr/lib/${arch}-linux-gnu/wine' \
          /opt/wine-staging/lib/wine /opt/wine-staging/lib64/wine; do
     if grep -q -- "$d" "$register"; then
         echo "ok - default candidate present: $d"

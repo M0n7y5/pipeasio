@@ -20,7 +20,7 @@ fi
 : "${PIPEASIO_PREFIX:=${PIPEASIO_ROOT:-$HOME/.local}}"
 PIPEASIO_ROOT="$PIPEASIO_PREFIX"
 : "${PROBE_PREFIX:=$HOME/.cache/pipeasio-probe32}"
-: "${WINEDEBUG:=-all,+pipeasio,err+all}"
+: "${WINEDEBUG:=-all,err+all}"
 
 if [[ ! -e "${PIPEASIO_PREFIX}/lib/wine/i386-windows/pipeasio32.dll" \
       || ! -e "${PIPEASIO_PREFIX}/lib/wine/x86_64-unix/pipeasio32.so" ]]; then
