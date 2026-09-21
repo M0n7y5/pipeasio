@@ -130,6 +130,11 @@ jobs:
     # import libraries (#23). Its rolling SDK versions are recorded in
     # BUILD-INFO.txt and in this job's half of the release manifest.
     container: docker.io/library/debian:stable
+    # The runner falls back to sh (dash) inside this container; the steps below
+    # are bash.
+    defaults:
+      run:
+        shell: bash
     env:
       TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'development' }}
       DEBIAN_FRONTEND: noninteractive
