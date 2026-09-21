@@ -317,9 +317,14 @@ Steam / Faugus section below.
 
 ### From a GitHub release
 
-[Releases](https://github.com/M0n7y5/pipeasio/releases) carry a prebuilt
-`pipeasio-<version>-archlinux-x86_64.tar.gz` (the 64-bit driver plus the opt-in
-32-bit WoW64 front end) for the Arch / CachyOS family. Extract it over a prefix:
+[Releases](https://github.com/M0n7y5/pipeasio/releases) carry prebuilt driver
+tarballs: `pipeasio-<version>-archlinux-x86_64.tar.gz` (the 64-bit driver plus
+the opt-in 32-bit WoW64 front end) for the Arch / CachyOS family, and
+`pipeasio-<version>-debian-aarch64.tar.gz` (the aarch64 driver plus the
+`pipeasio-manage` CLI) built on Debian stable for ARM64 hosts. There is no
+ARM64 AppImage: run `bin/pipeasio-manage` from that tarball, or build the GUI
+from source. Extract the tarball for your architecture over a prefix (the
+x86_64 name is shown):
 
 ```sh
 # user-local (required for Proton / Faugus / Steam, see below)

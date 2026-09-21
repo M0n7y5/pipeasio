@@ -104,17 +104,17 @@ jobs:
         run: >
           build/manager/pipeasio-manage manifest --version "$TAG" --asset "$ART"
           --root stage/usr --architecture x86_64 --wine-sdk "$(wine --version)"
-          --output pipeasio-release.json
+          --output pipeasio-release-x86_64.json
 
       - name: Upload driver release artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-driver
+          name: release-driver-x86_64
           if-no-files-found: error
           path: |
             pipeasio-*.tar.gz
             pipeasio-*.tar.gz.sha256
-            pipeasio-release.json
+            pipeasio-release-x86_64.json
 
       - name: Upload installation probes
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -122,6 +122,124 @@ jobs:
           name: manager-probes
           if-no-files-found: error
           path: build/manager/pipeasio-check*.exe
+
+  debian-arm64-binaries:
+    name: Debian aarch64 tarball
+    runs-on: ubuntu-24.04-arm
+    # Debian is the ARM64 distribution whose Wine ships the aarch64-windows
+    # import libraries (#23). Its rolling SDK versions are recorded in
+    # BUILD-INFO.txt and in this job's half of the release manifest.
+    container: docker.io/library/debian:stable
+    env:
+      TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'development' }}
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install toolchain
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            cmake ninja-build gcc g++ clang lld pkg-config binutils \
+            wine wine64-tools libwine-dev libpipewire-0.3-dev pipewire \
+            qt6-base-dev libyaml-cpp-dev libarchive-dev zlib1g-dev \
+            git ca-certificates file
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure (driver + manager CLI, no Qt panel)
+        run: >
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_SETTINGS_PANEL=OFF -DBUILD_MANAGER=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test (gates the release; Wine integration tests skip without a PipeWire daemon)
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Stage install tree
+        run: DESTDIR="$PWD/stage" cmake --install build --prefix /usr
+
+      - name: Verify the artifacts import no PipeWire newer than the floor
+        run: |
+          set -euo pipefail
+          # steamrt4 has no ARM64 build, so the floor this tarball can honestly
+          # claim is Debian stable's own libpipewire. It is what BUILD-INFO.txt
+          # and the manifest's compatibility block report as the minimum.
+          libdir="$(pkg-config --variable=libdir libpipewire-0.3)"
+          floor_lib=("${libdir:-/usr/lib/aarch64-linux-gnu}"/libpipewire-0.3.so.0.*)
+          test -f "${floor_lib[0]}" || {
+            echo "::error::no libpipewire-0.3 runtime library in ${libdir}"
+            exit 1
+          }
+          tests/distro/check_pipewire_imports.sh "${floor_lib[0]}" \
+            stage/usr/lib/wine/aarch64-unix/pipeasio64.so
+
+      - name: Write BUILD-INFO.txt
+        run: |
+          glibc=$(ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+$')
+          pipewire=$(pkg-config --modversion libpipewire-0.3)
+          if [ -f stage/usr/lib/wine/arm64ec-windows/pipeasio64.dll ]; then
+            emulated="  lib/wine/arm64ec-windows/pipeasio64.dll (PE front end for x86_64 hosts under FEX)"
+          else
+            emulated="  arm64ec-windows/pipeasio64.dll: not built on Debian (no arm64ec-windows import libraries)"
+          fi
+          printf '%s\n' \
+            "PipeASIO ${TAG} - prebuilt binaries (Debian stable, aarch64)" \
+            "" \
+            "Built:            $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "Commit:           ${GITHUB_SHA}" \
+            "Wine (build SDK): $(wine --version)" \
+            "glibc:            ${glibc}" \
+            "libpipewire-0.3:  ${pipewire} (built against; minimum ${pipewire})" \
+            "clang (PE halves): $(clang -dumpversion)" \
+            "Kernel:           $(uname -sr)" \
+            "" \
+            "Contents:" \
+            "  lib/wine/aarch64-windows/pipeasio64.dll (PE front end)" \
+            "  lib/wine/aarch64-unix/pipeasio64.so     (unixlib: the PipeWire client)" \
+            "${emulated}" \
+            "  share/pipeasio/manager/pipeasio-check.exe (installation-only probe)" \
+            "  bin/pipeasio-register, bin/pipeasio-manage" \
+            "" \
+            "Install (system-wide):  sudo tar -xzf <this>.tar.gz -C /usr && pipeasio-register" \
+            "Install (user-local):   tar -xzf <this>.tar.gz -C \"\$HOME/.local\"" \
+            "Wine outside /usr/lib:  Debian's own Wine reads" \
+            "                        /usr/lib/aarch64-linux-gnu/wine, so set" \
+            "                        WINEDLLPATH to this tree's lib/wine" \
+            "" \
+            "COMPATIBILITY: the ELF .so half is linked against the Wine and glibc" \
+            "shown above. A different Wine version or an older glibc may fail to load" \
+            "(regsvr32 c0000135). Build from source in that case. See the README." \
+            "PipeWire is the exception: it is resolved at run time. This .so was" \
+            "checked at release time against the libpipewire-0.3 shown above:" \
+            "Debian stable's, the ARM64 floor, because Valve publishes no ARM64" \
+            "steamrt4 runtime to check against." \
+            > stage/usr/BUILD-INFO.txt
+          cat stage/usr/BUILD-INFO.txt
+
+      - name: Package tarball
+        run: |
+          art="pipeasio-${TAG}-debian-aarch64.tar.gz"
+          tar -czf "$art" -C stage/usr .
+          sha256sum "$art" | tee "$art.sha256"
+          echo "ART=$art" >> "$GITHUB_ENV"
+
+      - name: Generate release manifest
+        run: >
+          build/manager/pipeasio-manage manifest --version "$TAG" --asset "$ART"
+          --root stage/usr --architecture aarch64 --wine-sdk "$(wine --version)"
+          --output pipeasio-release-aarch64.json
+
+      - name: Upload driver release artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-driver-aarch64
+          if-no-files-found: error
+          path: |
+            pipeasio-*.tar.gz
+            pipeasio-*.tar.gz.sha256
+            pipeasio-release-aarch64.json
 
   manager-appimage:
     name: Independent manager AppImage (x86_64)
@@ -175,7 +293,7 @@ jobs:
 
   publish:
     name: Publish tagged release
-    needs: [archlinux-binaries, manager-appimage]
+    needs: [archlinux-binaries, debian-arm64-binaries, manager-appimage]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -189,6 +307,19 @@ jobs:
           pattern: release-*
           merge-multiple: true
           path: dist
+      - name: Merge the per-architecture manifests into the published one
+        run: |
+          # One stream, not two file arguments: --slurp over several files is
+          # ambiguous across jq clones. Every top-level field comes from the
+          # x86_64 manifest; only artifacts is replaced by the concatenation.
+          cat dist/pipeasio-release-x86_64.json dist/pipeasio-release-aarch64.json \
+            | jq -s '(.[0].version) as $v
+                     | if any(.[]; .schema != 1 or .version != $v)
+                       then error("manifest schema or version mismatch") else . end
+                     | .[0] * {artifacts: map(.artifacts[])}' \
+            > dist/pipeasio-release.json
+          rm dist/pipeasio-release-x86_64.json dist/pipeasio-release-aarch64.json
+          jq -e '[.artifacts[].architecture] | sort == ["aarch64", "x86_64"]' dist/pipeasio-release.json
       - name: Publish to GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -199,6 +330,7 @@ jobs:
           printf '%s\n' "" "### Downloads" "" \
             "- \`pipeasio-manager-${TAG}-x86_64.AppImage\`: native manager with Qt, PipeWire, yaml-cpp and libarchive bundled. No driver build or interpreter required." \
             "- \`pipeasio-${TAG}-archlinux-x86_64.tar.gz\`: Arch/CachyOS driver binaries and manager files." \
+            "- \`pipeasio-${TAG}-debian-aarch64.tar.gz\`: Debian stable ARM64 driver binaries and manager files. There is no ARM64 AppImage: run \`bin/pipeasio-manage\` from this tarball, or build the GUI from source." \
             "- \`pipeasio-release.json\`: checksums, native library requirements and Wine SDK metadata. Runtime compatibility is checked in the selected launcher." \
             >> notes.md
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \

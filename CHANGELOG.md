@@ -20,6 +20,11 @@ follow [Semantic Versioning](https://semver.org/).
   builds with `BUILD_DRIVER=OFF`, and an independent AppImage bundling the
   required native libraries and prebuilt installation probes. Driver releases
   include machine-readable artifact checksums and native-library requirements.
+- ARM64 driver tarball (#23): the tagged release workflow builds
+  `pipeasio-<tag>-debian-aarch64.tar.gz` on Debian stable, with the driver, the
+  `pipeasio-manage` CLI and the aarch64 installation probe, and merges the two
+  per-architecture manifests into one `pipeasio-release.json` whose `artifacts`
+  array holds both the x86_64 and the aarch64 entry. There is no ARM64 AppImage.
 
 ### Changed
 
@@ -33,7 +38,7 @@ follow [Semantic Versioning](https://semver.org/).
   verification, install, check and removal derive the Wine module directories
   and the expected PE/ELF machines from the host architecture, so an aarch64
   host uses the `aarch64-windows`/`aarch64-unix` pair instead of the x86_64
-  one.
+  one. Existing x86_64 manifests keep validating unchanged.
 
 ## [1.7.0] - 2026-09-06
 
