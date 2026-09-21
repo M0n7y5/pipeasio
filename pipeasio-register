@@ -62,20 +62,36 @@ fi
 # Wine resolves a builtin's Unix half only in its own library dir and in
 # WINEDLLPATH; derive that dir from the wine binary so a mismatched install
 # root can be flagged instead of registering a driver that never loads.
+# <root>/lib/wine is that dir only when <root>/bin holds a wine binary. With
+# WINE naming a runner (umu-run, bottles-cli, flatpak run) command -v resolves
+# the wrapper, so the lib/wine beside it belongs to an unrelated host Wine the
+# runner never loads, and deriving it would outrank the user's own
+# PIPEASIO_PREFIX (#26). A WINE that names a real binary (a Proton
+# files/bin/wine, a self-built root) still resolves, both names checked
+# because distributions ship either as the symlink or as its target.
 wine_libdir=""
 wine_cmd=$(command -v "${wine}" 2>/dev/null || true)
 if [ -n "${wine_cmd}" ]; then
-    wine_root=$(dirname "$(dirname "$(readlink -f "${wine_cmd}")")")
-    # Older WineHQ builds keep 32-bit in lib/wine and 64-bit in lib64/wine, so
-    # only accept a dir that carries the 64-bit layout. A PipeASIO-only
-    # install creates those arch dirs bare, so require a real Wine payload.
-    for d in "${wine_root}/lib/wine" "${wine_root}/lib64/wine" \
-             "${wine_root}/lib/${arch}-linux-gnu/wine"; do
-        if [ -e "${d}/${arch}-unix/ntdll.so" ] || [ -e "${d}/${arch}-windows/ntdll.dll" ]; then
-            wine_libdir=$(readlink -f "${d}")
-            break
-        fi
+    wine_real=$(readlink -f "${wine_cmd}")
+    is_wine=0
+    for n in "${wine_cmd##*/}" "${wine_real##*/}"; do
+        case ${n} in
+            wine|wine32|wine64|wine-stable|wine-devel|wine-staging) is_wine=1 ;;
+        esac
     done
+    if ((is_wine)); then
+        wine_root=$(dirname "$(dirname "${wine_real}")")
+        # Older WineHQ builds keep 32-bit in lib/wine and 64-bit in lib64/wine,
+        # so only accept a dir that carries the 64-bit layout. A PipeASIO-only
+        # install creates those arch dirs bare, so require a real Wine payload.
+        for d in "${wine_root}/lib/wine" "${wine_root}/lib64/wine" \
+                 "${wine_root}/lib/${arch}-linux-gnu/wine"; do
+            if [ -e "${d}/${arch}-unix/ntdll.so" ] || [ -e "${d}/${arch}-windows/ntdll.dll" ]; then
+                wine_libdir=$(readlink -f "${d}")
+                break
+            fi
+        done
+    fi
 fi
 
 # Scan the derived library dir too: a custom Wine root (Bottles runners,

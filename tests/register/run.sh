@@ -16,6 +16,9 @@
 #      a PipeASIO-only install cannot masquerade as the libdir (#19)
 #   6. PIPEASIO_REGISTER_CANDIDATES replaces the built-in list, and with no
 #      install anywhere the script fails and lists what it searched
+#   7. runner prefixes (Proton, Bottles) are refused for host wine, and with
+#      WINE naming a runner the lib/wine beside the wrapper is neither
+#      derived nor promoted over PIPEASIO_PREFIX (#26)
 # Every scan scenario passes a temp-only candidate list so host installs
 # cannot leak in.
 set -euo pipefail
@@ -255,6 +258,56 @@ check "refusal names bottles-cli" "$out" "bottles-cli shell"
 ((status != 0)) || { echo "FAIL - bottle refusal should exit nonzero"; fail=1; }
 [[ ! -e "$work/wine.calls" ]] || { echo "FAIL - host wine was invoked in a bottle"; fail=1; }
 rm -f "$WINEPREFIX/bottle.yml"
+
+# 7e. WINE naming a runner (#26): the wrapper resolves into a bin dir whose
+#     neighbouring lib/wine is a host Wine the runner never loads, so that dir
+#     must not become wine_libdir and must not outrank PIPEASIO_PREFIX.
+host7e="$work/host7e"
+use_root "$host7e"
+mkwine "$host7e/lib/wine"
+mkpair "$host7e/lib/wine"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$host7e/bin/umu-run"
+chmod +x "$host7e/bin/umu-run"
+explicit7e="$work/explicit7e"
+mkpair "$explicit7e/lib/wine"
+WINE=umu-run run "$explicit7e" "$tc"
+check "runner run uses the explicit prefix" "$out" \
+      "using PipeASIO install at $explicit7e/lib/wine"
+check_absent "runner run ignores the wrapper's host libdir" "$out" \
+      "using PipeASIO install at $host7e/lib/wine"
+check_absent "runner run finds no shadowing install" "$out" \
+      "multiple PipeASIO installs"
+check_absent "runner run reports no libdir mismatch" "$out" \
+      "outside wine's library dir"
+check "runner run registers" "$out" "registered in"
+((status == 0)) || { echo "FAIL - runner prefix run exit status ($status)"; fail=1; }
+
+# 7f. WINE naming a real binary (a Proton files/bin/wine, a self-built root):
+#     its lib/wine is the dir that Wine will load from, so it is still derived
+#     and still wins over the explicit prefix.
+proton7f="$work/proton7f/files"
+mkdir -p "$proton7f/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$proton7f/bin/wine"
+chmod +x "$proton7f/bin/wine"
+mkwine "$proton7f/lib/wine"
+mkpair "$proton7f/lib/wine"
+WINE="$proton7f/bin/wine" run "$explicit7e" "$tc"
+check "explicit wine binary derives its libdir" "$out" \
+      "using PipeASIO install at $proton7f/lib/wine"
+check "explicit wine binary shadow warns" "$out" "multiple PipeASIO installs"
+((status == 0)) || { echo "FAIL - explicit wine binary exit status ($status)"; fail=1; }
+
+# 7g. A wine symlinked to a versioned name still counts as a wine binary.
+alias7g="$work/alias7g"
+mkdir -p "$alias7g/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$alias7g/bin/wine-staging"
+chmod +x "$alias7g/bin/wine-staging"
+ln -s "$alias7g/bin/wine-staging" "$alias7g/bin/wine-link"
+mkwine "$alias7g/lib/wine"
+mkpair "$alias7g/lib/wine"
+WINE="$alias7g/bin/wine-link" run "$explicit7e" "$tc"
+check "versioned wine target derives its libdir" "$out" \
+      "using PipeASIO install at $alias7g/lib/wine"
 
 if ((fail)); then
     echo "[register-test] FAIL"
