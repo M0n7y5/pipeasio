@@ -259,6 +259,7 @@ jobs:
           apt-get update -qq
           apt-get install -y --no-install-recommends \
             cmake ninja-build g++ pkg-config qt6-base-dev qt6-wayland qt6-svg-dev \
+            qt6-svg-plugins qt6-xdgdesktopportal-platformtheme \
             libyaml-cpp-dev libarchive-dev zlib1g-dev libssl-dev \
             libpipewire-0.3-dev pipewire-bin curl ca-certificates desktop-file-utils
       - name: Checkout
