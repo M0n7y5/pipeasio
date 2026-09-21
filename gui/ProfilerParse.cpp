@@ -113,8 +113,13 @@ parseProfilePods(const spa_pod *pod)
     if (!pod)
         return points;
 
-    struct spa_pod *obj = nullptr;
-    SPA_POD_STRUCT_FOREACH(pod, obj)
+    /* Not SPA_POD_STRUCT_FOREACH: on PipeWire 1.4.2 headers it seeds the
+     * iterator from SPA_POD_BODY, which is void * and needs a cast C++ will
+     * not make implicitly. */
+    const void    *body = SPA_POD_BODY_CONST(pod);
+    const uint32_t size = SPA_POD_BODY_SIZE(pod);
+    for (const spa_pod *obj                      = static_cast<const spa_pod *>(body);
+         spa_pod_is_inside(body, size, obj); obj = static_cast<const spa_pod *>(spa_pod_next(obj)))
     {
         if (!spa_pod_is_object_type(obj, SPA_TYPE_OBJECT_Profiler))
             continue;
@@ -122,7 +127,7 @@ parseProfilePods(const spa_pod *pod)
         ProfilePoint         point;
         bool                 broken = false;
         struct spa_pod_prop *prop   = nullptr;
-        SPA_POD_OBJECT_FOREACH(reinterpret_cast<struct spa_pod_object *>(obj), prop)
+        SPA_POD_OBJECT_FOREACH(reinterpret_cast<const struct spa_pod_object *>(obj), prop)
         {
             ProfilerBlock block;
             switch (prop->key)
