@@ -8,13 +8,17 @@ add_executable(test_panel
     ${CMAKE_SOURCE_DIR}/gui/PipeWireMonitor.cpp
     ${CMAKE_SOURCE_DIR}/gui/ProfilerParse.cpp
     ${CMAKE_SOURCE_DIR}/gui/SettingsDialog.cpp
+    ${CMAKE_SOURCE_DIR}/gui/InstallationsTab.cpp
     ${CMAKE_SOURCE_DIR}/gui/LoadHistogram.cpp
     ${CMAKE_SOURCE_DIR}/src/config.c)
 target_include_directories(test_panel PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/gui)
 target_compile_features(test_panel PRIVATE cxx_std_17)
+target_compile_definitions(test_panel PRIVATE
+    PIPEASIO_MANAGER_SOURCE_BACKEND="$<TARGET_FILE:pipeasio-manage>")
 target_link_libraries(test_panel PRIVATE Qt6::Widgets PkgConfig::PIPEWIRE)
+add_dependencies(test_panel pipeasio-manage)
 add_test(NAME test_panel COMMAND test_panel)
 set_tests_properties(test_panel PROPERTIES
     TIMEOUT 30

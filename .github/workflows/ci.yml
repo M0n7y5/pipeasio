@@ -11,11 +11,11 @@ jobs:
     container: archlinux:latest
     steps:
       - name: Install toolchain
-        run: pacman -Syu --noconfirm gcc cmake ninja pkgconf git clang wine libpipewire pipewire qt6-base mingw-w64-gcc
+        run: pacman -Syu --noconfirm gcc cmake ninja pkgconf git clang wine libpipewire pipewire qt6-base mingw-w64-gcc yaml-cpp libarchive zlib
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Format check (core tree only; tests/ are intentionally hand-aligned)
-        run: clang-format --dry-run --Werror src/*.c include/*.h gui/*.cpp gui/*.hpp
+        run: clang-format --dry-run --Werror src/*.c include/*.h gui/*.cpp gui/*.hpp manager/*.c manager/*.cpp manager/*.hpp
       - name: Configure
         run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: Build
@@ -34,7 +34,7 @@ jobs:
       - name: Install toolchain (with 32-bit glibc for the ABI layout assert)
         run: |
           printf '[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
-          pacman -Syu --noconfirm gcc cmake ninja pkgconf git curl wine libpipewire pipewire qt6-base mingw-w64-gcc lib32-glibc
+          pacman -Syu --noconfirm gcc cmake ninja pkgconf git curl wine libpipewire pipewire qt6-base mingw-w64-gcc lib32-glibc yaml-cpp libarchive zlib
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Configure (BUILD_WOW64_32=ON)
@@ -249,3 +249,29 @@ jobs:
       - name: Show test log on failure
         if: failure()
         run: cat build/Testing/Temporary/LastTest.log || true
+
+  manager-only:
+    name: Manager without Wine build dependencies
+    runs-on: ubuntu-latest
+    container: registry.gitlab.steamos.cloud/steamrt/steamrt4/sdk@sha256:2c4c6520a268ef53255d511ae5988e35855b39a4b6c1e9865d56e5011c76ec3e
+    steps:
+      - name: Install native manager dependencies
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            cmake ninja-build g++ pkg-config qt6-base-dev libpipewire-0.3-dev \
+            libyaml-cpp-dev libarchive-dev zlib1g-dev
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Configure manager only
+        run: >
+          cmake -B build-manager -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_DRIVER=OFF -DBUILD_SETTINGS_PANEL=ON -DBUILD_MANAGER=ON
+      - name: Build manager
+        run: cmake --build build-manager
+      - name: Test native manager and panel
+        run: ctest --test-dir build-manager --output-on-failure
+      - name: Install manager component
+        run: cmake --install build-manager --prefix "$PWD/stage" --component Manager
+      - name: Exercise installed backend
+        run: stage/bin/pipeasio-manage --help

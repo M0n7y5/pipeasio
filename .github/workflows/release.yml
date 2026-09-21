@@ -4,25 +4,22 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   archlinux-binaries:
     name: Arch/CachyOS x86_64 tarball
     runs-on: ubuntu-latest
-    # archlinux:latest tracks the rolling Wine/glibc/PipeWire that CachyOS users
-    # run, so the binary matches their environment. Pin archlinux:base-<date> for
-    # a fully reproducible build; BUILD-INFO.txt records the exact versions either
-    # way. A Wine builtin DLL is version/glibc-coupled, so this is a *scoped*
-    # artifact, not a universal one - see the release notes / README.
+    # Rolling SDK versions are recorded in BUILD-INFO.txt and the release manifest.
     container: archlinux:latest
     env:
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'development' }}
     steps:
       - name: Install toolchain
-        run: pacman -Syu --noconfirm gcc cmake ninja pkgconf git curl wine libpipewire pipewire mingw-w64-gcc qt6-base github-cli
+        run: pacman -Syu --noconfirm gcc cmake ninja pkgconf git curl wine libpipewire pipewire mingw-w64-gcc qt6-base yaml-cpp libarchive zlib
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -77,7 +74,9 @@ jobs:
             "  lib/wine/x86_64-unix/pipeasio64.so       (unixlib: the PipeWire client)" \
             "  lib/wine/i386-windows/pipeasio32.dll     (opt-in 32-bit WoW64 PE front end)" \
             "  lib/wine/x86_64-unix/pipeasio32.so       (its unixlib)" \
-            "  bin/pipeasio-register, bin/pipeasio-settings" \
+            "  share/pipeasio/manager/pipeasio-check.exe (installation-only probe)" \
+            "  share/pipeasio/manager/pipeasio-check32.exe (32-bit installation-only probe)" \
+            "  bin/pipeasio-register, bin/pipeasio-settings, bin/pipeasio-manage" \
             "" \
             "Install (system-wide):  sudo tar -xzf <this>.tar.gz -C /usr && pipeasio-register" \
             "Install (user-local):   tar -xzf <this>.tar.gz -C \"\$HOME/.local\"" \
@@ -101,28 +100,107 @@ jobs:
           sha256sum "$art" | tee "$art.sha256"
           echo "ART=$art" >> "$GITHUB_ENV"
 
+      - name: Generate release manifest
+        run: >
+          build/manager/pipeasio-manage manifest --version "$TAG" --asset "$ART"
+          --root stage/usr --architecture x86_64 --wine-sdk "$(wine --version)"
+          --output pipeasio-release.json
+
+      - name: Upload driver release artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-driver
+          if-no-files-found: error
+          path: |
+            pipeasio-*.tar.gz
+            pipeasio-*.tar.gz.sha256
+            pipeasio-release.json
+
+      - name: Upload installation probes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: manager-probes
+          if-no-files-found: error
+          path: build/manager/pipeasio-check*.exe
+
+  manager-appimage:
+    name: Independent manager AppImage (x86_64)
+    needs: archlinux-binaries
+    runs-on: ubuntu-latest
+    container: registry.gitlab.steamos.cloud/steamrt/steamrt4/sdk@sha256:2c4c6520a268ef53255d511ae5988e35855b39a4b6c1e9865d56e5011c76ec3e
+    env:
+      TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'development' }}
+    steps:
+      - name: Install native manager packaging dependencies
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            cmake ninja-build g++ pkg-config qt6-base-dev qt6-wayland qt6-svg-dev \
+            libyaml-cpp-dev libarchive-dev zlib1g-dev libssl-dev \
+            libpipewire-0.3-dev pipewire-bin curl ca-certificates desktop-file-utils
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download prebuilt installation probes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: manager-probes
+          path: probes
+      - name: Configure without a Wine SDK or PE compiler
+        run: >
+          cmake -B build-manager -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_DRIVER=OFF -DBUILD_SETTINGS_PANEL=ON -DBUILD_MANAGER=ON -DBUILD_TESTS=OFF
+          -DPIPEASIO_CHECK_EXECUTABLE="$PWD/probes/pipeasio-check.exe"
+          -DPIPEASIO_CHECK32_EXECUTABLE="$PWD/probes/pipeasio-check32.exe"
+      - name: Build manager
+        run: cmake --build build-manager
+      - name: Package independent AppImage
+        run: scripts/package-manager.sh build-manager "pipeasio-manager-${TAG}-x86_64.AppImage"
+      - name: Verify bundled backend dependencies
+        run: |
+          app="$PWD/build-manager-appimage/AppDir"
+          LD_LIBRARY_PATH="$app/usr/lib" QT_PLUGIN_PATH="$app/usr/plugins" \
+            "$app/usr/bin/pipeasio-manage" --help
+          LD_LIBRARY_PATH="$app/usr/lib" "$app/usr/bin/pw-dump" --version
+          test -f "$app/usr/plugins/tls/libqopensslbackend.so"
+          test -f "$app/usr/share/pipeasio/manager/pipeasio-check.exe"
+          test -f "$app/usr/share/pipeasio/manager/pipeasio-check32.exe"
+      - name: Upload manager release artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-manager
+          if-no-files-found: error
+          path: |
+            pipeasio-manager-*.AppImage
+            pipeasio-manager-*.AppImage.sha256
+
+  publish:
+    name: Publish tagged release
+    needs: [archlinux-binaries, manager-appimage]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
       - name: Publish to GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           ver="${TAG#v}"
           awk -v hdr="## [$ver]" 'index($0,hdr)==1{g=1;next} g&&/^## \[/{exit} g{print}' CHANGELOG.md | sed '/./,$!d' > notes.md
-          printf '%s\n' \
-            "" \
-            "---" \
-            "" \
-            "### Install" \
-            "" \
-            "Prebuilt for **Arch Linux / CachyOS** (x86_64). The exact build toolchain (Wine, glibc, PipeWire, MinGW) is recorded in \`BUILD-INFO.txt\` inside the tarball." \
-            "" \
-            "- User-local: \`tar -xzf ${ART} -C \"\$HOME/.local\"\`, then run \`pipeasio-register\`." \
-            "- Proton / Faugus: extract to \`\$HOME/.local\` and set \`WINEDLLPATH=\$HOME/.local/lib/wine\`." \
-            "" \
-            "### Compatibility" \
-            "" \
-            "A Wine builtin DLL is coupled to the Wine version and glibc it was built against. A different Wine or an older glibc may fail to load (\`regsvr32\` c0000135). In that case build from source (README) or use the AUR package. Source tarballs are attached automatically below." \
+          printf '%s\n' "" "### Downloads" "" \
+            "- \`pipeasio-manager-${TAG}-x86_64.AppImage\`: native manager with Qt, PipeWire, yaml-cpp and libarchive bundled. No driver build or interpreter required." \
+            "- \`pipeasio-${TAG}-archlinux-x86_64.tar.gz\`: Arch/CachyOS driver binaries and manager files." \
+            "- \`pipeasio-release.json\`: checksums, native library requirements and Wine SDK metadata. Runtime compatibility is checked in the selected launcher." \
             >> notes.md
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
             || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "PipeASIO ${TAG}" --notes-file notes.md
-          gh release upload "$TAG" "$ART" "$ART.sha256" --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber

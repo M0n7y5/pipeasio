@@ -22,10 +22,12 @@
 
 #include "Config.hpp"
 #include "DeviceEnumerator.hpp"
+#include "InstallationsTab.hpp"
 #include "LoadHistogram.hpp"
 
 #include <QByteArray>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFont>
@@ -58,11 +60,17 @@ const SampleRateItem kSampleRates[] = {
 
 SettingsDialog::SettingsDialog(QWidget *parent, SettingsDialogOptions options) : QDialog(parent)
 {
-    setWindowTitle(QStringLiteral("PipeASIO Settings - " PIPEASIO_VERSION));
+    setWindowTitle(QStringLiteral("PipeASIO Manager - " PIPEASIO_VERSION));
+    resize(880, 720);
 
     auto *tabs = new QTabWidget(this);
-    tabs->addTab(buildSettingsTab(), QStringLiteral("Settings"));
-    const int monitorTab = tabs->addTab(buildMonitorTab(), QStringLiteral("Monitor"));
+    if (options.installationsDiscoveryEnabled)
+    {
+        m_installations = new InstallationsTab(this);
+        tabs->addTab(m_installations, QStringLiteral("Installations"));
+    }
+    const int settingsTab = tabs->addTab(buildSettingsTab(), QStringLiteral("Settings"));
+    const int monitorTab  = tabs->addTab(buildMonitorTab(), QStringLiteral("Monitor"));
     tabs->addTab(buildAboutTab(), QStringLiteral("About"));
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel
@@ -76,6 +84,16 @@ SettingsDialog::SettingsDialog(QWidget *parent, SettingsDialogOptions options) :
     connect(buttons, &QDialogButtonBox::rejected, this, &SettingsDialog::reject);
     connect(buttons->button(QDialogButtonBox::RestoreDefaults), &QPushButton::clicked, this,
             &SettingsDialog::onRestoreDefaults);
+    auto updateSettingsButtons = [tabs, buttons, settingsTab]
+    {
+        const bool settingsVisible = tabs->currentIndex() == settingsTab;
+        buttons->button(QDialogButtonBox::Apply)->setVisible(settingsVisible);
+        buttons->button(QDialogButtonBox::RestoreDefaults)->setVisible(settingsVisible);
+        buttons->button(QDialogButtonBox::Cancel)
+                ->setText(settingsVisible ? tr("Cancel") : tr("Close"));
+    };
+    connect(tabs, &QTabWidget::currentChanged, this, updateSettingsButtons);
+    updateSettingsButtons();
 
     auto *layout = new QVBoxLayout(this);
     layout->addWidget(tabs);
@@ -113,6 +131,25 @@ SettingsDialog::SettingsDialog(QWidget *parent, SettingsDialogOptions options) :
         if (tabs->currentIndex() == monitorTab)
             m_monitor.start();
     }
+}
+
+void
+SettingsDialog::done(int result)
+{
+    if (m_installations && m_installations->busy())
+        return;
+    QDialog::done(result);
+}
+
+void
+SettingsDialog::closeEvent(QCloseEvent *event)
+{
+    if (m_installations && m_installations->busy())
+    {
+        event->ignore();
+        return;
+    }
+    QDialog::closeEvent(event);
 }
 
 /* Plain-text tooltips render as one long unwrapped line on most Linux
@@ -335,7 +372,7 @@ SettingsDialog::buildAboutTab()
     auto *layout = new QVBoxLayout(page);
     layout->setAlignment(Qt::AlignTop);
 
-    auto *title     = new QLabel(QStringLiteral("PipeASIO"), page);
+    auto *title     = new QLabel(QStringLiteral("PipeASIO Manager"), page);
     QFont titleFont = title->font();
     titleFont.setPointSizeF(titleFont.pointSizeF() * 1.7);
     titleFont.setBold(true);
@@ -347,9 +384,9 @@ SettingsDialog::buildAboutTab()
     layout->addWidget(version);
 
     auto *desc = new QLabel(
-            QStringLiteral("A PipeWire-native ASIO driver for Wine and Proton. It gives "
-                           "Windows music software fast, low-latency audio on Linux, routed "
-                           "straight into PipeWire."),
+            QStringLiteral("Install and manage official PipeASIO releases for Wine, Faugus, "
+                           "and Bottles. Configure the PipeWire-native ASIO driver and monitor "
+                           "its audio processing without leaving the manager."),
             page);
     desc->setWordWrap(true);
     layout->addWidget(desc);

@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=PipeASIO Settings
-GenericName=ASIO Driver Settings
-Comment=Configure the PipeASIO Wine ASIO driver
+Name=PipeASIO Manager
+GenericName=ASIO Driver Manager
+Comment=Install, configure, and monitor PipeASIO for Wine, Faugus, and Bottles
 Exec=pipeasio-settings
 Icon=pipeasio
 Terminal=false
 Categories=AudioVideo;Audio;Qt;
-Keywords=ASIO;Wine;PipeWire;audio;latency;buffer;
+Keywords=ASIO;Wine;PipeWire;audio;latency;buffer;Faugus;Bottles;prefix;

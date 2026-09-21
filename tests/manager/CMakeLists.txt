@@ -1,0 +1,6 @@
+foreach(_suite launchers releases install)
+    add_executable(test_${_suite} test_${_suite}.cpp)
+    target_link_libraries(test_${_suite} PRIVATE pipeasio_manager_core)
+    add_test(NAME manager_${_suite} COMMAND test_${_suite})
+    set_tests_properties(manager_${_suite} PROPERTIES LABELS "manager;unit" TIMEOUT 60)
+endforeach()

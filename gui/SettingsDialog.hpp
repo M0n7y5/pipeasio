@@ -27,16 +27,19 @@
 #include <QString>
 
 class QCheckBox;
+class QCloseEvent;
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class InstallationsTab;
 class LoadHistogram;
 class QSpinBox;
 
 struct SettingsDialogOptions
 {
     DeviceEnumerator::RequestOptions deviceRequest;
-    bool                             monitorEnabled = true;
+    bool                             monitorEnabled                = true;
+    bool                             installationsDiscoveryEnabled = true;
 };
 
 class SettingsDialog : public QDialog
@@ -44,6 +47,12 @@ class SettingsDialog : public QDialog
     Q_OBJECT
   public:
     explicit SettingsDialog(QWidget *parent = nullptr, SettingsDialogOptions options = {});
+
+  public slots:
+    void done(int result) override;
+
+  protected:
+    void closeEvent(QCloseEvent *event) override;
 
   private slots:
     void onApply();
@@ -63,6 +72,7 @@ class SettingsDialog : public QDialog
     int      currentSampleRate() const;
     double   currentPeriodMs() const;
 
+    InstallationsTab *m_installations = nullptr;
     /* Settings widgets */
     QSpinBox                  *m_inputs            = nullptr;
     QSpinBox                  *m_outputs           = nullptr;

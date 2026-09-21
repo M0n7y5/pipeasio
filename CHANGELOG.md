@@ -4,6 +4,37 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- PipeASIO Manager's Installations tab discovers Faugus, native/Flatpak Bottles,
+  and explicitly selected custom Wine prefixes. It downloads checksum-verified
+  official driver releases and supports install, update, repair, check, and
+  removal through each prefix's own runner.
+- Reversible prefix file, registry, launcher-environment, and Flatpak permission
+  changes. Runtime checks require native-library loading and a PipeWire
+  connection without starting audio playback. Failed checks restore the
+  preceding installation.
+- Native C++ `pipeasio-manage` CLI shared with the Qt GUI, manager-only CMake
+  builds with `BUILD_DRIVER=OFF`, and an independent AppImage bundling the
+  required native libraries and prebuilt installation probes. Driver releases
+  include machine-readable artifact checksums and native-library requirements.
+
+### Changed
+
+- The settings panel's desktop and window name is PipeASIO Manager. Existing
+  settings and monitoring remain available.
+- The AppImage includes Qt desktop-portal appearance integration and defaults to
+  Fusion widgets, using system colors and the desktop's light/dark preference
+  without bundling the KDE/Darkly framework stack. Theme environment overrides
+  are restored before launching Wine or launcher tools.
+- The manager is architecture-generic (#23): release listing, download
+  verification, install, check and removal derive the Wine module directories
+  and the expected PE/ELF machines from the host architecture, so an aarch64
+  host uses the `aarch64-windows`/`aarch64-unix` pair instead of the x86_64
+  one.
+
 ## [1.7.0] - 2026-09-06
 
 ### Added

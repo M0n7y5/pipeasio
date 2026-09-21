@@ -73,6 +73,10 @@ reach out in the guild instead.
 
 ## Quick start
 
+For guided Faugus, Bottles, or custom-prefix setup, use the
+[GUI manager](#gui-manager). The commands below remain available for manually
+registered, locally built or package-installed drivers.
+
 On Arch Linux and derivatives (CachyOS, EndeavourOS, Manjaro), install
 [`pipeasio` from the AUR](https://aur.archlinux.org/packages/pipeasio):
 
@@ -98,6 +102,97 @@ pipeasio-register
 
 Under Proton or Steam, also set `WINEDLLPATH=$HOME/.local/lib/wine` in the launcher and register inside the game's prefix. See the Proton / Steam / Faugus section below.
 
+## GUI manager
+
+PipeASIO Manager adds an **Installations** tab to the existing settings and
+monitor application. It discovers Faugus applications and native/Flatpak Bottles
+configurations without starting Wine. **Add prefix** accepts an existing custom
+Wine prefix and its owning Wine executable.
+
+The independent `pipeasio-manager-<tag>-x86_64.AppImage` bundles the native
+Qt/C++ manager, its libraries, and the installation probes. Mark it executable
+in your file manager and open it. It requires neither Python nor `sudo` and
+does not compile the driver.
+The release workflow publishes this asset from the next tagged release.
+The manager already accepts the existing v1.7.0 driver archive.
+
+The AppImage defaults to Qt's Fusion widgets and desktop-portal appearance
+integration. It reads the desktop's light/dark preference at startup and uses
+KDE's configured palette on Plasma. Exact third-party widget styles such as
+Darkly are not bundled. Restart the manager if a desktop theme change is not
+reflected while it is open. Explicit `QT_QPA_PLATFORMTHEME` and
+`QT_STYLE_OVERRIDE` overrides remain available.
+
+1. Select the application or prefix. Close its Windows applications and the
+   launcher, including the Faugus tray process, before changing the installation.
+2. Choose **Install** or **Update**. Review the selected runner, release, and
+   any Flatpak permission requests before confirming.
+3. The manager downloads an official GitHub release, checks its SHA256, stages
+   its driver files outside the runner, and configures that launcher's library
+   path. Faugus registration runs through its bundled umu-run. Bottles uses its
+   configured Wine inside the correct native or Flatpak environment.
+4. A successful installation must pass registration, native-library loading,
+   and PipeWire connection checks inside that runner. These checks do not start
+   audio playback or connect to hardware.
+
+**Repair** reinstalls the recorded release. **Check** repeats the runtime check.
+**Remove** restores the files, registration, and owned environment values that
+preceded manager installation. Existing WineASIO and unrelated settings are not
+removed. Files or settings changed outside the manager are not silently deleted.
+If permission cleanup is interrupted, **Remove** can resume it without changing
+the already-restored prefix.
+
+For a custom Wine prefix, the manager creates a launch wrapper and displays its
+path. Pass the Windows application to that wrapper, for example
+`"/path/shown/by/the/manager/launch" "/path/to/application.exe"`. Direct `wine`
+launches do not inherit its `WINEDLLPATH`. Faugus and Bottles retain the setting
+in their own application configuration.
+
+Driver payloads and backups normally live under
+`${XDG_DATA_HOME:-$HOME/.local/share}/pipeasio`. Flatpak Bottles payloads stay in
+its own app data directory. Required Flatpak grants are explicit and shared
+across managed bottles. Removing the last managed bottle restores the original
+grants while preserving unrelated permission entries.
+
+Prebuilt availability is currently x86_64. The Arch-built driver archive is not
+a universal binary: the selected runner must be able to load its native half.
+An incompatible runtime fails the check and restores the previous installation.
+Experimental 32-bit support is opt-in and requires a working new-WoW64 runner.
+Bottles' additional per-bottle sandbox, Steam-runtime integration, and named
+Flatpak installations are reported as unsupported rather than falling back to
+host Wine.
+
+### Manager CLI and development builds
+
+`pipeasio-manage` is the same backend used by the GUI. `--help` lists commands.
+`pipeasio-manage --json list` emits discovered targets without starting Wine.
+`preview`, `install`, `check`, and `remove` take the `--target` ID from that list.
+Use `--release v1.7.0` to select a release, `--include-32` for the experimental
+front end, and `--allow-permissions` only after reviewing the preview's grants.
+
+To build the manager without compiling the driver or requiring a Wine SDK:
+
+```sh
+cmake -S . -B build-manager -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_DRIVER=OFF -DBUILD_SETTINGS_PANEL=ON -DBUILD_MANAGER=ON -DBUILD_TESTS=OFF \
+    -DPIPEASIO_CHECK_EXECUTABLE=/absolute/path/to/pipeasio-check.exe
+cmake --build build-manager
+cmake --install build-manager --prefix "$HOME/.local" --component Manager
+```
+
+This needs a native C/C++ toolchain, Qt6 Core/Network/Widgets, PipeWire development
+files, `yaml-cpp`, `libarchive`, and zlib. The prebuilt probe comes from a manager
+package or a newer driver archive. Supply `PIPEASIO_CHECK32_EXECUTABLE` as well for
+32-bit checks. A normal full build produces both probes when
+`BUILD_WOW64_32=ON`. From a full source build, run `build/gui/pipeasio-settings`.
+`BUILD_MANAGER` defaults to the panel setting. Use `-DBUILD_MANAGER=ON` with
+`-DBUILD_SETTINGS_PANEL=OFF` to build the native CLI without the GUI.
+
+`scripts/package-manager.sh build-manager output.AppImage` packages the Manager
+install component with its runtime dependencies and probes. The tagged release
+workflow builds the manager in the Steam Runtime 4 SDK, separately from the
+driver job. The AppImage still relies on the host kernel and glibc.
+
 ## Building
 
 CMake only. The driver is 64-bit. Opt-in 32-bit (WoW64) support for 32-bit
@@ -120,25 +215,29 @@ the MinGW gcc and g++ for x86 targets (`mingw-w64-gcc` on Arch,
 mingw64-gcc-c++` on Fedora; `winegcc` looks for both even for C) or
 `clang` with `lld`, which is what Wine itself cross-builds with and the
 only choice for ARM64; `PIPEASIO_PE_COMPILER=gcc|clang` forces one. Debian
-and Ubuntu ship no `unixlib.h`; the build carries a copy for them. The Qt6 settings panel is optional: it builds
-when a C++ compiler and Qt6 Widgets are present and is skipped with a warning
-otherwise, which does not affect the driver. Pass `-DBUILD_SETTINGS_PANEL=OFF`
-to skip it deliberately and silence the warning.
+and Ubuntu ship no `unixlib.h`; the build carries a copy for them. The optional
+panel and manager need a native C++ compiler and Qt6. Driver-only builds can set
+`-DBUILD_SETTINGS_PANEL=OFF -DBUILD_MANAGER=OFF`.
+The native manager backend uses Qt6 Core/Network, `yaml-cpp`, `libarchive`, and
+zlib. The panel additionally uses Qt6 Widgets.
 
 Package names differ per distribution. These are the sets CI builds against,
 plus the Qt6 package for the optional panel:
 
 ```sh
 # Arch / CachyOS / EndeavourOS / Manjaro
-sudo pacman -S --needed cmake ninja gcc pkgconf wine libpipewire qt6-base
+sudo pacman -S --needed cmake ninja gcc pkgconf wine libpipewire qt6-base \
+    mingw-w64-gcc yaml-cpp libarchive zlib
 
 # Fedora
 sudo dnf install cmake ninja-build gcc gcc-c++ pkgconf \
-    wine-devel pipewire-devel qt6-qtbase-devel
+    wine-devel pipewire-devel qt6-qtbase-devel mingw64-gcc mingw64-gcc-c++ \
+    yaml-cpp-devel libarchive-devel zlib-devel
 
 # Debian / Ubuntu
 sudo apt install cmake ninja-build gcc g++ pkg-config \
-    wine64-tools libwine-dev libpipewire-0.3-dev qt6-base-dev
+    wine64-tools libwine-dev libpipewire-0.3-dev qt6-base-dev \
+    gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 libyaml-cpp-dev libarchive-dev zlib1g-dev
 ```
 
 There is no `libpipewire-0.3-dev` or `winehq-*-dev` on Fedora, and no

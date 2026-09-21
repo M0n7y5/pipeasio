@@ -13,6 +13,7 @@
 #include "DeviceEnumerator.hpp"
 #include "PipeWireMonitor.hpp"
 #include "SettingsDialog.hpp"
+#include "InstallationsTab.hpp"
 #include "ProfilerParse.hpp"
 
 #include <spa/node/io.h>
@@ -27,6 +28,7 @@
 #include <QLabel>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QProcess>
 #include <QPushButton>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -455,6 +457,15 @@ helper_mode(const QStringList &arguments)
     if (arguments.size() < 2)
         return -1;
     const QString mode = arguments.at(1);
+    if (mode == QStringLiteral("--json"))
+    {
+        if (arguments.size() != 3 || arguments.at(2) != QStringLiteral("list"))
+            return 2;
+        std::fputs("{\"event\":\"progress\",\"message\":\"Discovering prefixes\"}\n", stdout);
+        std::fflush(stdout);
+        for (;;)
+            pause();
+    }
     if (mode == QStringLiteral("--devices"))
     {
         std::fputs("[{\"type\":\"PipeWire:Interface:Node\",\"info\":{\"props\":"
@@ -549,6 +560,33 @@ wait_until_enabled(QComboBox *combo)
 }
 
 static void
+test_manager_close_during_discovery()
+{
+    const bool hadBackend = qEnvironmentVariableIsSet("PIPEASIO_MANAGER_BACKEND");
+    const QByteArray previousBackend = qgetenv("PIPEASIO_MANAGER_BACKEND");
+    qputenv("PIPEASIO_MANAGER_BACKEND", QCoreApplication::applicationFilePath().toUtf8());
+    auto *panel = new InstallationsTab;
+    auto *process = panel->findChild<QProcess *>();
+    QEventLoop loop;
+    QTimer deadline;
+    deadline.setSingleShot(true);
+    QObject::connect(&deadline, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(process, &QProcess::readyReadStandardOutput, &loop, &QEventLoop::quit);
+    bool stopped = false;
+    QObject::connect(process, &QProcess::finished, &loop, [&stopped] { stopped = true; });
+    deadline.start(2500);
+    loop.exec();
+    CHECK(deadline.isActive());
+    CHECK(process->state() == QProcess::Running);
+    delete panel;
+    CHECK(stopped);
+    if (hadBackend)
+        qputenv("PIPEASIO_MANAGER_BACKEND", previousBackend);
+    else
+        qunsetenv("PIPEASIO_MANAGER_BACKEND");
+}
+
+static void
 test_async_enumerator()
 {
     RequestResult result = run_request(QStringLiteral("--devices"), 1000);
@@ -597,6 +635,7 @@ test_dialog_loading_state()
     CHECK(Config::save(config));
 
     SettingsDialogOptions options;
+    options.installationsDiscoveryEnabled = false;
     options.monitorEnabled          = false;
     options.deviceRequest.program   = QCoreApplication::applicationFilePath();
     options.deviceRequest.arguments = { QStringLiteral("--sleep") };
@@ -651,6 +690,7 @@ test_latency_follows_graph_rate()
     CHECK(Config::save(Config::defaults())); /* sample_rate=0, buffer 1024 */
 
     SettingsDialogOptions options;
+    options.installationsDiscoveryEnabled = false;
     options.monitorEnabled          = false;
     options.deviceRequest.program   = QCoreApplication::applicationFilePath();
     options.deviceRequest.arguments = { QStringLiteral("--devices-44k") };
@@ -679,6 +719,7 @@ test_scheduling_row_follows_checkbox()
     CHECK(Config::save(Config::defaults())); /* follow off, buffer 1024, 48 kHz */
 
     SettingsDialogOptions options;
+    options.installationsDiscoveryEnabled = false;
     options.monitorEnabled          = false;
     options.deviceRequest.program   = QCoreApplication::applicationFilePath();
     options.deviceRequest.arguments = { QStringLiteral("--devices") };
@@ -711,6 +752,7 @@ static void
 test_tooltip_wrapping()
 {
     SettingsDialogOptions options;
+    options.installationsDiscoveryEnabled = false;
     options.monitorEnabled          = false;
     options.deviceRequest.program   = QCoreApplication::applicationFilePath();
     options.deviceRequest.arguments = { QStringLiteral("--sleep") };
@@ -743,6 +785,7 @@ test_monitor_transient_hold()
     qRegisterMetaType<NodeStats>("NodeStats");
 
     SettingsDialogOptions options;
+    options.installationsDiscoveryEnabled = false;
     options.monitorEnabled          = false;
     options.deviceRequest.program   = QCoreApplication::applicationFilePath();
     options.deviceRequest.arguments = { QStringLiteral("--sleep") };
@@ -827,6 +870,7 @@ test_monitor_tab_gating()
     qputenv("PIPEWIRE_REMOTE", "pipeasio-test-no-such-remote");
 
     SettingsDialogOptions options; /* monitorEnabled stays at its default */
+    options.installationsDiscoveryEnabled = false;
     options.deviceRequest.program   = QCoreApplication::applicationFilePath();
     options.deviceRequest.arguments = { QStringLiteral("--sleep") };
     options.deviceRequest.timeoutMs = 200;
@@ -882,6 +926,7 @@ main(int argc, char **argv)
     test_describe_peer();
     test_resolve_connections();
     test_async_enumerator();
+    test_manager_close_during_discovery();
     test_dialog_loading_state();
     test_latency_follows_graph_rate();
     test_scheduling_row_follows_checkbox();

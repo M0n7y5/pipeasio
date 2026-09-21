@@ -42,12 +42,22 @@ endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
+option(BUILD_DRIVER "Build the Wine ASIO driver and installation probe" ON)
+option(BUILD_SETTINGS_PANEL "Build the Qt6 settings panel" ON)
+option(BUILD_MANAGER "Build the native installation manager" ${BUILD_SETTINGS_PANEL})
+if(BUILD_SETTINGS_PANEL AND NOT BUILD_MANAGER)
+    message(FATAL_ERROR "BUILD_SETTINGS_PANEL requires BUILD_MANAGER.")
+endif()
+
 # PipeWire headers compile into driver objects before winegcc links them.
 # Steam Runtime 4 ships the supported 1.4.2 floor.
+if(BUILD_DRIVER OR BUILD_SETTINGS_PANEL)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3>=1.4.2)
 message(STATUS "Found libpipewire-0.3 ${PIPEWIRE_VERSION} (minimum 1.4.2)")
+endif()
 
+if(BUILD_DRIVER)
 option(BUILD_WOW64_32 "Build the experimental 32-bit WoW64 PE front end + unixlib" OFF)
 include(WineSdk)
 
@@ -89,29 +99,33 @@ if(BUILD_ARM64)
         endif()
     endforeach()
 endif()
+endif()
 
 include(GNUInstallDirs)
 
-install(PROGRAMS ${CMAKE_SOURCE_DIR}/pipeasio-register
-        DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(BUILD_DRIVER)
+    install(PROGRAMS ${CMAKE_SOURCE_DIR}/pipeasio-register
+            DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+if(BUILD_MANAGER)
+    enable_language(CXX)
+    set(CMAKE_CXX_STANDARD 17)
+endif()
+if(BUILD_DRIVER OR BUILD_MANAGER)
+    add_subdirectory(manager)
+endif()
 
 # Optional native Qt6 settings panel; not used inside Wine/Proton.
-option(BUILD_SETTINGS_PANEL "Build the Qt6 settings panel" ON)
 if(BUILD_SETTINGS_PANEL)
-    include(CheckLanguage)
-    check_language(CXX)
-    if(CMAKE_CXX_COMPILER)
-        enable_language(CXX)
-        set(CMAKE_CXX_STANDARD 17)
-        find_package(Qt6 QUIET COMPONENTS Widgets)
-        if(Qt6_FOUND)
-            add_subdirectory(gui)
-        else()
-            message(WARNING "Qt6 Widgets not found - skipping the settings panel "
-                            "(set -DBUILD_SETTINGS_PANEL=OFF to silence).")
-        endif()
+    find_package(Qt6 QUIET COMPONENTS Widgets)
+    if(Qt6_FOUND)
+        add_subdirectory(gui)
+    elseif(NOT BUILD_DRIVER)
+        message(FATAL_ERROR "The settings panel requires Qt6 Widgets.")
     else()
-        message(WARNING "No C++ compiler - skipping the settings panel.")
+        message(WARNING "Qt6 Widgets not found - skipping the settings panel "
+                        "(set -DBUILD_SETTINGS_PANEL=OFF to silence).")
     endif()
 endif()
 
@@ -119,6 +133,10 @@ endif()
 option(BUILD_TESTS "Build the asio_probe Wine host and unit tests" ON)
 if(BUILD_TESTS)
     enable_testing()
+    if(BUILD_MANAGER)
+        add_subdirectory(tests/manager)
+    endif()
+    if(BUILD_DRIVER)
     add_subdirectory(tests/asio_probe)
     add_subdirectory(tests/asio_loopback)
     add_subdirectory(tests/unit)
@@ -143,7 +161,8 @@ if(BUILD_TESTS)
     set_tests_properties(wine_install_root_relative PROPERTIES
         TIMEOUT 60
         PASS_REGULAR_EXPRESSION "PIPEASIO_WINE_INSTALL_ROOT must be an absolute")
-    if(BUILD_SETTINGS_PANEL AND Qt6_FOUND)
+    endif()
+    if(TARGET pipeasio-settings)
         add_subdirectory(tests/gui)
     elseif(BUILD_SETTINGS_PANEL)
         add_test(NAME test_panel_prerequisite
@@ -153,7 +172,7 @@ if(BUILD_TESTS)
             TIMEOUT 10
             SKIP_REGULAR_EXPRESSION "SKIP:")
     endif()
-    if(PIPEASIO_ASAN)
+    if(PIPEASIO_ASAN AND BUILD_DRIVER)
         find_program(BASH_EXECUTABLE bash REQUIRED)
         set(_pipeasio_sanitizer_artifacts
             ${CMAKE_BINARY_DIR}/${PIPEASIO_UNIX_ARCH}-unix/pipeasio64.so

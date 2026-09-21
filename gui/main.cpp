@@ -28,6 +28,7 @@ main(int argc, char **argv)
 {
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("pipeasio-settings"));
+    app.setApplicationDisplayName(QStringLiteral("PipeASIO Manager"));
     // Matches the installed pipeasio-settings.desktop (Wayland app_id) and
     // the hicolor icon, so compositors/taskbars pick up the right icon.
     app.setDesktopFileName(QStringLiteral("pipeasio-settings"));
