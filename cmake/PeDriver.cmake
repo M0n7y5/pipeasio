@@ -181,6 +181,14 @@ function(pipeasio_add_pe_driver)
     set(_inc -I "${CMAKE_SOURCE_DIR}/include" -I "${CMAKE_SOURCE_DIR}/src/unixlib"
              -I "${WINE_UNIXLIB_INCLUDE_DIR}")
 
+    # winegcc, not a bare <triple>-gcc, has to drive this link on every arch
+    # (#27).  winegcc passes -nodefaultlibs -nostartfiles, so mingw's
+    # dllcrt2.o stays out and cannot drag in libmingw32.a(tlssup.o), whose
+    # _tls_used/_tls_start/_tls_end/_tls_index/__xl_a/__xl_z duplicate
+    # winecrt0's tls.o; and winebuild's spec object carries the CRT$XI/XC/XT
+    # brackets that winecrt0's crt_dllmain.o wants, which mingw's cinitexe.o
+    # has no CRT$XT for.  A direct mingw link needs both worked around and
+    # broke i386 on mingw-w64-crt 14 / gcc 16.
     add_custom_command(
         OUTPUT  "${_dll}"
         COMMAND "${WINEGCC}" ${_target_args} -shared "${_spec}"
