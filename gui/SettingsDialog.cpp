@@ -32,13 +32,17 @@
 #include <QDialogButtonBox>
 #include <QFont>
 #include <QFormLayout>
+#include <QGroupBox>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSpinBox>
 #include <QString>
 #include <QTabWidget>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <utility>
 
 namespace
@@ -60,7 +64,8 @@ const SampleRateItem kSampleRates[] = {
 
 SettingsDialog::SettingsDialog(QWidget *parent, SettingsDialogOptions options) : QDialog(parent)
 {
-    setWindowTitle(QStringLiteral("PipeASIO Manager - " PIPEASIO_VERSION));
+    /* Qt appends the application display name to any other title. */
+    setWindowTitle(QStringLiteral("PipeASIO Manager"));
     resize(880, 720);
 
     auto *tabs = new QTabWidget(this);
@@ -176,11 +181,37 @@ wrapToolTip(const QString &tip, int width = 72)
     return lines.join(QLatin1Char('\n'));
 }
 
+/* A column of at most maxWidth, centered in page, so forms and prose keep a
+ * readable measure in a wide window. */
+static QVBoxLayout *
+centeredColumn(QWidget *page, int maxWidth)
+{
+    auto *content = new QWidget(page);
+    content->setMaximumWidth(maxWidth);
+    auto *outer = new QHBoxLayout(page);
+    outer->addStretch(1);
+    outer->addWidget(content, 100);
+    outer->addStretch(1);
+    auto *column = new QVBoxLayout(content);
+    column->setContentsMargins(0, 0, 0, 0);
+    return column;
+}
+
 QWidget *
 SettingsDialog::buildSettingsTab()
 {
-    auto *page = new QWidget(this);
-    auto *form = new QFormLayout(page);
+    auto *page   = new QWidget(this);
+    auto *column = centeredColumn(page, 680);
+    column->setSpacing(12);
+
+    QFormLayout    *form = nullptr;
+    QList<QLabel *> labels;
+    const auto      addSection = [&](const QString &title)
+    {
+        auto *group = new QGroupBox(title, page);
+        form        = new QFormLayout(group);
+        column->addWidget(group);
+    };
 
     /* Add a labelled row and attach the same tooltip to both the descriptive
      * label and the field, so hovering either explains the option. */
@@ -190,9 +221,11 @@ SettingsDialog::buildSettingsTab()
         field->setToolTip(wrapped);
         auto *lbl = new QLabel(label, page);
         lbl->setToolTip(wrapped);
+        labels += lbl;
         form->addRow(lbl, field);
     };
 
+    addSection(QStringLiteral("Audio"));
     m_inputs = new QSpinBox(page);
     m_inputs->setObjectName(QStringLiteral("inputs"));
     m_inputs->setRange(0, 256);
@@ -229,6 +262,7 @@ SettingsDialog::buildSettingsTab()
            QStringLiteral("\"Follow PipeWire\" tracks the graph's current rate. Set a fixed "
                           "value only if the host requires a specific rate."));
 
+    addSection(QStringLiteral("Devices"));
     m_outputDevice = new QComboBox(page);
     m_outputDevice->setObjectName(QStringLiteral("outputDevice"));
     addRow(QStringLiteral("Output device"), m_outputDevice,
@@ -248,6 +282,7 @@ SettingsDialog::buildSettingsTab()
            QStringLiteral("Automatically connect the driver's ports to the selected (or "
                           "default) device. Turn off to wire connections yourself."));
 
+    addSection(QStringLiteral("Advanced"));
     m_fixedBuffer = new QCheckBox(page);
     m_fixedBuffer->setObjectName(QStringLiteral("fixedBuffer"));
     addRow(QStringLiteral("Fixed buffer size"), m_fixedBuffer,
@@ -302,51 +337,111 @@ SettingsDialog::buildSettingsTab()
             &SettingsDialog::updateSchedulingLabel);
     connect(m_followDeviceClock, &QCheckBox::toggled, this, &SettingsDialog::updateSchedulingLabel);
 
-    return page;
+    /* Device names are long: let the combos fill the field column and elide
+     * rather than widen the window. */
+    for (QComboBox *combo : { m_outputDevice, m_inputDevice })
+    {
+        combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        combo->setMinimumContentsLength(20);
+        combo->setSizePolicy(QSizePolicy::Expanding, combo->sizePolicy().verticalPolicy());
+    }
+
+    /* One label column across the sections, so their fields line up. */
+    int labelWidth = 0;
+    for (QLabel *label : labels)
+        labelWidth = std::max(labelWidth, label->sizeHint().width());
+    for (QLabel *label : labels)
+    {
+        label->setMinimumWidth(labelWidth);
+        label->setAlignment(form->labelAlignment() | Qt::AlignVCenter);
+    }
+    column->addStretch(1);
+
+    /* The sections are the tallest page; scroll them rather than hold every
+     * tab at their height on short screens. */
+    auto *scroll = new QScrollArea(this);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setWidget(page);
+    return scroll;
 }
 
 QWidget *
 SettingsDialog::buildMonitorTab()
 {
-    auto *page = new QWidget(this);
-    auto *form = new QFormLayout(page);
+    auto *page   = new QWidget(this);
+    auto *layout = new QVBoxLayout(page);
+    layout->setSpacing(12);
 
+    /* Headline readings as tiles: the caption on the frame, the value large. */
+    auto *tiles = new QHBoxLayout;
+    tiles->setSpacing(12);
+    layout->addLayout(tiles);
+    const auto addTile = [&](const QString &title, QLabel *value, const QString &tip)
+    {
+        auto *tile = new QGroupBox(title, page);
+        tile->setToolTip(wrapToolTip(tip));
+        value->setToolTip(tile->toolTip());
+        QFont font = value->font();
+        font.setPointSizeF(font.pointSizeF() * 1.4);
+        font.setWeight(QFont::DemiBold);
+        value->setFont(font);
+        value->setAlignment(Qt::AlignCenter);
+        value->setWordWrap(true);
+        (new QVBoxLayout(tile))->addWidget(value);
+        tiles->addWidget(tile, 1);
+    };
+
+    m_monQuantum = new QLabel(QStringLiteral("waiting for audio..."), page);
+    m_monQuantum->setObjectName(QStringLiteral("monQuantum"));
+    addTile(QStringLiteral("Buffer / quantum"), m_monQuantum,
+            QStringLiteral("Current PipeWire quantum (frames per processing cycle)."));
+
+    m_monRate = new QLabel(QStringLiteral("waiting for audio..."), page);
+    m_monRate->setObjectName(QStringLiteral("monRate"));
+    addTile(QStringLiteral("Sample rate"), m_monRate,
+            QStringLiteral("Current node sample rate in Hz."));
+
+    m_monXruns = new QLabel(QStringLiteral("waiting for audio..."), page);
+    m_monXruns->setObjectName(QStringLiteral("monXruns"));
+    addTile(QStringLiteral("Xruns"), m_monXruns,
+            QStringLiteral("Number of buffer under/overruns (dropouts) reported for this "
+                           "node since it started."));
+
+    m_monState = new QLabel(QStringLiteral("waiting for audio..."), page);
+    m_monState->setObjectName(QStringLiteral("monState"));
+    addTile(QStringLiteral("State"), m_monState,
+            QStringLiteral("PipeWire node state: R running, I idle, S suspended, E error."));
+
+    auto *load = new QGroupBox(QStringLiteral("DSP load"), page);
+    load->setToolTip(
+            wrapToolTip(QStringLiteral("Share of each audio cycle the node spends processing "
+                                       "(busy/quantum) over the last minute. The band spans "
+                                       "each second's lowest to highest reading and the line "
+                                       "follows its average. Sustained high values risk "
+                                       "dropouts.")));
+    m_monLoad = new LoadHistogram(load);
+    m_monLoad->setObjectName(QStringLiteral("monLoad"));
+    m_monLoad->setToolTip(load->toolTip());
+    m_monLoad->setMinimumHeight(120);
+    (new QVBoxLayout(load))->addWidget(m_monLoad);
+    layout->addWidget(load, 1);
+
+    auto *devices = new QGroupBox(QStringLiteral("Devices"), page);
+    auto *form    = new QFormLayout(devices);
+    layout->addWidget(devices);
     auto addRow = [&](const QString &label, QWidget *field, const QString &tip)
     {
         const QString wrapped = wrapToolTip(tip);
         field->setToolTip(wrapped);
         auto *lbl = new QLabel(label, page);
         lbl->setToolTip(wrapped);
+        /* Wrapped device names would otherwise stay at their narrow size hint. */
+        QSizePolicy policy = field->sizePolicy();
+        policy.setHorizontalPolicy(QSizePolicy::Expanding);
+        field->setSizePolicy(policy);
         form->addRow(lbl, field);
     };
-
-    m_monQuantum = new QLabel(QStringLiteral("waiting for audio..."), page);
-    m_monQuantum->setObjectName(QStringLiteral("monQuantum"));
-    addRow(QStringLiteral("Buffer / quantum"), m_monQuantum,
-           QStringLiteral("Current PipeWire quantum (frames per processing cycle)."));
-
-    m_monRate = new QLabel(QStringLiteral("waiting for audio..."), page);
-    m_monRate->setObjectName(QStringLiteral("monRate"));
-    addRow(QStringLiteral("Sample rate"), m_monRate,
-           QStringLiteral("Current node sample rate in Hz."));
-
-    m_monLoad = new LoadHistogram(page);
-    m_monLoad->setObjectName(QStringLiteral("monLoad"));
-    addRow(QStringLiteral("DSP load"), m_monLoad,
-           QStringLiteral("Share of each audio cycle the node spends processing "
-                          "(busy/quantum), shown as a rolling history. Sustained high "
-                          "values risk dropouts."));
-
-    m_monXruns = new QLabel(QStringLiteral("waiting for audio..."), page);
-    m_monXruns->setObjectName(QStringLiteral("monXruns"));
-    addRow(QStringLiteral("Xruns"), m_monXruns,
-           QStringLiteral("Number of buffer under/overruns (dropouts) reported for this "
-                          "node since it started."));
-
-    m_monState = new QLabel(QStringLiteral("waiting for audio..."), page);
-    m_monState->setObjectName(QStringLiteral("monState"));
-    addRow(QStringLiteral("State"), m_monState,
-           QStringLiteral("PipeWire node state: R running, I idle, S suspended, E error."));
 
     m_monOutput = new QLabel(QStringLiteral("—"), page);
     m_monOutput->setObjectName(QStringLiteral("monOutput"));
@@ -369,8 +464,16 @@ QWidget *
 SettingsDialog::buildAboutTab()
 {
     auto *page   = new QWidget(this);
-    auto *layout = new QVBoxLayout(page);
-    layout->setAlignment(Qt::AlignTop);
+    auto *layout = centeredColumn(page, 560);
+    layout->addStretch(1);
+
+    const QPixmap logo = windowIcon().pixmap(QSize(64, 64), devicePixelRatioF());
+    if (!logo.isNull())
+    {
+        auto *icon = new QLabel(page);
+        icon->setPixmap(logo);
+        layout->addWidget(icon, 0, Qt::AlignHCenter);
+    }
 
     auto *title     = new QLabel(QStringLiteral("PipeASIO Manager"), page);
     QFont titleFont = title->font();
@@ -380,7 +483,7 @@ SettingsDialog::buildAboutTab()
     layout->addWidget(title);
 
     auto *version = new QLabel(QStringLiteral("Version " PIPEASIO_VERSION), page);
-    version->setStyleSheet(QStringLiteral("color: gray;"));
+    version->setForegroundRole(QPalette::PlaceholderText);
     layout->addWidget(version);
 
     auto *desc = new QLabel(
@@ -391,7 +494,7 @@ SettingsDialog::buildAboutTab()
     desc->setWordWrap(true);
     layout->addWidget(desc);
 
-    layout->addSpacing(10);
+    layout->addSpacing(16);
 
     auto *links = new QLabel(page);
     links->setTextFormat(Qt::RichText);
@@ -403,7 +506,7 @@ SettingsDialog::buildAboutTab()
             "<a href=\"https://ko-fi.com/m0n7y5\">Support development on Ko-fi</a>"));
     layout->addWidget(links);
 
-    layout->addSpacing(10);
+    layout->addStretch(1);
 
     auto *legal = new QLabel(
             QStringLiteral("Copyright \u00a9 2026 PipeASIO contributors.<br>"
@@ -419,7 +522,8 @@ SettingsDialog::buildAboutTab()
     legal->setFont(legalFont);
     layout->addWidget(legal);
 
-    layout->addStretch(1);
+    for (QLabel *label : { title, version, desc, links, legal })
+        label->setAlignment(Qt::AlignHCenter);
     return page;
 }
 

@@ -15,6 +15,7 @@
 #include "SettingsDialog.hpp"
 #include "InstallationsTab.hpp"
 #include "ProfilerParse.hpp"
+#include "LoadHistogram.hpp"
 
 #include <spa/node/io.h>
 #include <spa/param/profiler.h>
@@ -28,6 +29,7 @@
 #include <QLabel>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QImage>
 #include <QProcess>
 #include <QPushButton>
 #include <QTemporaryDir>
@@ -850,6 +852,64 @@ test_monitor_transient_hold()
     CHECK(quantum->text() == QStringLiteral("128"));
 }
 
+/* A full history spans the graph's whole width at any window size, so a wide
+ * Monitor tab has no empty strip at the left. */
+static void
+test_load_graph_spans_width()
+{
+    for (const int width : { 300, 1200 })
+    {
+        LoadHistogram graph;
+        graph.resize(width, 60);
+        for (int i = 0; i < 2000; ++i)
+            graph.pushSample(0.5);
+        const QImage image = graph.grab().toImage();
+        /* A flat 50 % load is green through the middle row. */
+        const auto green = [&image](int x)
+        {
+            const QRgb px = image.pixel(x, 30);
+            return qGreen(px) - qRed(px) > 40 && qGreen(px) - qBlue(px) > 40;
+        };
+        CHECK(green(2));
+        CHECK(green(width - 3));
+    }
+}
+
+/* Only whole seconds are drawn, so the graph's edges hold still between
+ * updates: the second still filling in at the right waits until it is
+ * complete, and the second scrolling out at the left keeps its shape. */
+static void
+test_load_graph_draws_whole_seconds()
+{
+    /* 600 px shows the 600-sample minute at one sample per pixel. */
+    LoadHistogram graph;
+    graph.resize(600, 60);
+    const auto push = [&graph](int count, double load)
+    {
+        for (int i = 0; i < count; ++i)
+            graph.pushSample(load);
+    };
+    /* The oldest second averages 50 % but only its 10 % half is still in the
+     * window. The newest second has only its first five samples, at 90 %. */
+    push(5, 0.9);
+    push(5, 0.1);
+    push(590, 0.5);
+    push(5, 0.9);
+    const QImage image = graph.grab().toImage();
+    const auto   line  = [&image](int x, int y)
+    {
+        const QRgb px = image.pixel(x, y);
+        return qGreen(px) - qRed(px) > 40 && qGreen(px) - qBlue(px) > 40;
+    };
+    const auto blank = [&image, &graph](int x, int y)
+    { return image.pixel(x, y) == graph.palette().color(QPalette::Base).rgb(); };
+    /* 50 % load is row 30, 10 % row 52, 90 % row 7. */
+    CHECK(line(1, 30));
+    CHECK(blank(1, 52));
+    CHECK(line(598, 30));
+    CHECK(blank(598, 7));
+}
+
 static void
 spin(int ms)
 {
@@ -932,6 +992,8 @@ main(int argc, char **argv)
     test_scheduling_row_follows_checkbox();
     test_tooltip_wrapping();
     test_monitor_transient_hold();
+    test_load_graph_spans_width();
+    test_load_graph_draws_whole_seconds();
     test_monitor_tab_gating();
 
     std::fprintf(stderr, "[%s] %d checks, %d failed\n", g_fail ? "FAIL" : "PASS", g_total, g_fail);

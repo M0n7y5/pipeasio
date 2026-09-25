@@ -10,19 +10,25 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPixmap>
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QStandardPaths>
+#include <QStyle>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <utility>
@@ -45,98 +51,190 @@ displayTargetValue(const QString &value)
     return value;
 }
 
+/* Drawn rather than taken from the icon theme: themes name status icons
+ * inconsistently, and a bare Fusion session may have no icon theme at all. */
+static QIcon
+statusIcon(const QString &status, const QPalette &palette, qreal ratio)
+{
+    QPixmap pixmap(QSize(12, 12) * ratio);
+    pixmap.setDevicePixelRatio(ratio);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const QColor muted = palette.color(QPalette::PlaceholderText);
+    if (status == QLatin1String("not-installed"))
+    {
+        painter.setPen(QPen(muted, 1.5));
+        painter.drawEllipse(QRectF(2.75, 2.75, 6.5, 6.5));
+        return QIcon(pixmap);
+    }
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(status == QLatin1String("installed")      ? QColor(0x27, 0xae, 0x60)
+                     : status == QLatin1String("needs-repair") ? QColor(0xf6, 0x74, 0x00)
+                                                               : muted);
+    painter.drawEllipse(QRectF(2, 2, 8, 8));
+    return QIcon(pixmap);
+}
+
 InstallationsTab::InstallationsTab(QWidget *parent) : QWidget(parent)
 {
     auto *layout = new QVBoxLayout(this);
+    layout->setSpacing(12);
+
+    auto *heading = new QVBoxLayout;
+    heading->setSpacing(4);
+    auto *header    = new QHBoxLayout;
+    auto *title     = new QLabel(tr("Wine prefixes"), this);
+    QFont titleFont = title->font();
+    titleFont.setPointSizeF(titleFont.pointSizeF() * 1.25);
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    header->addWidget(title, 1);
+    const QIcon refreshIcon = QIcon::fromTheme(QStringLiteral("view-refresh"),
+                                               style()->standardIcon(QStyle::SP_BrowserReload));
+    m_refresh               = new QPushButton(refreshIcon, tr("&Refresh targets"), this);
+    m_add = new QPushButton(QIcon::fromTheme(QStringLiteral("list-add")), tr("&Add prefix..."),
+                            this);
+    header->addWidget(m_refresh);
+    header->addWidget(m_add);
+    heading->addLayout(header);
     auto *intro = new QLabel(tr("Manage official PipeASIO releases in Faugus, Bottles, or a custom "
                                 "Wine prefix. Close the launcher and Windows applications before "
                                 "changing an installation. Discovery does not start Wine."),
                              this);
     intro->setWordWrap(true);
-    layout->addWidget(intro);
-
-    auto *discovery = new QHBoxLayout;
-    m_refresh       = new QPushButton(tr("&Refresh targets"), this);
-    m_add           = new QPushButton(tr("&Add prefix..."), this);
-    discovery->addWidget(m_refresh);
-    discovery->addWidget(m_add);
-    discovery->addStretch();
-    layout->addLayout(discovery);
+    heading->addWidget(intro);
+    layout->addLayout(heading);
 
     m_targets = new QTreeWidget(this);
     m_targets->setObjectName(QStringLiteral("installationTargets"));
     m_targets->setAccessibleName(tr("Wine installation targets"));
-    m_targets->setHeaderLabels(
-            { tr("Target"), tr("Launcher"), tr("Runner"), tr("Status"), tr("Version") });
+    m_targets->setHeaderLabels({ tr("Target"), tr("Launcher"), tr("Status"), tr("Version") });
     m_targets->setRootIsDecorated(false);
+    m_targets->setAlternatingRowColors(true);
     m_targets->setSelectionMode(QAbstractItemView::SingleSelection);
     m_targets->setUniformRowHeights(true);
-    m_targets->header()->setSectionResizeMode(QHeaderView::Interactive);
-    m_targets->header()->setStretchLastSection(true);
-    m_targets->setMinimumHeight(140);
+    m_targets->header()->setStretchLastSection(false);
+    m_targets->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_targets->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_targets->setMinimumHeight(96);
     layout->addWidget(m_targets, 1);
 
-    m_details = new QLabel(tr("Select a target to see its prefix and runner."), this);
-    m_details->setTextFormat(Qt::PlainText);
-    m_details->setWordWrap(true);
-    m_details->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
-    m_details->setAccessibleName(tr("Selected target details"));
-    layout->addWidget(m_details);
+    m_details    = new QGroupBox(this);
+    auto *fields = new QFormLayout(m_details);
+    /* Paths have no break opportunities, so a label would pin the window's
+     * minimum width to the longest one. A frameless read-only field scrolls. */
+    const auto pathField = [this](const QString &name)
+    {
+        auto *field = new QLineEdit(m_details);
+        field->setReadOnly(true);
+        field->setFrame(false);
+        field->setAccessibleName(name);
+        QPalette palette = field->palette();
+        palette.setBrush(QPalette::Base, Qt::transparent);
+        field->setPalette(palette);
+        return field;
+    };
+    const auto textField = [this](const QString &name)
+    {
+        auto *field = new QLabel(m_details);
+        field->setAccessibleName(name);
+        field->setTextFormat(Qt::PlainText);
+        /* A wrapped label stays at its narrow size hint in a form unless it
+         * expands. setWordWrap() then adds height-for-width to this policy. */
+        field->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        field->setWordWrap(true);
+        field->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+        return field;
+    };
+    m_prefix = pathField(tr("Selected target prefix"));
+    fields->addRow(tr("Prefix:"), m_prefix);
+    m_runner = pathField(tr("Selected target runner"));
+    fields->addRow(tr("Runner:"), m_runner);
+    /* Label-less form rows lose height-for-width, so the conditional notes
+     * share the status field instead of taking rows of their own. */
+    auto *state = new QVBoxLayout;
+    m_state     = textField(tr("Selected target status"));
+    m_note      = textField(tr("Selected target notes"));
+    m_guidance  = textField(tr("Manual prefix launch instructions"));
+    m_guidance->setVisible(false);
+    for (auto *label : { m_state, m_note, m_guidance })
+        state->addWidget(label);
+    auto *stateLabel = new QLabel(tr("Status:"), m_details);
+    /* Level with the first line of text; the form pads labels for framed fields. */
+    stateLabel->setAlignment(Qt::AlignLeading | Qt::AlignTop);
+    fields->addRow(stateLabel, state);
 
     auto *releases     = new QHBoxLayout;
-    auto *releaseLabel = new QLabel(tr("&Release:"), this);
-    m_releases         = new QComboBox(this);
+    auto *releaseLabel = new QLabel(tr("&Release:"), m_details);
+    m_releases         = new QComboBox(m_details);
     m_releases->setAccessibleName(tr("PipeASIO release"));
     m_releases->addItem(tr("Latest stable release"), QString());
     releaseLabel->setBuddy(m_releases);
-    m_refreshReleases = new QPushButton(tr("Refresh re&leases"), this);
-    releases->addWidget(releaseLabel);
+    m_refreshReleases = new QToolButton(m_details);
+    m_refreshReleases->setIcon(refreshIcon);
+    m_refreshReleases->setText(tr("Refresh re&leases"));
+    m_refreshReleases->setToolTip(tr("Refresh releases"));
+    m_refreshReleases->setToolButtonStyle(Qt::ToolButtonIconOnly);
     releases->addWidget(m_releases, 1);
     releases->addWidget(m_refreshReleases);
-    layout->addLayout(releases);
+    fields->addRow(releaseLabel, releases);
 
-    m_include32 = new QCheckBox(tr("Include e&xperimental 32-bit support"), this);
+    m_include32 = new QCheckBox(tr("Include e&xperimental 32-bit support"), m_details);
     m_include32->setToolTip(
             tr("Requires Wine's new WoW64 mode. Both frontends are checked, and a failed "
                "check restores the previous installation."));
-    layout->addWidget(m_include32);
+    fields->addRow(static_cast<QWidget *>(nullptr), m_include32);
 
     auto *actions = new QHBoxLayout;
-    m_install     = new QPushButton(tr("&Install..."), this);
-    m_repair      = new QPushButton(tr("Re&pair..."), this);
-    m_check       = new QPushButton(tr("&Check..."), this);
-    m_remove      = new QPushButton(tr("Re&move..."), this);
-    for (auto *button : { m_install, m_repair, m_check, m_remove })
-        actions->addWidget(button);
+    m_remove  = new QPushButton(QIcon::fromTheme(QStringLiteral("edit-delete")), tr("Re&move..."),
+                                m_details);
+    m_check   = new QPushButton(tr("&Check..."), m_details);
+    m_repair  = new QPushButton(tr("Re&pair..."), m_details);
+    m_install = new QPushButton(tr("&Install..."), m_details);
+    actions->addWidget(m_remove);
     actions->addStretch();
-    layout->addLayout(actions);
+    for (auto *button : { m_check, m_repair, m_install })
+        actions->addWidget(button);
+    fields->addRow(actions);
+    layout->addWidget(m_details);
 
-    m_status = new QLabel(tr("Discovering targets..."), this);
+    auto *statusRow = new QHBoxLayout;
+    m_status        = new QLabel(tr("Discovering targets..."), this);
     m_status->setObjectName(QStringLiteral("installationStatus"));
     m_status->setAccessibleName(tr("Manager operation status"));
     m_status->setTextFormat(Qt::PlainText);
     m_status->setWordWrap(true);
     m_status->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
-    layout->addWidget(m_status);
-    m_guidance = new QLabel(this);
-    m_guidance->setAccessibleName(tr("Manual prefix launch instructions"));
-    m_guidance->setTextFormat(Qt::PlainText);
-    m_guidance->setWordWrap(true);
-    m_guidance->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
-    m_guidance->setVisible(false);
-    layout->addWidget(m_guidance);
+    statusRow->addWidget(m_status, 1);
     m_progress = new QProgressBar(this);
     m_progress->setAccessibleName(tr("Manager operation progress"));
     m_progress->setRange(0, 0);
+    m_progress->setTextVisible(false);
+    m_progress->setMaximumWidth(160);
     m_progress->setVisible(false);
-    layout->addWidget(m_progress);
+    statusRow->addWidget(m_progress);
+    m_logToggle = new QToolButton(this);
+    m_logToggle->setText(tr("&Operation log"));
+    m_logToggle->setCheckable(true);
+    m_logToggle->setAutoRaise(true);
+    m_logToggle->setArrowType(Qt::RightArrow);
+    m_logToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    statusRow->addWidget(m_logToggle, 0, Qt::AlignTop);
+    layout->addLayout(statusRow);
     m_log = new QPlainTextEdit(this);
     m_log->setAccessibleName(tr("Manager operation log"));
     m_log->setReadOnly(true);
     m_log->setMaximumBlockCount(2000);
-    m_log->setMaximumHeight(160);
+    m_log->setMaximumHeight(120);
+    m_log->setVisible(false);
     layout->addWidget(m_log);
-
+    connect(m_logToggle, &QToolButton::toggled, this,
+            [this](bool shown)
+            {
+                m_log->setVisible(shown);
+                m_logToggle->setArrowType(shown ? Qt::DownArrow : Qt::RightArrow);
+            });
     m_process = new QProcess(this);
     connect(m_process, &QProcess::readyReadStandardOutput, this, &InstallationsTab::readOutput);
     connect(m_process, &QProcess::readyReadStandardError, this, [this]
@@ -153,7 +251,7 @@ InstallationsTab::InstallationsTab(QWidget *parent) : QWidget(parent)
                                  .arg(m_process->errorString()));
             });
     connect(m_refresh, &QPushButton::clicked, this, &InstallationsTab::refreshTargets);
-    connect(m_refreshReleases, &QPushButton::clicked, this, &InstallationsTab::refreshReleases);
+    connect(m_refreshReleases, &QToolButton::clicked, this, &InstallationsTab::refreshReleases);
     connect(m_add, &QPushButton::clicked, this, &InstallationsTab::addPrefix);
     connect(m_install, &QPushButton::clicked, this, [this] { previewInstall(false); });
     connect(m_repair, &QPushButton::clicked, this, [this] { previewInstall(true); });
@@ -255,8 +353,29 @@ InstallationsTab::updateActions()
     m_repair->setEnabled(!m_running && selected && supported && installed && !pendingRemoval);
     m_check->setEnabled(!m_running && selected && supported && installed && !pendingRemoval);
     m_remove->setEnabled(!m_running && selected && supported && installed);
-    m_details->setText(selected ? targetDescription()
-                                : tr("Select a target to see its prefix and runner."));
+    QString title = target.value(QStringLiteral("name")).toString();
+    m_details->setTitle(selected ? title.replace(QLatin1Char('&'), QStringLiteral("&&"))
+                                 : tr("No target selected"));
+    const auto showPath = [](QLineEdit *field, const QString &path)
+    {
+        field->setText(path);
+        field->setCursorPosition(0);
+        field->setToolTip(path);
+    };
+    showPath(m_prefix, target.value(QStringLiteral("prefix")).toString());
+    showPath(m_runner, target.value(QStringLiteral("runner")).toString());
+    const QString status  = displayTargetValue(target.value(QStringLiteral("status")).toString());
+    const QString version = target.value(QStringLiteral("version")).toString();
+    m_state->setText(!selected           ? tr("Select a target to see its prefix and runner.")
+                     : version.isEmpty() ? status
+                                         : QStringLiteral("%1 \u00b7 %2").arg(status, version));
+    QStringList notes = {
+        target.value(QStringLiteral("error")).toString(),
+        target.value(QStringLiteral("metadata")).toObject().value(QStringLiteral("note")).toString()
+    };
+    notes.removeAll(QString());
+    m_note->setText(notes.join(QLatin1Char('\n')));
+    m_note->setVisible(!notes.isEmpty());
 }
 
 void
@@ -400,6 +519,7 @@ InstallationsTab::fail(const QString &message)
                          "or refresh releases to retry a network request.")
                               .arg(message));
     m_log->appendPlainText(message);
+    m_logToggle->setChecked(true);
     updateActions();
 }
 
@@ -423,15 +543,16 @@ InstallationsTab::refreshTargets()
                     continue;
                 auto             *item   = new QTreeWidgetItem(m_targets);
                 const QStringList fields = { QStringLiteral("name"), QStringLiteral("kind"),
-                                             QStringLiteral("runner"), QStringLiteral("status"),
-                                             QStringLiteral("version") };
+                                             QStringLiteral("status"), QStringLiteral("version") };
                 for (int column = 0; column < fields.size(); ++column)
                 {
                     const QString value = target.value(fields[column]).toString();
                     item->setText(column,
-                                  column == 1 || column == 3 ? displayTargetValue(value) : value);
+                                  column == 1 || column == 2 ? displayTargetValue(value) : value);
                     item->setToolTip(column, target.value(fields[column]).toString());
                 }
+                item->setIcon(2, statusIcon(target.value(QStringLiteral("status")).toString(),
+                                            palette(), devicePixelRatioF()));
                 item->setData(0, Qt::UserRole, target);
                 if (target.value(QStringLiteral("id")).toString() == selected)
                     m_targets->setCurrentItem(item);

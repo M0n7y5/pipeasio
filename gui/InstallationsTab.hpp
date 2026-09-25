@@ -9,11 +9,14 @@
 
 class QCheckBox;
 class QComboBox;
+class QGroupBox;
 class QLabel;
+class QLineEdit;
 class QPlainTextEdit;
 class QProcess;
 class QProgressBar;
 class QPushButton;
+class QToolButton;
 class QTreeWidget;
 
 class InstallationsTab : public QWidget
@@ -43,15 +46,20 @@ class InstallationsTab : public QWidget
     QString     targetDescription() const;
 
     QTreeWidget                             *m_targets         = nullptr;
+    QGroupBox                               *m_details         = nullptr;
+    QLineEdit                               *m_prefix          = nullptr;
+    QLineEdit                               *m_runner          = nullptr;
+    QLabel                                  *m_state           = nullptr;
+    QLabel                                  *m_note            = nullptr;
     QLabel                                  *m_guidance        = nullptr;
     QComboBox                               *m_releases        = nullptr;
     QCheckBox                               *m_include32       = nullptr;
-    QLabel                                  *m_details         = nullptr;
     QLabel                                  *m_status          = nullptr;
     QPlainTextEdit                          *m_log             = nullptr;
+    QToolButton                             *m_logToggle       = nullptr;
     QProgressBar                            *m_progress        = nullptr;
     QPushButton                             *m_refresh         = nullptr;
-    QPushButton                             *m_refreshReleases = nullptr;
+    QToolButton                             *m_refreshReleases = nullptr;
     QPushButton                             *m_add             = nullptr;
     QPushButton                             *m_install         = nullptr;
     QPushButton                             *m_repair          = nullptr;

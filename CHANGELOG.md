@@ -4,6 +4,29 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- PipeASIO Manager layout: the Installations tab groups the selected prefix's
+  paths, status, release choice, and actions in one panel, marks each target's
+  status with a colored dot, and keeps the operation log folded until it is
+  opened or an operation fails. Settings are grouped into Audio, Devices, and
+  Advanced sections that scroll on short screens. The Monitor tab shows its
+  readings as tiles above the DSP load graph, and the window title no longer
+  repeats the application name.
+- The DSP load graph draws each second of the last minute as a band from its
+  lowest to its highest load with a line through its average, colored green,
+  amber, or red by level, on the theme's colors instead of a fixed dark
+  background.
+
+### Fixed
+
+- The DSP load graph fills its full width at any window size. A wide window
+  used to leave its left part empty.
+- Selecting a target with manual launch instructions no longer pushes the
+  target details over the target list.
+
 ## [1.8.0] - 2026-09-21
 
 ### Added
