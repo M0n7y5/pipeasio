@@ -106,8 +106,9 @@ Under Proton or Steam, also set `WINEDLLPATH=$HOME/.local/lib/wine` in the launc
 
 PipeASIO Manager adds an **Installations** tab to the existing settings and
 monitor application. It discovers Faugus applications and native/Flatpak Bottles
-configurations without starting Wine. **Add prefix** accepts an existing custom
-Wine prefix and its owning Wine executable.
+configurations without starting Wine. Bottles support is experimental, see
+[Bottles](#bottles). **Add prefix** accepts an existing custom Wine prefix and
+its owning Wine executable.
 
 The independent `pipeasio-manager-<tag>-x86_64.AppImage` bundles the native
 Qt/C++ manager, its libraries, and the installation probes. Mark it executable
@@ -564,6 +565,17 @@ host build ([#22](https://github.com/M0n7y5/pipeasio/issues/22)). Unregistering
 uses the same environment, see [Uninstalling](#uninstalling).
 
 ## Bottles
+
+> [!NOTE]
+> Bottles support is experimental and not actively maintained. In my use,
+> Bottles has been too unreliable to build on: some of its buttons do not
+> render properly, the ones that do treat a click as a suggestion, and its
+> updates break these steps and the manager's Bottles integration often enough
+> to keep things interesting. Bottles Next, the rewrite
+> [announced in October 2023](https://usebottles.com/blog/2023-10-05-bottles-next-a-new-chapter.md),
+> has been "next" ever since. Reports are welcome, but Bottles-specific
+> problems may not get fixed. PipeASIO focuses on plain Wine prefixes and
+> Faugus.
 
 Bottles runs each bottle with its own downloaded runner (Soda, Caffe, a GE
 build), never the host's Wine, and the Flatpak build runs it inside a sandbox

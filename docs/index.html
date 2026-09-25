@@ -452,6 +452,7 @@ env WINEPREFIX=<span class="p">"$HOME/Faugus/&lt;game&gt;"</span> WINE=umu-run \
       <p class="note">In Faugus, enable the <b>WoW64</b> option in the game's settings, or add <code>PROTON_USE_WOW64=1</code> to the same environment field as <code>WINEDLLPATH</code>. 64-bit games and hosts do not need this.</p>
 
       <div class="step">5 / Bottles</div>
+      <p class="note">Experimental and not actively maintained. Bottles has been too unreliable to build on: some of its buttons do not render properly, the ones that do treat a click as a suggestion, its updates keep breaking integrations like this one, and Bottles Next, the rewrite announced in October 2023, has been "next" ever since. The main focus is plain Wine prefixes and Faugus.</p>
       <p>Bottles runs each bottle with its own runner, and the Flatpak sandbox sees neither <code>/usr/lib/wine</code> nor <code>$HOME/.local/lib/wine</code>. Leave the driver where it is installed, give the bottle the PE stub and a <code>WINEDLLPATH</code>, and register through Bottles' own launcher so the bottle's runner does it:</p>
 <pre>flatpak override --user --filesystem=<span class="p">"$HOME/.local/lib/wine:ro"</span> com.usebottles.bottles
 flatpak override --user --filesystem=xdg-run/pipewire-0 com.usebottles.bottles

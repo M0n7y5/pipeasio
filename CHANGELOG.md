@@ -4,6 +4,13 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Bottles support is marked experimental and is not actively maintained. Plain
+  Wine prefixes and Faugus remain the main focus.
+
 ## [1.8.1] - 2026-09-25
 
 ### Changed
