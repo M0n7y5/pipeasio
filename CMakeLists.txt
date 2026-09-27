@@ -82,22 +82,26 @@ if(BUILD_WOW64_32)
     pipeasio_add_pe_driver(NAME pipeasio32 PE_ARCH i386)
 endif()
 
-# ARM64 front ends: aarch64 for native ARM64 Windows hosts, arm64ec for x86_64
-# hosts under FEX.  Both need clang + lld and Wine's <arch>-windows import
-# libraries; an ARM64 host's Wine ships those, an x86_64 host can only
-# cross-build the PE halves (the unixlib is the host's).
-option(BUILD_ARM64 "Build the aarch64 and arm64ec PE front ends when the toolchain allows" ON)
+# ARM64 front end: aarch64-windows/pipeasio64.dll.  When Wine was built for
+# arm64ec as well, it is an ARM64X hybrid that also serves x86_64 hosts under
+# FEX (cmake/PeDriver.cmake says why that takes a hybrid).  Needs clang + lld
+# and Wine's aarch64-windows import libraries; an x86_64 host can only
+# cross-build the PE half (the unixlib is the host's).
+option(BUILD_ARM64 "Build the aarch64 PE front end (ARM64X where Wine allows) when the toolchain allows" ON)
 if(BUILD_ARM64)
-    foreach(_arch aarch64 arm64ec)
-        pipeasio_pe_arch_available(${_arch} _have)
-        if(_have)
-            pipeasio_add_pe_driver(NAME pipeasio64 PE_ARCH ${_arch} TARGET pipeasio64_${_arch})
-            message(STATUS "ARM64 front end: ${_arch}")
-        else()
-            message(STATUS "ARM64 front end: ${_arch} skipped (no clang+lld or no "
-                           "${WINE_LIB_ROOT}/${_arch}-windows/libwinecrt0.a)")
-        endif()
-    endforeach()
+    pipeasio_pe_arch_available(aarch64 _have_aarch64)
+    pipeasio_arm64x_available(_have_arm64x)
+    if(_have_arm64x)
+        pipeasio_add_pe_driver(NAME pipeasio64 PE_ARCH aarch64 ARM64X TARGET pipeasio64_aarch64)
+        message(STATUS "ARM64 front end: ARM64X (aarch64 + arm64ec)")
+    elseif(_have_aarch64)
+        pipeasio_add_pe_driver(NAME pipeasio64 PE_ARCH aarch64 TARGET pipeasio64_aarch64)
+        message(STATUS "ARM64 front end: aarch64 only (${WINE_LIB_ROOT}/aarch64-windows "
+                       "carries no arm64ec code, so x86_64 hosts under FEX cannot load it)")
+    else()
+        message(STATUS "ARM64 front end skipped (no clang+lld or no "
+                       "${WINE_LIB_ROOT}/aarch64-windows/libwinecrt0.a)")
+    endif()
 endif()
 endif()
 

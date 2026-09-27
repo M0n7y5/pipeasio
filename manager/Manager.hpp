@@ -63,13 +63,11 @@ CommandResult execute(const QString &program, const QStringList &arguments,
 // comes from this table rather than from a literal.
 struct Layout
 {
-    QString architecture;      // as architecture() reports it
-    QString peDirectory;       // 64-bit PE front end; its DLL is what system32 gets
-    quint16 peMachine;         // PE machine of that front end
-    QString peEmulated;        // extra 64-bit front end, empty when the host has none
-    quint16 peEmulatedMachine; // PE machine of that front end, 0 when there is none
-    QString unixDirectory;     // unixlib directory, shared by both bitnesses
-    quint16 elfMachine;        // ELF machine of the unixlibs
+    QString architecture;  // as architecture() reports it
+    QString peDirectory;   // 64-bit PE front end; its DLL is what system32 gets
+    quint16 peMachine;     // PE machine of that front end
+    QString unixDirectory; // unixlib directory, shared by both bitnesses
+    quint16 elfMachine;    // ELF machine of the unixlibs
 };
 
 const Layout &layout();

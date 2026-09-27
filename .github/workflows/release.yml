@@ -152,9 +152,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Configure (driver + manager CLI, no Qt panel)
-        run: >
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          -DBUILD_SETTINGS_PANEL=OFF -DBUILD_MANAGER=ON
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SETTINGS_PANEL=OFF -DBUILD_MANAGER=ON | tee configure.log
 
       - name: Build
         run: cmake --build build
@@ -184,10 +184,10 @@ jobs:
         run: |
           glibc=$(ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+$')
           pipewire=$(pkg-config --modversion libpipewire-0.3)
-          if [ -f stage/usr/lib/wine/arm64ec-windows/pipeasio64.dll ]; then
-            emulated="  lib/wine/arm64ec-windows/pipeasio64.dll (PE front end for x86_64 hosts under FEX)"
+          if grep -q 'ARM64 front end: ARM64X' configure.log; then
+            form="ARM64X hybrid: native ARM64 hosts and x86_64 hosts under FEX"
           else
-            emulated="  arm64ec-windows/pipeasio64.dll: not built on Debian (no arm64ec-windows import libraries)"
+            form="aarch64 only: Debian's Wine has no arm64ec code, so x86_64 hosts under FEX cannot load it"
           fi
           printf '%s\n' \
             "PipeASIO ${TAG} - prebuilt binaries (Debian stable, aarch64)" \
@@ -201,9 +201,8 @@ jobs:
             "Kernel:           $(uname -sr)" \
             "" \
             "Contents:" \
-            "  lib/wine/aarch64-windows/pipeasio64.dll (PE front end)" \
+            "  lib/wine/aarch64-windows/pipeasio64.dll (PE front end; ${form})" \
             "  lib/wine/aarch64-unix/pipeasio64.so     (unixlib: the PipeWire client)" \
-            "${emulated}" \
             "  share/pipeasio/manager/pipeasio-check.exe (installation-only probe)" \
             "  bin/pipeasio-register, bin/pipeasio-manage" \
             "" \

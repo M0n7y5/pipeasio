@@ -623,28 +623,39 @@ register through the runner instead.
 
 ## ARM64
 
-ARM64 Linux runs Windows audio hosts two ways, and the driver builds a PE
-front end for each: `aarch64-windows/pipeasio64.dll` for native ARM64
-Windows hosts (FL Studio 24.1+ has one), and `arm64ec-windows/pipeasio64.dll`
-for x86_64 hosts running under Wine with FEX (Ableton, older FL Studio,
-most of what exists). Both share the one aarch64 unixlib. Wine loads only
-this split layout on ARM64, which is why the driver moved to it
+ARM64 Linux runs Windows audio hosts two ways: native ARM64 builds (FL Studio
+24.1+ has one), and x86_64 builds under Wine with FEX (Ableton, older FL
+Studio, most of what exists). The driver's front end for both is one
+`aarch64-windows/pipeasio64.dll` over the aarch64 unixlib
 ([#23](https://github.com/M0n7y5/pipeasio/issues/23)).
 
-Building needs `clang` and `lld` (there is no MinGW gcc for these targets)
-and a Wine that was itself built for `aarch64` and `arm64ec`, so that
-`lib/wine/aarch64-windows/` and `lib/wine/arm64ec-windows/` carry the import
-libraries. Debian's `libwine-dev` on arm64 ships the `aarch64` set (no
-`arm64ec`); Fedora does not build Wine for aarch64 at all; a Wine built from
-source with `--enable-archs=aarch64,arm64ec` ships both. `BUILD_ARM64`
-(default on) builds each front end whose toolchain and import libraries are
-present and reports the ones it skips. On an x86_64 host only the PE halves
-can be cross-built; the unixlib is always the host's.
+To serve x86_64 hosts, that DLL has to be an ARM64X hybrid, carrying aarch64
+and arm64ec code in one file. A Wine built for both `aarch64` and `arm64ec`
+keeps no separate `arm64ec-windows` directory: its `aarch64-windows`
+libraries hold both halves, and when an x86_64 program loads a builtin, Wine
+looks in `aarch64-windows` and takes the x64 view of a hybrid image there. A
+plain aarch64 DLL only loads into native ARM64 hosts.
 
-Status: the front ends build and register (CI does that on an ARM64 runner),
-but nobody has yet run an audio host through them on real hardware. Reports
-from an Asahi or other ARM64 machine are what moves this from "builds" to
-"works", on the tracking issue above.
+Building needs `clang` and `lld` (there is no MinGW gcc for these targets)
+and Wine's `lib/wine/aarch64-windows/` import libraries. `BUILD_ARM64`
+(default on) links the ARM64X hybrid when those libraries carry arm64ec code
+and a plain aarch64 DLL otherwise. Configure prints which one:
+
+```
+-- ARM64 front end: ARM64X (aarch64 + arm64ec)
+```
+
+A Wine built with `--enable-archs=aarch64,arm64ec` (Hangover's packages, for
+example) gives the hybrid. Debian's `libwine-dev` on arm64 has no arm64ec
+code, so the Debian aarch64 release tarball serves native ARM64 hosts only.
+Fedora does not build Wine for aarch64 at all. On an x86_64 host only the PE
+half can be cross-built; the unixlib is always the host's.
+
+Status: CI builds both forms on an ARM64 runner. Against Hangover's Wine it
+links the hybrid, registers it, and loads it from an x86_64 program under
+FEX, which is the path Ableton takes. Nobody has yet played audio through
+either form on real hardware. Reports from an Asahi or other ARM64 machine
+are what moves this from "builds" to "works", on the tracking issue above.
 
 ## Other distributions
 

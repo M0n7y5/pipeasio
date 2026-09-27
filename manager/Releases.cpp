@@ -57,15 +57,6 @@ dll64(const Layout &host)
     return moduleFile(host.peDirectory, QStringLiteral("pipeasio64.dll"));
 }
 
-// The second 64-bit front end an ARM64 release may carry; empty elsewhere.
-QString
-dll64Emulated(const Layout &host)
-{
-    return host.peEmulated.isEmpty()
-                   ? QString()
-                   : moduleFile(host.peEmulated, QStringLiteral("pipeasio64.dll"));
-}
-
 QString
 unixlib64(const Layout &host)
 {
@@ -96,15 +87,12 @@ struct PayloadBinary
 QList<PayloadBinary>
 payloadBinaries(const Layout &host)
 {
-    QList<PayloadBinary> result{ { dll64(host), false, host.peMachine },
-                                 { unixlib64(host), true, host.elfMachine },
-                                 { dll32(), false, 0x14c },
-                                 { unixlib32(host), true, host.elfMachine },
-                                 { Probe, false, host.peMachine },
-                                 { Probe32, false, 0x14c } };
-    if (!host.peEmulated.isEmpty())
-        result.append({ dll64Emulated(host), false, host.peEmulatedMachine });
-    return result;
+    return { { dll64(host), false, host.peMachine },
+             { unixlib64(host), true, host.elfMachine },
+             { dll32(), false, 0x14c },
+             { unixlib32(host), true, host.elfMachine },
+             { Probe, false, host.peMachine },
+             { Probe32, false, 0x14c } };
 }
 
 void
@@ -832,11 +820,6 @@ createManifest(const QString &version, const QString &asset, const QString &root
     require(!wineSdk.isEmpty() && wineSdk.size() <= 256,
             QStringLiteral("Invalid Wine SDK version"));
     QStringList required{ dll64(*host), unixlib64(*host), BuildInfo, "share/pipeasio/" + Probe };
-    // The second ARM64 front end only exists where the build host had Wine's
-    // arm64ec import libraries, so it is recorded when the tree carries it.
-    const QString emulated = dll64Emulated(*host);
-    if (!emulated.isEmpty() && QFileInfo::exists(root + '/' + emulated))
-        required.append(emulated);
     if (QFileInfo::exists(root + '/' + dll32()) || QFileInfo::exists(root + '/' + unixlib32(*host)))
         required.append({ dll32(), unixlib32(*host), "share/pipeasio/" + Probe32 });
     else if (QFileInfo::exists(root + "/share/pipeasio/" + Probe32))
