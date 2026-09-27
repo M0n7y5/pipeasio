@@ -281,8 +281,9 @@ jobs:
           tarball="hangover_${HANGOVER}_debian13_trixie_arm64.tar"
           curl -fsSLO "https://github.com/AndreRH/hangover/releases/download/hangover-${HANGOVER}/${tarball}"
           echo "${HANGOVER_SHA256}  ${tarball}" | sha256sum -c -
-          tar -xf "$tarball" --wildcards 'hangover-wine_*.deb' 'hangover-libarm64ecfex_*.deb'
-          apt-get install -y ./hangover-wine_*.deb ./hangover-libarm64ecfex_*.deb
+          tar -xf "$tarball" --wildcards 'hangover-*.deb'
+          apt-get install -y --no-install-recommends ./hangover-wine_*.deb \
+            ./hangover-wowbox64_*.deb ./hangover-libarm64ecfex_*.deb
           rm -f "$tarball" ./*.deb
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
