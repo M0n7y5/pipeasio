@@ -279,7 +279,7 @@ jobs:
             > /etc/apt/sources.list.d/backports.list
           apt-get update -qq
           apt-get install -y --no-install-recommends \
-            cmake ninja-build gcc g++ pkg-config libpipewire-0.3-dev \
+            cmake ninja-build gcc g++ pkg-config libpipewire-0.3-dev pipewire \
             gcc-mingw-w64-x86-64-win32 curl ca-certificates git file
           apt-get install -y --no-install-recommends -t trixie-backports clang-21 lld-21 llvm-21
           echo /usr/lib/llvm-21/bin >> "$GITHUB_PATH"
