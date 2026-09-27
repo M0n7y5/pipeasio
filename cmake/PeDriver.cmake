@@ -234,8 +234,8 @@ function(pipeasio_add_pe_driver)
             COMMENT "winegcc ${PA_NAME}.dll (${PA_PE_ARCH} PE front end)")
     else()
         # One winegcc call targets one arch, so compile each half on its own,
-        # then link both object sets as makedep does: the arm64ec target with
-        # -marm64x, which also has winebuild emit the spec for both views.
+        # then link both object sets with -marm64x, which also has winebuild
+        # emit the spec for both views.
         set(_objs "")
         foreach(_arch aarch64 arm64ec)
             _pipeasio_pe_target_args(${_arch} _arch_args)
@@ -256,10 +256,12 @@ function(pipeasio_add_pe_driver)
                 COMMENT "winegcc -c ${PA_NAME} (${_arch} half)")
             list(APPEND _objs ${_arch_objs})
         endforeach()
-        _pipeasio_pe_target_args(arm64ec _ec_args)
+        # makedep links with the arm64ec target; the aarch64 one gives a
+        # byte-identical DLL, and winegcc before 11.17 asserts on arm64ec in
+        # get_multiarch_dir (fixed by Wine commit d8bb13b7).
         add_custom_command(
             OUTPUT  "${_dll}"
-            COMMAND "${WINEGCC}" ${_ec_args} -marm64x -shared "${_spec}" ${_objs} ${_libs}
+            COMMAND "${WINEGCC}" ${_target_args} -marm64x -shared "${_spec}" ${_objs} ${_libs}
                     -o "${_dll}"
             DEPENDS ${_objs} "${_spec}"
             VERBATIM COMMAND_EXPAND_LISTS
