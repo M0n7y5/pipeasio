@@ -280,13 +280,25 @@ function(pipeasio_add_pe_driver)
                 COMMENT "winegcc -c ${PA_NAME} (${_arch} half)")
             list(APPEND _objs ${_arch_objs})
         endforeach()
-        # makedep links with the arm64ec target; the aarch64 one gives a
-        # byte-identical DLL, and winegcc before 11.17 asserts on arm64ec in
-        # get_multiarch_dir (fixed by Wine commit d8bb13b7).
+        # Linked as makedep links Wine's own hybrids: the arm64ec target with
+        # -marm64x and --wine-objdir.  Before Wine 11.17 winegcc takes the
+        # first spec object's arch from -b, so an aarch64 target gets two
+        # ARM64 spec objects; and outside --wine-objdir it looks up its lib
+        # dir, which asserts on arm64ec (fixed by Wine commit d8bb13b7).
+        # --wine-objdir also drops winegcc's default libraries and its
+        # winebuild lookup, so both are given here.  On 11.18 the result is
+        # byte-identical to a plain winegcc link.
+        _pipeasio_pe_target_args(arm64ec _ec_args)
+        set(_default_libs -ladvapi32 -luser32 -lwinecrt0)
+        if(EXISTS "${_imp_dir}/libcompiler-rt.a")
+            list(APPEND _default_libs -lcompiler-rt)
+        endif()
+        list(APPEND _default_libs -lucrtbase -lkernel32 -lntdll)
         add_custom_command(
             OUTPUT  "${_dll}"
-            COMMAND "${WINEGCC}" ${_target_args} -marm64x -shared "${_spec}" ${_objs} ${_libs}
-                    -o "${_dll}"
+            COMMAND "${WINEGCC}" --wine-objdir "${CMAKE_CURRENT_BINARY_DIR}"
+                    --winebuild "${WINEBUILD}" ${_ec_args} -marm64x -shared "${_spec}"
+                    ${_objs} ${_libs} ${_default_libs} -o "${_dll}"
             DEPENDS ${_objs} "${_spec}"
             VERBATIM COMMAND_EXPAND_LISTS
             COMMENT "winegcc ${PA_NAME}.dll (ARM64X: aarch64 + arm64ec PE front end)")
