@@ -18,9 +18,9 @@ follow [Semantic Versioning](https://semver.org/).
   libraries in `aarch64-windows`, so the separate `arm64ec-windows` front end
   never built, and Wine only gives an x86_64 program the x64 view of an ARM64X
   hybrid. `BUILD_ARM64` now links `aarch64-windows/pipeasio64.dll` as an ARM64X
-  hybrid when Wine's libraries carry arm64ec code, and the `arm64ec-windows`
-  front end is gone. The Debian aarch64 release tarball stays aarch64-only,
-  since Debian's Wine has no arm64ec code.
+  hybrid when Wine's libraries carry arm64ec code and the linker is LLD 20 or
+  newer, and the `arm64ec-windows` front end is gone. The Debian aarch64
+  release tarball stays aarch64-only, since Debian's Wine has no arm64ec code.
 
 ## [1.8.1] - 2026-09-25
 

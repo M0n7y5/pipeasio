@@ -26,7 +26,8 @@
 #
 #   pipeasio_arm64x_available(<out var>)
 #       TRUE when an aarch64 front end can be linked as ARM64X: clang serves
-#       arm64ec and Wine's aarch64-windows libraries carry arm64ec code.
+#       arm64ec, Wine's aarch64-windows libraries carry arm64ec code, and the
+#       linker is LLD 20 or newer.  <out var>_REASON says why not.
 #
 # ARM64X: Wine built for aarch64 and arm64ec installs no arm64ec-windows
 # directory.  tools/makedep.c folds the arm64ec objects into the
@@ -114,8 +115,11 @@ function(pipeasio_pe_arch_available arch out)
     endif()
 endfunction()
 
+# Sets <out> and <out>_REASON, which says why an aarch64 build falls back to
+# a plain aarch64 DLL.
 function(pipeasio_arm64x_available out)
     set(${out} FALSE PARENT_SCOPE)
+    set(${out}_REASON "" PARENT_SCOPE)
     pipeasio_pe_arch_available(aarch64 _have_aarch64)
     _pipeasio_pe_target_args(arm64ec _ec_args)
     if(NOT _have_aarch64 OR NOT _ec_args)
@@ -124,9 +128,29 @@ function(pipeasio_arm64x_available out)
     # winecrt0 defines this only when built for arm64ec (dlls/winecrt0).
     file(STRINGS "${WINE_LIB_ROOT}/aarch64-windows/libwinecrt0.a" _ec
          REGEX "__wine_unix_call_arm64ec" LIMIT_COUNT 1)
-    if(_ec)
-        set(${out} TRUE PARENT_SCOPE)
+    if(NOT _ec)
+        set(${out}_REASON "${WINE_LIB_ROOT}/aarch64-windows carries no arm64ec code"
+            PARENT_SCOPE)
+        return()
     endif()
+    # LLD before 20 keeps one symbol table for both halves and rejects the two
+    # spec objects winebuild emits as duplicates.  winegcc links through the
+    # clang on PATH, so ask that clang which lld it runs.
+    execute_process(COMMAND "${PIPEASIO_CLANG}" -print-prog-name=ld.lld
+                    OUTPUT_VARIABLE _lld OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    execute_process(COMMAND "${_lld}" --version
+                    OUTPUT_VARIABLE _lld_version ERROR_QUIET)
+    string(REGEX MATCH "LLD ([0-9]+)" _match "${_lld_version}")
+    if(NOT _match OR CMAKE_MATCH_1 LESS 20)
+        if(_match)
+            set(_found "found LLD ${CMAKE_MATCH_1}")
+        else()
+            set(_found "${_lld} reports no LLD version")
+        endif()
+        set(${out}_REASON "linking ARM64X needs LLD 20 or newer, ${_found}" PARENT_SCOPE)
+        return()
+    endif()
+    set(${out} TRUE PARENT_SCOPE)
 endfunction()
 
 function(pipeasio_add_unixlib_objects)

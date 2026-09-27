@@ -96,8 +96,8 @@ if(BUILD_ARM64)
         message(STATUS "ARM64 front end: ARM64X (aarch64 + arm64ec)")
     elseif(_have_aarch64)
         pipeasio_add_pe_driver(NAME pipeasio64 PE_ARCH aarch64 TARGET pipeasio64_aarch64)
-        message(STATUS "ARM64 front end: aarch64 only (${WINE_LIB_ROOT}/aarch64-windows "
-                       "carries no arm64ec code, so x86_64 hosts under FEX cannot load it)")
+        message(STATUS "ARM64 front end: aarch64 only (${_have_arm64x_REASON}, so x86_64 "
+                       "hosts under FEX cannot load it)")
     else()
         message(STATUS "ARM64 front end skipped (no clang+lld or no "
                        "${WINE_LIB_ROOT}/aarch64-windows/libwinecrt0.a)")

@@ -261,7 +261,8 @@ jobs:
   # must create the driver through COM and then fail Init at the PipeWire
   # connection, which the aarch64 unixlib makes: that proves the x64 view loads
   # and reaches the unixlib. The aarch64 probe takes the native view the same
-  # way.
+  # way. Linking ARM64X needs LLD 20+, and trixie's own LLVM is 19, so the
+  # toolchain comes from trixie-backports.
   build-arm64x:
     name: build (hangover, ARM64X)
     runs-on: ubuntu-24.04-arm
@@ -274,10 +275,14 @@ jobs:
         run: |
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
+          echo 'deb http://deb.debian.org/debian trixie-backports main' \
+            > /etc/apt/sources.list.d/backports.list
           apt-get update -qq
           apt-get install -y --no-install-recommends \
-            cmake ninja-build gcc g++ clang lld llvm pkg-config libpipewire-0.3-dev \
+            cmake ninja-build gcc g++ pkg-config libpipewire-0.3-dev \
             gcc-mingw-w64-x86-64-win32 curl ca-certificates git file
+          apt-get install -y --no-install-recommends -t trixie-backports clang-21 lld-21 llvm-21
+          echo /usr/lib/llvm-21/bin >> "$GITHUB_PATH"
           tarball="hangover_${HANGOVER}_debian13_trixie_arm64.tar"
           curl -fsSLO "https://github.com/AndreRH/hangover/releases/download/hangover-${HANGOVER}/${tarball}"
           echo "${HANGOVER_SHA256}  ${tarball}" | sha256sum -c -

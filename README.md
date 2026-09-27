@@ -639,15 +639,18 @@ plain aarch64 DLL only loads into native ARM64 hosts.
 Building needs `clang` and `lld` (there is no MinGW gcc for these targets)
 and Wine's `lib/wine/aarch64-windows/` import libraries. `BUILD_ARM64`
 (default on) links the ARM64X hybrid when those libraries carry arm64ec code
-and a plain aarch64 DLL otherwise. Configure prints which one:
+and the linker is LLD 20 or newer, and a plain aarch64 DLL otherwise.
+Configure prints which one, and why when it falls back:
 
 ```
 -- ARM64 front end: ARM64X (aarch64 + arm64ec)
 ```
 
 A Wine built with `--enable-archs=aarch64,arm64ec` (Hangover's packages, for
-example) gives the hybrid. Debian's `libwine-dev` on arm64 has no arm64ec
-code, so the Debian aarch64 release tarball serves native ARM64 hosts only.
+example) gives the hybrid. Debian stable's own LLVM is 19, so take `clang-21`
+and `lld-21` from `trixie-backports` and put `/usr/lib/llvm-21/bin` first on
+`PATH`. Debian's `libwine-dev` on arm64 has no arm64ec code, so the Debian
+aarch64 release tarball serves native ARM64 hosts only.
 Fedora does not build Wine for aarch64 at all. On an x86_64 host only the PE
 half can be cross-built; the unixlib is always the host's.
 
