@@ -147,17 +147,14 @@ Testing::setArchitecture(const QString &architecture)
 const Layout *
 layoutFor(const QString &architecture)
 {
-    // ARM64 releases carry two 64-bit front ends over the one aarch64 unixlib:
-    // the aarch64 PE for native ARM64 Windows hosts, and, when the build host
-    // had Wine's arm64ec import libraries, the arm64ec PE for x86_64 hosts
-    // under FEX. An ARM64EC image reports machine 0x8664 with CHPE metadata,
-    // which is why its expected machine is the x86_64 one.
+    // ARM64 releases carry one 64-bit front end over the aarch64 unixlib. Where
+    // the build host's Wine had arm64ec code it is an ARM64X hybrid that also
+    // serves x86_64 hosts under FEX; its header reports ARM64 either way.
     static const Layout layouts[]
-            = { { QStringLiteral("x86_64"), QStringLiteral("x86_64-windows"), 0x8664, QString(), 0,
+            = { { QStringLiteral("x86_64"), QStringLiteral("x86_64-windows"), 0x8664,
                   QStringLiteral("x86_64-unix"), 62 },
                 { QStringLiteral("aarch64"), QStringLiteral("aarch64-windows"), 0xaa64,
-                  QStringLiteral("arm64ec-windows"), 0x8664, QStringLiteral("aarch64-unix"),
-                  183 } };
+                  QStringLiteral("aarch64-unix"), 183 } };
     for (const Layout &candidate : layouts)
         if (candidate.architecture == architecture)
             return &candidate;

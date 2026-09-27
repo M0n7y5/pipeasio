@@ -29,7 +29,6 @@ const QString Download = "https://github.com/M0n7y5/pipeasio/releases/download/"
 const QString Dll = "lib/wine/x86_64-windows/pipeasio64.dll";
 const QString Unixlib = "lib/wine/x86_64-unix/pipeasio64.so";
 const QString ArmDll = "lib/wine/aarch64-windows/pipeasio64.dll";
-const QString ArmEcDll = "lib/wine/arm64ec-windows/pipeasio64.dll";
 const QString ArmUnixlib = "lib/wine/aarch64-unix/pipeasio64.so";
 const QString Probe = "share/pipeasio/manager/pipeasio-check.exe";
 const QString Probe32 = "share/pipeasio/manager/pipeasio-check32.exe";
@@ -141,17 +140,15 @@ Entries payload(const QString &version = "v1.7.0", bool probes = false)
     return entries;
 }
 
-// What an ARM64 release tarball holds: the aarch64 front end, the arm64ec one
-// for x86_64 hosts under FEX, and the single aarch64 unixlib both use.
-Entries armPayload(const QString &version = "v1.8.0", bool emulated = true)
+// What an ARM64 release tarball holds: the aarch64 front end (an ARM64X hybrid
+// when the build's Wine had arm64ec code; ARM64 in its header either way) and
+// the aarch64 unixlib.
+Entries armPayload(const QString &version = "v1.8.0")
 {
-    Entries entries{{ArmDll, pe(0xaa64)}, {ArmUnixlib, elf(183)}, {"BUILD-INFO.txt",
+    return {{ArmDll, pe(0xaa64)}, {ArmUnixlib, elf(183)}, {"BUILD-INFO.txt",
         ("PipeASIO " + version + " - prebuilt binaries (Debian family, aarch64)\n"
          "Wine (build SDK): wine-10.15\nglibc: 2.42\nlibpipewire-0.3: 1.4.8 (built against; minimum 1.4.2)\n").toUtf8()},
         {Probe, pe(0xaa64, false)}};
-    if (emulated)
-        entries.insert(ArmEcDll, pe(0x8664));
-    return entries;
 }
 
 QByteArray tar(const Entries &entries, const QString &extra = {}, int type = AE_IFREG, const QString &link = {}, qint64 size = 0, int repeats = 1)
@@ -646,9 +643,7 @@ void aarch64Payload()
     const auto result = fixture.fetch(server);
     CHECK(result.value("architecture") == "aarch64");
     CHECK(readFile(fixture.destination + '/' + ArmDll) == pe(0xaa64));
-    CHECK(readFile(fixture.destination + '/' + ArmEcDll) == pe(0x8664));
     CHECK(readFile(fixture.destination + '/' + ArmUnixlib) == elf(183));
-    CHECK(result.value("files").toObject().contains(ArmEcDll));
     CHECK(readFile(fixture.destination + "/manager/pipeasio-check.exe") == pe(0xaa64, false));
 }
 
@@ -657,8 +652,6 @@ void aarch64PayloadBoundaries()
     HostArchitecture host("aarch64");
     auto wrongPe = armPayload();
     wrongPe[ArmDll] = pe(0x8664);
-    auto wrongEc = armPayload();
-    wrongEc[ArmEcDll] = pe(0xaa64);
     auto wrongElf = armPayload();
     wrongElf[ArmUnixlib] = elf(62);
     auto x86Payload = armPayload();
@@ -666,18 +659,13 @@ void aarch64PayloadBoundaries()
     x86Payload.remove(ArmUnixlib);
     x86Payload[Dll] = pe();
     x86Payload[Unixlib] = elf();
-    for (const auto &entries : {wrongPe, wrongEc, wrongElf, x86Payload})
+    for (const auto &entries : {wrongPe, wrongElf, x86Payload})
     {
         Fixture fixture;
         const auto data = tar(entries);
         Server server(data, "v1.8.0", manifest(data, "aarch64"), "aarch64");
         fixture.reject(server);
     }
-    // An aarch64 release without the optional arm64ec front end still installs.
-    const auto data = tar(armPayload("v1.8.0", false));
-    Server server(data, "v1.8.0", manifest(data, "aarch64"), "aarch64");
-    Fixture fixture;
-    CHECK(!fixture.fetch(server).value("files").toObject().contains(ArmEcDll));
 }
 
 void foreignArchitectureIsFiltered()
@@ -737,11 +725,10 @@ void aarch64ManifestGeneration()
     const auto description = Releases::createManifest("v1.8.0", asset, root, "wine-10.15", "aarch64");
     const auto artifact = description.value("artifacts").toArray().first().toObject();
     CHECK(artifact.value("architecture") == "aarch64");
-    CHECK(artifact.value("files").toObject().contains(ArmEcDll));
     CHECK(artifact.value("libraries").toObject().value(ArmUnixlib) == QJsonArray{"libc.so.6"});
     Server server(readFile(asset), "v1.8.0", description, "aarch64");
     const auto result = fixture.fetch(server);
-    CHECK(result.value("files").toObject().value(ArmEcDll) == hash(pe(0x8664)));
+    CHECK(result.value("files").toObject().value(ArmDll) == hash(pe(0xaa64)));
     CHECK(result.value("compatibility").toObject().value("minimum_glibc") == "2.34");
 }
 }

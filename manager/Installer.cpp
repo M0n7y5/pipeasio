@@ -196,17 +196,11 @@ payloadLayout(const QJsonObject &payload)
 
 // The payload-relative PE that belongs in the prefix's system32 for a view.
 //
-// On ARM64 a release carries two 64-bit front ends and only one file can be
-// installed, so this picks the host's own: aarch64-windows. Wine resolves a
-// builtin through WINEDLLPATH by appending the directory its loader derives
-// from the requesting machine, and get_pe_dir() in dlls/ntdll/unix/loader.c
-// maps ARM64 to aarch64-windows and AMD64 to x86_64-windows. It knows no
-// arm64ec-windows at all, so the arm64ec front end is never reachable that
-// way, and the file the loader maps out of system32 has to report a machine
-// the host process can run. Whether an x86_64 host under FEX can be served
-// from the same prefix stays open on #23: Wine reaches for the x64 side of an
-// ARM64X hybrid image in aarch64-windows, which a separate arm64ec PE is not,
-// and nobody has run this on ARM64 hardware yet.
+// On ARM64 this is aarch64-windows for both kinds of host. The loader
+// (dlls/ntdll/unix/loader.c) serves an x86_64 process under FEX from
+// aarch64-windows too, and loads the x64 view only when the image there is an
+// ARM64X hybrid, which is what a release built against a Wine with arm64ec
+// code carries (#23).
 QString
 peRelative(const QJsonObject &payload, const QString &view)
 {

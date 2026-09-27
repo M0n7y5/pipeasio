@@ -1,5 +1,5 @@
 # PE front end + unixlib: the builtin layout Wine has used since 8 and the
-# only one aarch64/arm64ec Wine loads.  Every driver build goes through it.
+# only one aarch64 Wine loads.  Every driver build goes through it.
 #
 # The PE half is linked the way Wine links its own modules: winegcc drives a
 # cross compiler with Wine's headers and -nodefaultlibs, links winecrt0 and
@@ -11,7 +11,8 @@
 #
 #   pipeasio_add_pe_driver(
 #       NAME       pipeasio64          # module name; <NAME>.dll and <NAME>.so
-#       PE_ARCH    x86_64              # i386 | x86_64 | aarch64 | arm64ec
+#       PE_ARCH    x86_64              # i386 | x86_64 | aarch64
+#       [ARM64X]                       # aarch64 only: add arm64ec, link a hybrid
 #       [TARGET    name]               # CMake target name, default NAME
 #       [DEFINES   FOO BAR]            # extra -D for the PE half only
 #       [NO_INSTALL]
@@ -22,6 +23,19 @@
 #
 #   pipeasio_pe_arch_available(<arch> <out var>)
 #       TRUE when a compiler and Wine's import libraries exist for <arch>.
+#
+#   pipeasio_arm64x_available(<out var>)
+#       TRUE when an aarch64 front end can be linked as ARM64X: clang serves
+#       arm64ec, Wine's aarch64-windows libraries carry arm64ec code, and the
+#       linker is LLD 20 or newer.  <out var>_REASON says why not.
+#
+# ARM64X: Wine built for aarch64 and arm64ec installs no arm64ec-windows
+# directory.  tools/makedep.c folds the arm64ec objects into the
+# aarch64-windows libraries, and winegcc looks for arm64ec libraries there.
+# The loader (dlls/ntdll/unix/loader.c) serves an x86_64 process, a host
+# under FEX, from aarch64-windows as well, and loads the x64 view only when
+# the module there is a hybrid.  So the front end for both kinds of host is
+# one pipeasio64.dll with aarch64 and arm64ec code, linked -marm64x.
 #
 #   pipeasio_add_pe_program(
 #       NAME     asio_probe           # <NAME>.exe in the current binary dir
@@ -101,6 +115,44 @@ function(pipeasio_pe_arch_available arch out)
     endif()
 endfunction()
 
+# Sets <out> and <out>_REASON, which says why an aarch64 build falls back to
+# a plain aarch64 DLL.
+function(pipeasio_arm64x_available out)
+    set(${out} FALSE PARENT_SCOPE)
+    set(${out}_REASON "" PARENT_SCOPE)
+    pipeasio_pe_arch_available(aarch64 _have_aarch64)
+    _pipeasio_pe_target_args(arm64ec _ec_args)
+    if(NOT _have_aarch64 OR NOT _ec_args)
+        return()
+    endif()
+    # winecrt0 defines this only when built for arm64ec (dlls/winecrt0).
+    file(STRINGS "${WINE_LIB_ROOT}/aarch64-windows/libwinecrt0.a" _ec
+         REGEX "__wine_unix_call_arm64ec" LIMIT_COUNT 1)
+    if(NOT _ec)
+        set(${out}_REASON "${WINE_LIB_ROOT}/aarch64-windows carries no arm64ec code"
+            PARENT_SCOPE)
+        return()
+    endif()
+    # LLD before 20 keeps one symbol table for both halves and rejects the two
+    # spec objects winebuild emits as duplicates.  winegcc links through the
+    # clang on PATH, so ask that clang which lld it runs.
+    execute_process(COMMAND "${PIPEASIO_CLANG}" -print-prog-name=ld.lld
+                    OUTPUT_VARIABLE _lld OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    execute_process(COMMAND "${_lld}" --version
+                    OUTPUT_VARIABLE _lld_version ERROR_QUIET)
+    string(REGEX MATCH "LLD ([0-9]+)" _match "${_lld_version}")
+    if(NOT _match OR CMAKE_MATCH_1 LESS 20)
+        if(_match)
+            set(_found "found LLD ${CMAKE_MATCH_1}")
+        else()
+            set(_found "${_lld} reports no LLD version")
+        endif()
+        set(${out}_REASON "linking ARM64X needs LLD 20 or newer, ${_found}" PARENT_SCOPE)
+        return()
+    endif()
+    set(${out} TRUE PARENT_SCOPE)
+endfunction()
+
 function(pipeasio_add_unixlib_objects)
     if(TARGET pipeasio_unix_objs)
         return()
@@ -129,12 +181,15 @@ function(pipeasio_add_unixlib_objects)
 endfunction()
 
 function(pipeasio_add_pe_driver)
-    cmake_parse_arguments(PA "NO_INSTALL" "NAME;PE_ARCH;TARGET" "DEFINES" ${ARGN})
+    cmake_parse_arguments(PA "NO_INSTALL;ARM64X" "NAME;PE_ARCH;TARGET" "DEFINES" ${ARGN})
     if(NOT PA_NAME OR NOT PA_PE_ARCH)
         message(FATAL_ERROR "pipeasio_add_pe_driver: NAME and PE_ARCH are required.")
     endif()
     if(NOT PA_TARGET)
         set(PA_TARGET "${PA_NAME}")
+    endif()
+    if(PA_ARM64X AND NOT PA_PE_ARCH STREQUAL "aarch64")
+        message(FATAL_ERROR "${PA_NAME}: ARM64X needs PE_ARCH aarch64.")
     endif()
     _pipeasio_pe_target_args(${PA_PE_ARCH} _target_args)
     if(NOT _target_args)
@@ -189,17 +244,65 @@ function(pipeasio_add_pe_driver)
     # brackets that winecrt0's crt_dllmain.o wants, which mingw's cinitexe.o
     # has no CRT$XT for.  A direct mingw link needs both worked around and
     # broke i386 on mingw-w64-crt 14 / gcc 16.
-    add_custom_command(
-        OUTPUT  "${_dll}"
-        COMMAND "${WINEGCC}" ${_target_args} -shared "${_spec}"
-                ${_pe_sources}
-                -DPIPEASIO_PE ${_inc} ${_cflags}
-                -L "${_imp_dir}" -lole32 -luuid -luser32 -lkernelbase
-                -Wl,--wine-builtin
-                -o "${_dll}"
-        DEPENDS ${_pe_sources} ${_headers} "${_spec}"
-        VERBATIM COMMAND_EXPAND_LISTS
-        COMMENT "winegcc ${PA_NAME}.dll (${PA_PE_ARCH} PE front end)")
+    set(_libs -L "${_imp_dir}" -lole32 -luuid -luser32 -lkernelbase -Wl,--wine-builtin)
+    if(NOT PA_ARM64X)
+        add_custom_command(
+            OUTPUT  "${_dll}"
+            COMMAND "${WINEGCC}" ${_target_args} -shared "${_spec}"
+                    ${_pe_sources}
+                    -DPIPEASIO_PE ${_inc} ${_cflags}
+                    ${_libs}
+                    -o "${_dll}"
+            DEPENDS ${_pe_sources} ${_headers} "${_spec}"
+            VERBATIM COMMAND_EXPAND_LISTS
+            COMMENT "winegcc ${PA_NAME}.dll (${PA_PE_ARCH} PE front end)")
+    else()
+        # One winegcc call targets one arch, so compile each half on its own,
+        # then link both object sets with -marm64x, which also has winebuild
+        # emit the spec for both views.
+        set(_objs "")
+        foreach(_arch aarch64 arm64ec)
+            _pipeasio_pe_target_args(${_arch} _arch_args)
+            set(_obj_dir "${CMAKE_CURRENT_BINARY_DIR}/${PA_TARGET}.dir/${_arch}")
+            file(MAKE_DIRECTORY "${_obj_dir}")
+            set(_arch_objs "")
+            foreach(_src ${_pe_sources})
+                get_filename_component(_base "${_src}" NAME_WE)
+                list(APPEND _arch_objs "${_obj_dir}/${_base}.o")
+            endforeach()
+            add_custom_command(
+                OUTPUT  ${_arch_objs}
+                COMMAND "${WINEGCC}" ${_arch_args} -c ${_pe_sources}
+                        -DPIPEASIO_PE ${_inc} ${_cflags}
+                WORKING_DIRECTORY "${_obj_dir}"
+                DEPENDS ${_pe_sources} ${_headers}
+                VERBATIM COMMAND_EXPAND_LISTS
+                COMMENT "winegcc -c ${PA_NAME} (${_arch} half)")
+            list(APPEND _objs ${_arch_objs})
+        endforeach()
+        # Linked as makedep links Wine's own hybrids: the arm64ec target with
+        # -marm64x and --wine-objdir.  Before Wine 11.17 winegcc takes the
+        # first spec object's arch from -b, so an aarch64 target gets two
+        # ARM64 spec objects; and outside --wine-objdir it looks up its lib
+        # dir, which asserts on arm64ec (fixed by Wine commit d8bb13b7).
+        # --wine-objdir also drops winegcc's default libraries and its
+        # winebuild lookup, so both are given here.  On 11.18 the result is
+        # byte-identical to a plain winegcc link.
+        _pipeasio_pe_target_args(arm64ec _ec_args)
+        set(_default_libs -ladvapi32 -luser32 -lwinecrt0)
+        if(EXISTS "${_imp_dir}/libcompiler-rt.a")
+            list(APPEND _default_libs -lcompiler-rt)
+        endif()
+        list(APPEND _default_libs -lucrtbase -lkernel32 -lntdll)
+        add_custom_command(
+            OUTPUT  "${_dll}"
+            COMMAND "${WINEGCC}" --wine-objdir "${CMAKE_CURRENT_BINARY_DIR}"
+                    --winebuild "${WINEBUILD}" ${_ec_args} -marm64x -shared "${_spec}"
+                    ${_objs} ${_libs} ${_default_libs} -o "${_dll}"
+            DEPENDS ${_objs} "${_spec}"
+            VERBATIM COMMAND_EXPAND_LISTS
+            COMMENT "winegcc ${PA_NAME}.dll (ARM64X: aarch64 + arm64ec PE front end)")
+    endif()
 
     pipeasio_add_unixlib_objects()
     # A unixlib is a plain ELF shared object the loader dlopens for

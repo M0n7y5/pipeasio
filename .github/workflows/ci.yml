@@ -200,11 +200,12 @@ jobs:
 
   # Native ARM64 build (#23). Debian is the ARM64 distribution whose Wine
   # ships the aarch64-windows import libraries (Fedora does not build Wine for
-  # aarch64 at all; Asahi carries its own). Debian has no arm64ec-windows, so
-  # that front end is reported as skipped. The runner has no PipeWire daemon:
-  # the unit tests and the ABI layout run, the Wine integration tests skip,
-  # and pipeasio-register in a throwaway prefix proves the script finds the
-  # aarch64 pair and the loader pairs the aarch64 PE with the aarch64 unixlib.
+  # aarch64 at all; Asahi carries its own). They carry no arm64ec code, so the
+  # front end is a plain aarch64 DLL; build-arm64x covers the hybrid. The
+  # runner has no PipeWire daemon: the unit tests and the ABI layout run, the
+  # Wine integration tests skip, and pipeasio-register in a throwaway prefix
+  # proves the script finds the aarch64 pair and the loader pairs the aarch64
+  # PE with the aarch64 unixlib.
   build-arm64:
     name: build (debian, aarch64)
     runs-on: ubuntu-24.04-arm
@@ -220,7 +221,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Configure
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SETTINGS_PANEL=OFF
+        run: |
+          set -euo pipefail
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SETTINGS_PANEL=OFF | tee configure.log
+          grep -q 'ARM64 front end: aarch64 only' configure.log
       - name: Build
         run: cmake --build build
       - name: Assert the aarch64 front end and unixlib
@@ -228,7 +232,7 @@ jobs:
           set -euo pipefail
           ls -la build/aarch64-windows build/aarch64-unix
           file build/aarch64-windows/pipeasio64.dll build/aarch64-unix/pipeasio64.so
-          test -d build/arm64ec-windows && echo "arm64ec front end built" || echo "arm64ec skipped: Debian ships no arm64ec-windows import libraries"
+          test ! -e build/arm64ec-windows
       - name: Test (integration tests skip without a PipeWire daemon)
         run: ctest --test-dir build --output-on-failure
       - name: Register in a throwaway prefix
@@ -245,6 +249,93 @@ jobs:
           grep -q 'Successfully registered' regsvr.log
           grep -q 'aarch64-windows/pipeasio64.dll' regsvr.log
           wine reg query 'HKLM\Software\ASIO\PipeASIO' | grep -q 2D3CA9E2
+          wineserver -w
+      - name: Show test log on failure
+        if: failure()
+        run: cat build/Testing/Temporary/LastTest.log || true
+
+  # ARM64X (#23). Hangover's Wine is built for aarch64 and arm64ec and uses FEX
+  # for x86_64 code, so against it the front end links as an ARM64X hybrid and
+  # an x86_64 program, which is what Ableton is on ARM64, can load it. The x86_64
+  # probe comes from MinGW gcc, like a real host. Without a PipeWire daemon it
+  # must create the driver through COM and then fail Init at the PipeWire
+  # connection, which the aarch64 unixlib makes: that proves the x64 view loads
+  # and reaches the unixlib. The aarch64 probe takes the native view the same
+  # way. Linking ARM64X needs LLD 20+, and trixie's own LLVM is 19, so the
+  # toolchain comes from trixie-backports.
+  build-arm64x:
+    name: build (hangover, ARM64X)
+    runs-on: ubuntu-24.04-arm
+    container: docker.io/library/debian:trixie
+    env:
+      HANGOVER: "11.16"
+      HANGOVER_SHA256: b5493f5903ab3c05f78bf4c03b06ac0005eb26f732437748c1592fefa45e861a
+    steps:
+      - name: Install toolchain and Hangover's Wine
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          echo 'deb http://deb.debian.org/debian trixie-backports main' \
+            > /etc/apt/sources.list.d/backports.list
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            cmake ninja-build gcc g++ pkg-config libpipewire-0.3-dev pipewire \
+            gcc-mingw-w64-x86-64-win32 curl ca-certificates git file
+          apt-get install -y --no-install-recommends -t trixie-backports clang-21 lld-21 llvm-21
+          echo /usr/lib/llvm-21/bin >> "$GITHUB_PATH"
+          tarball="hangover_${HANGOVER}_debian13_trixie_arm64.tar"
+          curl -fsSLO "https://github.com/AndreRH/hangover/releases/download/hangover-${HANGOVER}/${tarball}"
+          echo "${HANGOVER_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xf "$tarball" --wildcards 'hangover-*.deb'
+          apt-get install -y --no-install-recommends ./hangover-wine_*.deb \
+            ./hangover-wowbox64_*.deb ./hangover-libarm64ecfex_*.deb
+          rm -f "$tarball" ./*.deb
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Configure
+        run: |
+          set -euo pipefail
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SETTINGS_PANEL=OFF | tee configure.log
+          grep -q 'ARM64 front end: ARM64X' configure.log
+      - name: Build
+        run: cmake --build build
+      - name: Assert the front end is an ARM64X hybrid
+        run: |
+          set -euo pipefail
+          llvm-readobj --file-headers build/aarch64-windows/pipeasio64.dll | tee headers.txt
+          grep -q 'Format: COFF-ARM64X' headers.txt
+          grep -q 'Format: COFF-ARM64EC' headers.txt
+          test ! -e build/arm64ec-windows
+      - name: Test (integration tests skip without a PipeWire daemon)
+        run: ctest --test-dir build --output-on-failure
+      - name: Register in a throwaway prefix
+        run: |
+          set -euo pipefail
+          cmake --install build --prefix "$HOME/.local"
+          export WINEPREFIX="$HOME/pfx" WINEDLLPATH="$HOME/.local/lib/wine"
+          export WINEDLLOVERRIDES="mscoree,mshtml=" WINEDEBUG=-all,+loaddll,err+all
+          mkdir -p "$WINEPREFIX"
+          wineboot --init
+          PIPEASIO_PREFIX="$HOME/.local" "$HOME/.local/bin/pipeasio-register" 2>&1 | tee regsvr.log
+          grep -q 'Successfully registered' regsvr.log
+          wine reg query 'HKLM\Software\ASIO\PipeASIO' | grep -q 2D3CA9E2
+          wineserver -w
+      - name: Load the driver from an x86_64 and an aarch64 program
+        run: |
+          set -euo pipefail
+          x86_64-w64-mingw32-gcc-win32 -mconsole -O0 -g tests/asio_probe/asio_probe.c -lole32 \
+            -o asio_probe_x64.exe
+          file asio_probe_x64.exe build/tests/asio_probe/asio_probe.exe
+          export WINEPREFIX="$HOME/pfx" WINEDLLPATH="$HOME/.local/lib/wine"
+          export WINEDLLOVERRIDES="mscoree,mshtml=" WINEDEBUG=-all,+loaddll,err+all
+          export XDG_CONFIG_HOME="$HOME/pfx/xdg" PIPEASIO_CONNECT_TO_HARDWARE=off
+          for probe in asio_probe_x64.exe build/tests/asio_probe/asio_probe.exe; do
+            log="$(basename "$probe" .exe).log"
+            timeout 180 wine "$probe" 2 > "$log" 2>&1 || true
+            cat "$log"
+            grep -q 'got IPipeASIO' "$log"
+            grep 'Init failed:' "$log" | grep -qi pipewire
+          done
           wineserver -w
       - name: Show test log on failure
         if: failure()

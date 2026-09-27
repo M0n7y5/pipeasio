@@ -582,10 +582,6 @@ static void test_aarch64_payload_installs_the_aarch64_front_end()
         ~Restore() { Testing::setArchitecture(QString()); }
     } restore;
     Fixture f;
-    // An ARM64 release also carries the arm64ec front end. Only one file can
-    // live in system32 and the manager installs the host's own aarch64 PE.
-    writeFile(f.payload.value("root").toString() + "/lib/wine/arm64ec-windows/pipeasio64.dll",
-              "fixture EC DLL64");
     CHECK(f.install().value("status") == "ready");
     CHECK(readFile(dllPath(f.prefix, "64")) == "fixture DLL64");
     CHECK(Installer::check(f.id()).value("status") == "ready");
