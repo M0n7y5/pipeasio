@@ -112,10 +112,12 @@ Steam and Faugus need. It only loads when the launcher, or `wine`, runs with
 ## GUI manager
 
 PipeASIO Manager adds an **Installations** tab to the existing settings and
-monitor application. It discovers Faugus applications and native/Flatpak Bottles
-configurations without starting Wine. Bottles support is experimental, see
-[Bottles](#bottles). **Add prefix** accepts an existing custom Wine prefix and
-its owning Wine executable.
+monitor application. It discovers Faugus applications and native Bottles
+configurations without starting Wine. Flatpak Bottles are listed but disabled
+until [#36](https://github.com/M0n7y5/pipeasio/issues/36) is fixed: the manager
+only removes an installation it already made there. Bottles support is
+experimental, see [Bottles](#bottles). **Add prefix** accepts an existing
+custom Wine prefix and its owning Wine executable.
 
 Download `pipeasio-manager-<tag>-x86_64.AppImage` from the
 [releases page](https://github.com/M0n7y5/pipeasio/releases): every release

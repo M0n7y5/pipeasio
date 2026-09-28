@@ -484,7 +484,15 @@ static void test_faugus_readoption_does_not_steal_live_owner()
     CHECK(failure([&] { Installer::install(f.network, targets[0].toObject().value("id").toString(), "v1.7.0"); }).contains("managed through"));
 }
 
-static QJsonObject pendingFlatpak(Fixture &f, const QString &name)
+static QJsonObject flatpakTarget(const QString &prefix)
+{
+    for (const auto &value : Installer::listTargets())
+        if (value.toObject().value("kind") == "bottles-flatpak" && value.toObject().value("prefix") == prefix)
+            return value.toObject();
+    return {};
+}
+
+static QJsonObject flatpakBottle(Fixture &f, const QString &name)
 {
     copyFile(f.runner, f.temporary.path() + "/bin/flatpak");
     QFile::setPermissions(f.temporary.path() + "/bin/flatpak", QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
@@ -495,14 +503,38 @@ static QJsonObject pendingFlatpak(Fixture &f, const QString &name)
     copyFile(f.runner, base + "/runners/fixture/bin/wine");
     QFile::setPermissions(base + "/runners/fixture/bin/wine", QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
     writeFile(prefix + "/bottle.yml", ("Name: " + name + "\nPath: " + name + "\nRunner: fixture\nArch: win64\nParameters: {}\n").toUtf8());
-    QJsonObject target;
-    for (const auto &value : Installer::listTargets())
-        if (value.toObject().value("kind") == "bottles-flatpak" && value.toObject().value("prefix") == prefix) target = value.toObject();
+    const auto target = flatpakTarget(prefix);
     CHECK(!target.isEmpty());
-    CHECK(target.value("error").toString().isEmpty());
-    const QString statePath = managerDirectory() + "/prefixes/" + prefixKey(target) + "/state.json";
-    writeJson(statePath, QJsonObject{{"schema", 1}, {"target", target}, {"version", "v1.7.0"}, {"phase", "permissions-pending"}, {"files", QJsonObject{}}});
     return target;
+}
+
+static QJsonObject pendingFlatpak(Fixture &f, const QString &name)
+{
+    auto stored = flatpakBottle(f, name);
+    stored["error"] = "";
+    stored["status"] = "not-installed";
+    const QString statePath = managerDirectory() + "/prefixes/" + prefixKey(stored) + "/state.json";
+    writeJson(statePath, QJsonObject{{"schema", 1}, {"target", stored}, {"version", "v1.7.0"}, {"phase", "permissions-pending"}, {"files", QJsonObject{}}});
+    const auto target = flatpakTarget(stored.value("prefix").toString());
+    CHECK(target.value("error").toString().isEmpty());
+    return target;
+}
+
+// #36: a Flatpak bottle without a manager installation offers nothing, and
+// one with an installation offers only Remove.
+static void test_flatpak_bottles_are_disabled_except_remove()
+{
+    Fixture f;
+    const auto fresh = flatpakBottle(f, "Fresh");
+    CHECK(fresh.value("status") == "unsupported");
+    CHECK(fresh.value("error").toString().contains("issue #36"));
+    CHECK(failure([&] { Installer::install(f.network, fresh.value("id").toString(), "v1.7.0"); }).contains("issue #36"));
+    const auto installed = pendingFlatpak(f, "Installed");
+    CHECK(installed.value("metadata").toObject().value("remove_only").toBool());
+    CHECK(installed.value("metadata").toObject().value("note").toString().contains("Use Remove again"));
+    CHECK(failure([&] { Installer::preview(f.network, installed.value("id").toString(), "v1.7.0"); }).contains("issue #36"));
+    CHECK(failure([&] { Installer::install(f.network, installed.value("id").toString(), "v1.7.0"); }).contains("issue #36"));
+    CHECK(failure([&] { Installer::check(installed.value("id").toString()); }).contains("issue #36"));
 }
 
 static void test_pending_permissions_cleanup_is_resumable()
@@ -609,6 +641,7 @@ static int tests()
         {"Faugus readoption", test_faugus_readoption_does_not_steal_live_owner},
         {"shared permissions", test_shared_permissions_survive_until_last_removal},
         {"pending permissions", test_pending_permissions_cleanup_is_resumable},
+        {"flatpak bottles disabled", test_flatpak_bottles_are_disabled_except_remove},
         {"aarch64 payload", test_aarch64_payload_installs_the_aarch64_front_end}};
     for (const auto &[name, test] : cases)
         try { test(); }
