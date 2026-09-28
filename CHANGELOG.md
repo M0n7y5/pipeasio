@@ -38,6 +38,14 @@ follow [Semantic Versioning](https://semver.org/).
   applied on every activation. The `sampleRateChanged` notification for a
   rate PipeWire settles on during activation was also never sent, since only
   an unused callback carried it. It now goes out with the first buffer.
+- A PipeWire daemon that stopped answering hung the host in `CreateBuffers`:
+  the driver waited for its sync reply without a timeout. Every sync now gives
+  up after 5 seconds, and a lost daemon connection is detected, so the host
+  gets an error telling it to reload the driver instead.
+- Registering ports and reading the default devices at startup changed or
+  read lists the PipeWire thread uses at the same time, so a device or
+  WirePlumber change during driver startup could touch freed memory. Both
+  now hold the PipeWire thread's lock.
 
 ## [1.8.1] - 2026-09-25
 

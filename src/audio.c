@@ -39,6 +39,7 @@
 #include <spa/param/latency-utils.h>
 #include <spa/param/props.h>
 #include <spa/pod/builder.h>
+#include <spa/utils/result.h>
 
 #include <errno.h>
 #include <pthread.h>
@@ -140,6 +141,8 @@ struct audio_client
     struct spa_hook     registry_listener;
     struct spa_hook     core_listener;
     int                 sync_seq;
+    bool                sync_done; /* sync_seq was answered; thread-loop lock */
+    _Atomic bool        core_dead; /* the daemon connection is gone */
     uint32_t            our_node_id;
 
     /* "default" metadata object -> effective default sink/source node names,
@@ -239,6 +242,7 @@ static const struct pw_filter_events audio_filter_events = {
 /* Core and registry event forward declarations. */
 
 static void audio_on_core_done(void *userdata, uint32_t id, int seq);
+static void audio_on_core_error(void *userdata, uint32_t id, int seq, int res, const char *message);
 static void audio_on_registry_global(void *userdata, uint32_t id, uint32_t permissions,
                                      const char *type, uint32_t version,
                                      const struct spa_dict *props);
@@ -246,7 +250,8 @@ static void audio_on_registry_global_remove(void *userdata, uint32_t id);
 
 static const struct pw_core_events audio_core_events = {
     PW_VERSION_CORE_EVENTS,
-    .done = audio_on_core_done,
+    .done  = audio_on_core_done,
+    .error = audio_on_core_error,
 };
 
 static const struct pw_registry_events audio_registry_events = {
@@ -256,7 +261,7 @@ static const struct pw_registry_events audio_registry_events = {
 };
 
 static void audio_teardown_filter(audio_client_t *c);
-static void audio_sync(audio_client_t *c);
+static bool audio_sync(audio_client_t *c);
 static void audio_adopt_own_ports(audio_client_t *c);
 static void audio_refresh_defaults(audio_client_t *c);
 static void audio_adopt_graph_rate(audio_client_t *c);
@@ -291,6 +296,7 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
     atomic_init(&c->graph_rate, 0);
     atomic_init(&c->graph_force_rate, 0);
     atomic_init(&c->default_changed, false);
+    atomic_init(&c->core_dead, false);
     atomic_init(&c->diagnostic_kind, 0);
     atomic_init(&c->diagnostic_quantum, 0);
     atomic_init(&c->diagnostic_buffer_size, 0);
@@ -356,14 +362,22 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
         pw_registry_add_listener(c->registry, &c->registry_listener, &audio_registry_events, c);
 
     pw_thread_loop_unlock(c->loop);
-    audio_sync(c);
     /* A second sync drains the initial property burst of the "default" and
      * "settings" metadata objects: they are bound during the first sync's
      * global emission, so their values (default.audio.sink/source, the graph
      * clock rate) only land on the next round-trip. */
-    audio_sync(c);
+    if (!audio_sync(c) || !audio_sync(c))
+    {
+        ERR("PipeWire did not answer the initial sync (is the daemon running?)\n");
+        audio_close(c);
+        if (status)
+            *status = AUDIO_STATUS_NO_DAEMON;
+        return NULL;
+    }
+    pw_thread_loop_lock(c->loop);
     audio_refresh_defaults(c);
     c->defaults_baselined = true;
+    pw_thread_loop_unlock(c->loop);
     atomic_store_explicit(&c->default_changed, false, memory_order_release);
 
     TRACE("audio_open(%s) -> %p [PipeASIO " PIPEASIO_VERSION " (commit " PIPEASIO_GIT_COMMIT
@@ -585,6 +599,11 @@ audio_activate(audio_client_t *c)
         ERR("audio_activate called with no ports registered\n");
         return false;
     }
+    if (atomic_load_explicit(&c->core_dead, memory_order_acquire))
+    {
+        ERR("audio_activate: the PipeWire connection was lost; reload the driver\n");
+        return false;
+    }
     c->quantum_warned = false;
     c->rate_announced = false;
     c->cycle_count    = 0;
@@ -756,7 +775,11 @@ audio_activate(audio_client_t *c)
                 /* Last sync before giving up on the bind wait. */
                 pw_thread_loop_unlock(c->loop);
                 WARN("audio_activate: filter bind timed out, forcing sync\n");
-                audio_sync(c);
+                if (!audio_sync(c))
+                {
+                    ERR("audio_activate: PipeWire did not answer after the bind timeout\n");
+                    goto fail;
+                }
                 pw_thread_loop_lock(c->loop);
                 c->our_node_id = pw_filter_get_node_id(c->filter);
                 break;
@@ -771,7 +794,11 @@ audio_activate(audio_client_t *c)
      * a bounded poll so CreateBuffers can connect to hardware. */
     for (int attempt = 0; attempt < 50; attempt++)
     {
-        audio_sync(c);
+        if (!audio_sync(c))
+        {
+            ERR("audio_activate: PipeWire stopped answering while ports were adopted\n");
+            goto fail;
+        }
         audio_adopt_own_ports(c);
         uint32_t have = 0;
         for (uint32_t i = 0; i < c->n_ports; i++)
@@ -922,12 +949,21 @@ audio_port_register(audio_client_t *c, const char *port_name, uint64_t flags, ui
         free(owned_name);
         return NULL;
     }
+    port->client    = c;
+    port->name      = owned_name;
+    port->flags     = flags;
+    port->direction = (flags & AUDIO_PORT_IS_INPUT) ? PW_DIRECTION_INPUT : PW_DIRECTION_OUTPUT;
+    atomic_init(&port->cycle_buffer, NULL);
+    atomic_init(&port->gain, 1.0f);
+    /* Registry callbacks walk c->ports on the thread-loop thread. */
+    pw_thread_loop_lock(c->loop);
     if (c->n_ports == c->cap_ports)
     {
         uint32_t       capacity = c->cap_ports ? c->cap_ports * 2u : 16u;
         audio_port_t **ports    = realloc(c->ports, (size_t)capacity * sizeof(*ports));
         if (!ports)
         {
+            pw_thread_loop_unlock(c->loop);
             free(port);
             free(owned_name);
             return NULL;
@@ -935,13 +971,8 @@ audio_port_register(audio_client_t *c, const char *port_name, uint64_t flags, ui
         c->ports     = ports;
         c->cap_ports = capacity;
     }
-    port->client    = c;
-    port->name      = owned_name;
-    port->flags     = flags;
-    port->direction = (flags & AUDIO_PORT_IS_INPUT) ? PW_DIRECTION_INPUT : PW_DIRECTION_OUTPUT;
-    atomic_init(&port->cycle_buffer, NULL);
-    atomic_init(&port->gain, 1.0f);
     c->ports[c->n_ports++] = port;
+    pw_thread_loop_unlock(c->loop);
     return port;
 }
 
@@ -951,14 +982,19 @@ audio_port_unregister(audio_client_t *c, audio_port_t *port)
     if (!c || !port)
         return false;
     uint32_t index;
+    pw_thread_loop_lock(c->loop);
     for (index = 0; index < c->n_ports; ++index)
         if (c->ports[index] == port)
             break;
     if (index == c->n_ports)
+    {
+        pw_thread_loop_unlock(c->loop);
         return false;
+    }
     memmove(&c->ports[index], &c->ports[index + 1],
             (size_t)(c->n_ports - index - 1) * sizeof(*c->ports));
     --c->n_ports;
+    pw_thread_loop_unlock(c->loop);
     free(port->name);
     free(port);
     return true;
@@ -1576,18 +1612,48 @@ audio_on_core_done(void *userdata, uint32_t id, int seq)
     if (id != PW_ID_CORE)
         return;
     if (seq == c->sync_seq)
+    {
+        c->sync_done = true;
         pw_thread_loop_signal(c->loop, false);
+    }
 }
 
+/* A dropped daemon connection arrives as -EPIPE on the core.  Nothing will
+ * answer a sync after that, so wake any waiter and refuse later activations. */
 static void
+audio_on_core_error(void *userdata, uint32_t id, int seq, int res, const char *message)
+{
+    audio_client_t *c = userdata;
+    (void)seq;
+    if (id != PW_ID_CORE || res != -EPIPE)
+        return;
+    ERR("PipeWire connection lost: %s\n", message ? message : spa_strerror(res));
+    atomic_store_explicit(&c->core_dead, true, memory_order_release);
+    pw_thread_loop_signal(c->loop, false);
+}
+
+/* Round-trips the daemon.  False when the connection is gone or no answer
+ * comes within 5 s, so a caller cannot hang on a daemon that went away. */
+static bool
 audio_sync(audio_client_t *c)
 {
+    struct timespec abstime;
+    bool            done = false;
     if (!c->core || !c->loop)
-        return;
+        return false;
     pw_thread_loop_lock(c->loop);
-    c->sync_seq = pw_core_sync(c->core, PW_ID_CORE, c->sync_seq);
-    pw_thread_loop_wait(c->loop);
+    if (!atomic_load_explicit(&c->core_dead, memory_order_acquire))
+    {
+        c->sync_done = false;
+        c->sync_seq  = pw_core_sync(c->core, PW_ID_CORE, c->sync_seq);
+        pw_thread_loop_get_time(c->loop, &abstime, 5 * SPA_NSEC_PER_SEC);
+        while (!c->sync_done && !atomic_load_explicit(&c->core_dead, memory_order_acquire))
+            if (pw_thread_loop_timed_wait_full(c->loop, &abstime) < 0)
+                break;
+        done = c->sync_done;
+    }
     pw_thread_loop_unlock(c->loop);
+    return done;
 }
 
 /* Walk c->discovered after our filter's node id is known, and migrate
