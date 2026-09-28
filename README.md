@@ -311,10 +311,19 @@ cmake --build build-debug
 paru -S pipeasio
 ```
 
-The package installs the driver system-wide under `/usr`, plus the
-`pipeasio-settings` panel with a desktop entry and icon. Note that a
-system-wide install is invisible to Proton's container. See the Proton /
-Steam / Faugus section below.
+The package installs the driver system-wide under `/usr`, including the 32-bit
+WoW64 front end since 1.8.1-2, plus the `pipeasio-settings` panel with a desktop
+entry and icon. Note that a system-wide install is invisible to Proton's
+container. See the Proton / Steam / Faugus section below.
+
+If you installed the 32-bit front end by hand before 1.8.1-2, the upgrade stops
+with `exists in filesystem`: pacman does not own those files and will not
+overwrite them. Check with `pacman -Qo` that no package owns them, remove them,
+and upgrade again:
+
+```sh
+sudo rm /usr/lib/wine/i386-windows/pipeasio32.dll /usr/lib/wine/x86_64-unix/pipeasio32.so
+```
 
 ### From a GitHub release
 
