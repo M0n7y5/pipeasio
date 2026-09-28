@@ -51,6 +51,21 @@ if(PIPEASIO_UNIX_ARCH STREQUAL "AMD64")
     set(PIPEASIO_UNIX_ARCH x86_64)
 endif()
 
+# pipeasio_build_info.h carries the commit the driver log reports
+# (cmake/BuildInfo.cmake).  Written here so the file exists before any
+# generator scans dependencies, then refreshed by pipeasio_build_info on every
+# build.
+find_package(Git QUIET)
+set(PIPEASIO_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
+set(PIPEASIO_BUILD_INFO_H "${PIPEASIO_GENERATED_DIR}/pipeasio_build_info.h")
+set(_build_info_args -DSOURCE_DIR=${CMAKE_SOURCE_DIR} -DOUTPUT=${PIPEASIO_BUILD_INFO_H}
+    -DGIT_EXECUTABLE=${GIT_EXECUTABLE} -P ${CMAKE_SOURCE_DIR}/cmake/BuildInfo.cmake)
+execute_process(COMMAND "${CMAKE_COMMAND}" ${_build_info_args})
+add_custom_target(pipeasio_build_info
+    COMMAND "${CMAKE_COMMAND}" ${_build_info_args}
+    BYPRODUCTS "${PIPEASIO_BUILD_INFO_H}"
+    VERBATIM)
+
 # Wine's library root, where <arch>-windows/lib*.a live: lib/wine on Arch,
 # lib64/wine-wow64/wine on Fedora, lib/<multiarch>/wine on Debian, or the
 # prefix's own lib/wine for WineHQ packages.  Probed from winebuild's prefix,
@@ -162,8 +177,9 @@ function(pipeasio_add_unixlib_objects)
         src/unixlib/audio_unix.c src/unixlib/handle_table.c src/audio.c src/config.c)
     set_target_properties(pipeasio_unix_objs PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(pipeasio_unix_objs PRIVATE
-        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src/unixlib
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src/unixlib ${PIPEASIO_GENERATED_DIR}
         ${PIPEWIRE_INCLUDE_DIRS} ${WINE_INCLUDE_DIRS} ${WINE_UNIXLIB_INCLUDE_DIR})
+    add_dependencies(pipeasio_unix_objs pipeasio_build_info)
     target_compile_options(pipeasio_unix_objs PRIVATE
         -D_REENTRANT
         -Wall -fno-strict-aliasing -Werror=implicit-function-declaration
@@ -234,7 +250,7 @@ function(pipeasio_add_pe_driver)
     endforeach()
     # winegcc adds Wine's windows/ and msvcrt/ headers itself.
     set(_inc -I "${CMAKE_SOURCE_DIR}/include" -I "${CMAKE_SOURCE_DIR}/src/unixlib"
-             -I "${WINE_UNIXLIB_INCLUDE_DIR}")
+             -I "${WINE_UNIXLIB_INCLUDE_DIR}" -I "${PIPEASIO_GENERATED_DIR}")
 
     # winegcc, not a bare <triple>-gcc, has to drive this link on every arch
     # (#27).  winegcc passes -nodefaultlibs -nostartfiles, so mingw's
@@ -253,7 +269,7 @@ function(pipeasio_add_pe_driver)
                     -DPIPEASIO_PE ${_inc} ${_cflags}
                     ${_libs}
                     -o "${_dll}"
-            DEPENDS ${_pe_sources} ${_headers} "${_spec}"
+            DEPENDS ${_pe_sources} ${_headers} "${PIPEASIO_BUILD_INFO_H}" "${_spec}"
             VERBATIM COMMAND_EXPAND_LISTS
             COMMENT "winegcc ${PA_NAME}.dll (${PA_PE_ARCH} PE front end)")
     else()
@@ -273,9 +289,9 @@ function(pipeasio_add_pe_driver)
             add_custom_command(
                 OUTPUT  ${_arch_objs}
                 COMMAND "${WINEGCC}" ${_arch_args} -c ${_pe_sources}
-                        -DPIPEASIO_PE ${_inc} ${_cflags}
+                        -DPIPEASIO_PE -DPIPEASIO_ARM64X ${_inc} ${_cflags}
                 WORKING_DIRECTORY "${_obj_dir}"
-                DEPENDS ${_pe_sources} ${_headers}
+                DEPENDS ${_pe_sources} ${_headers} "${PIPEASIO_BUILD_INFO_H}"
                 VERBATIM COMMAND_EXPAND_LISTS
                 COMMENT "winegcc -c ${PA_NAME} (${_arch} half)")
             list(APPEND _objs ${_arch_objs})
@@ -327,7 +343,7 @@ function(pipeasio_add_pe_driver)
     endif()
 
     add_custom_target(${PA_TARGET} ALL DEPENDS "${_dll}")
-    add_dependencies(${PA_TARGET} ${PA_NAME}_unix)
+    add_dependencies(${PA_TARGET} ${PA_NAME}_unix pipeasio_build_info)
     if(NOT PA_NO_INSTALL)
         install(FILES "${_dll}" DESTINATION "${PA_WINE_DEST}/${PA_PE_ARCH}-windows")
     endif()

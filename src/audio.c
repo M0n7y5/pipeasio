@@ -21,6 +21,7 @@
 #define _GNU_SOURCE /* SCHED_FIFO and friends */
 
 #include "audio.h"
+#include "pipeasio_build.h"
 #include "pipeasio_config.h"
 #include "pipeasio_offsets.h"
 #include "pipeasio_parse.h"
@@ -365,7 +366,8 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
     c->defaults_baselined = true;
     atomic_store_explicit(&c->default_changed, false, memory_order_release);
 
-    TRACE("audio_open(%s) -> %p [build " PIPEASIO_BUILD_TAG "] "
+    TRACE("audio_open(%s) -> %p [PipeASIO " PIPEASIO_VERSION " (commit " PIPEASIO_GIT_COMMIT
+          "), " PIPEASIO_BUILD_ARCH " unixlib, built " PIPEASIO_BUILD_TAG "] "
           "[pipewire headers %s, library %s] "
           "(registry sync done: %u nodes, %u ports discovered)\n",
           c->name, c, pw_get_headers_version(), pw_get_library_version(), c->n_nodes,

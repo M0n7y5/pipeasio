@@ -838,7 +838,11 @@ A few knobs affect xrun-free, low-latency operation:
   read from the graph's Profiler interface (the same source `pw-top` uses), which
   covers the whole graph.
 - Debug logging. `PIPEASIO_DEBUG=1` makes the driver log on the audio path. Leave
-  it off for normal use.
+  it off for normal use. The log opens with the build the host loaded: version,
+  commit, which front end (`x86_64`, `i386` WoW64, or the `aarch64` or `arm64ec`
+  half of an ARM64X hybrid), the Wine build and the kernel. The unixlib's
+  `audio_open` line repeats the version, commit and architecture, so a front end
+  and unixlib from different builds stand out. Include both lines in bug reports.
 
 ## Settings panel
 
