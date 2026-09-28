@@ -25,13 +25,18 @@ follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - x86_64 hosts under Wine with FEX on ARM64, such as Ableton, could not load
-  the driver (#23). A Wine built for aarch64 and arm64ec keeps its arm64ec
-  libraries in `aarch64-windows`, so the separate `arm64ec-windows` front end
-  never built, and Wine only gives an x86_64 program the x64 view of an ARM64X
-  hybrid. `BUILD_ARM64` now links `aarch64-windows/pipeasio64.dll` as an ARM64X
-  hybrid when Wine's libraries carry arm64ec code and the linker is LLD 20 or
-  newer, and the `arm64ec-windows` front end is gone. The Debian aarch64
-  release tarball stays aarch64-only, since Debian's Wine has no arm64ec code.
+  the driver from an install (#23). A Wine built for aarch64 and arm64ec keeps
+  its arm64ec libraries in `aarch64-windows`, so the separate `arm64ec-windows`
+  front end never built, and Wine does not look for an `arm64ec-windows`
+  directory through `WINEDLLPATH`: only a plain arm64ec DLL copied into
+  `system32` by hand loaded. `BUILD_ARM64` now links
+  `aarch64-windows/pipeasio64.dll` as an ARM64X hybrid when Wine's libraries
+  carry arm64ec code and the linker is LLD 20 or newer. That one file serves
+  native ARM64 hosts and x86_64 hosts under FEX and is found through
+  `WINEDLLPATH`, so `pipeasio-register` and the manager install it without
+  hand-copied files. The `arm64ec-windows` front end is gone. The Debian
+  aarch64 release tarball stays aarch64-only, since Debian's Wine has no
+  arm64ec code.
 - A sample-rate change from the host while buffers exist was lost. The driver
   asked the host to reset but never applied the new rate, so PipeWire kept the
   old one while the host was told the change had worked. The rate is now
