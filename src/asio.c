@@ -2167,8 +2167,8 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
     }
     if (!audio_activate(This->audio_client))
     {
-        set_last_error(This, "could not activate the PipeWire stream (device busy or "
-                             "disconnected?)");
+        set_last_error(This, "could not activate the PipeWire stream: device busy, or PipeWire "
+                             "restarted or hung (reload the driver)");
         error = -1000;
         goto fail_internal;
     }
