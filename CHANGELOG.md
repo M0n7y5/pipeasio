@@ -46,6 +46,10 @@ follow [Semantic Versioning](https://semver.org/).
   read lists the PipeWire thread uses at the same time, so a device or
   WirePlumber change during driver startup could touch freed memory. Both
   now hold the PipeWire thread's lock.
+- `GetChannelInfo` after a failed `Init` crashed the host: the failed `Init`
+  freed the channel table but kept the channel counts, so the lookup read
+  through a NULL pointer. It now returns the ASIO "not present" error unless
+  the driver is initialized.
 
 ## [1.8.1] - 2026-09-25
 

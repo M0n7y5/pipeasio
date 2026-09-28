@@ -1930,6 +1930,13 @@ GetChannelInfo(LPPIPEASIO iface, void *info)
     memcpy(&request, info, sizeof(request));
     if (!method_begin(This, false, &token))
         return -1000;
+    /* A failed Init keeps the channel counts but frees the channel table. */
+    INT state = atomic_load_explicit(&This->host_driver_state, memory_order_acquire);
+    if (state != Initialized && state != Prepared && state != Running)
+    {
+        method_end(&token);
+        return -1000;
+    }
     if (request.channel < 0
         || (request.isInput ? request.channel >= This->pipeasio_number_inputs
                             : request.channel >= This->pipeasio_number_outputs))
