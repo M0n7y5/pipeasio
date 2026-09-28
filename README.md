@@ -14,7 +14,7 @@
   <a href="https://aur.archlinux.org/packages/pipeasio"><img alt="AUR version" src="https://img.shields.io/aur/version/pipeasio?label=AUR&amp;color=ff6a1f"></a>
   <a href="https://fluxer.gg/HbKTgk5V"><img alt="Fluxer guild" src="https://img.shields.io/badge/Fluxer-join%20the%20guild-4641D9"></a>
   <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-blue">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20x86__64%20%7C%20ARM64%20(untested)-lightgrey">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20x86__64%20%7C%20ARM64%20(experimental)-lightgrey">
   <img alt="PipeWire" src="https://img.shields.io/badge/PipeWire-1.4.2%2B-ff6a1f">
 </p>
 
@@ -35,7 +35,7 @@ drivers.
 ![PipeASIO settings panel](docs/panel-settings.png)
 
 > [!NOTE]
-> PipeASIO is at **1.8.1**. It is verified with FL Studio under Proton-CachyOS and with the [VB-Audio ASIO Test](https://forum.vb-audio.com/viewtopic.php?p=4259#p4259) utility (64-bit and 32-bit). Other ASIO hosts such as Reaper and Ableton Live should work but are not yet confirmed. x86_64, with experimental opt-in 32-bit (WoW64) support. Bug reports are very welcome on the [issue tracker](https://github.com/M0n7y5/pipeasio/issues).
+> PipeASIO is at **1.8.1**. It is verified with FL Studio under Proton-CachyOS and with the [VB-Audio ASIO Test](https://forum.vb-audio.com/viewtopic.php?p=4259#p4259) utility (64-bit and 32-bit). Reaper should work but is not yet confirmed. Ableton Live has played audio on ARM64 under FEX, see [ARM64](#arm64). x86_64, with experimental opt-in 32-bit (WoW64) support. Bug reports are very welcome on the [issue tracker](https://github.com/M0n7y5/pipeasio/issues).
 
 ## Support
 
@@ -67,40 +67,47 @@ a rough outline of what you want to change:
 **[Join the guild &rarr;](https://fluxer.gg/HbKTgk5V)**
 
 Once you are on the contributor list the usual rules apply: run `clang-format`
-(the config is in-tree) before submitting, and keep changes x86_64 and C11.
+(the config is in-tree) before submitting. The driver is C11 and must keep
+building for x86_64, i386 (WoW64) and aarch64. The manager and panel are C++17
+with Qt 6.
 Pull requests from outside the list are closed without review - open an issue or
 reach out in the guild instead.
 
 ## Quick start
 
-For guided Faugus, Bottles, or custom-prefix setup, use the
-[GUI manager](#gui-manager). The commands below remain available for manually
-registered, locally built or package-installed drivers.
+**Faugus, Bottles or a custom Wine prefix:** download
+`pipeasio-manager-<tag>-x86_64.AppImage` from the
+[releases page](https://github.com/M0n7y5/pipeasio/releases), mark it
+executable and open it. It installs the driver into the prefix you pick and
+checks that it loads. See [GUI manager](#gui-manager).
 
-On Arch Linux and derivatives (CachyOS, EndeavourOS, Manjaro), install
-[`pipeasio` from the AUR](https://aur.archlinux.org/packages/pipeasio):
+**Arch Linux and derivatives** (CachyOS, EndeavourOS, Manjaro): install
+[`pipeasio` from the AUR](https://aur.archlinux.org/packages/pipeasio). It
+includes the manager. Use it, or register by hand in the current Wine prefix:
 
 ```sh
 paru -S pipeasio   # or: yay -S pipeasio
-
-# Register in the current Wine prefix
 pipeasio-register
 ```
 
-Everywhere else, build from source:
+**Everywhere else**, build from source and install where your Wine reads its
+modules:
 
 ```sh
-# Build
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
-
-# Install (user-local, or --prefix /usr for system-wide)
-cmake --install build --prefix "$HOME/.local"
-
-# Register in the current Wine prefix
+sudo cmake --install build --prefix /usr
 pipeasio-register
 ```
 
-Under Proton or Steam, also set `WINEDLLPATH=$HOME/.local/lib/wine` in the launcher and register inside the game's prefix. See the Proton / Steam / Faugus section below.
+That installs into `/usr/lib/wine`, where Wine looks on Arch. Fedora's Wine
+looks in `/usr/lib64/wine` and Debian/Ubuntu's in
+`/usr/lib/x86_64-linux-gnu/wine`: add `-DPIPEASIO_WINE_INSTALL_ROOT=<that dir>`
+to the first `cmake` (see [Installing](#installing)).
+
+A user-local install (`--prefix "$HOME/.local"`, no `sudo`) is what Proton,
+Steam and Faugus need. It only loads when the launcher, or `wine`, runs with
+`WINEDLLPATH=$HOME/.local/lib/wine`. See
+[Proton / Steam / Faugus](#proton--steam--faugus).
 
 ## GUI manager
 
@@ -110,12 +117,13 @@ configurations without starting Wine. Bottles support is experimental, see
 [Bottles](#bottles). **Add prefix** accepts an existing custom Wine prefix and
 its owning Wine executable.
 
-The independent `pipeasio-manager-<tag>-x86_64.AppImage` bundles the native
-Qt/C++ manager, its libraries, and the installation probes. Mark it executable
-in your file manager and open it. It requires neither Python nor `sudo` and
-does not compile the driver.
-The release workflow publishes this asset from the next tagged release.
-The manager already accepts the existing v1.7.0 driver archive.
+Download `pipeasio-manager-<tag>-x86_64.AppImage` from the
+[releases page](https://github.com/M0n7y5/pipeasio/releases): every release
+since 1.8.0 carries it. It bundles the native Qt/C++ manager, its libraries,
+and the installation probes. Mark it executable in your file manager and open
+it. It requires neither Python nor `sudo` and does not compile the driver. It
+installs any driver release from 1.7.0 on. Steam games are not discovered:
+register those by hand, see [Proton / Steam / Faugus](#proton--steam--faugus).
 
 The AppImage defaults to Qt's Fusion widgets and desktop-portal appearance
 integration. It reads the desktop's light/dark preference at startup and uses
@@ -165,11 +173,14 @@ host Wine.
 
 ### Manager CLI and development builds
 
-`pipeasio-manage` is the same backend used by the GUI. `--help` lists commands.
-`pipeasio-manage --json list` emits discovered targets without starting Wine.
-`preview`, `install`, `check`, and `remove` take the `--target` ID from that list.
-Use `--release v1.7.0` to select a release, `--include-32` for the experimental
-front end, and `--allow-permissions` only after reviewing the preview's grants.
+`pipeasio-manage` is the same backend the GUI uses, and `--help` lists its
+commands. `pipeasio-manage --json list` emits discovered targets without
+starting Wine, and `releases` lists installable releases.
+`add --prefix <dir> --wine <executable> [--name <label>]` adds a custom prefix
+as a target. `preview`, `install`, `check`, and `remove` take the `--target` ID
+from `list`. Use `--release v1.8.1` to pin a release, `--include-32` for the
+experimental front end, and `--allow-permissions` only after reviewing the
+preview's grants.
 
 To build the manager without compiling the driver or requiring a Wine SDK:
 
@@ -638,12 +649,15 @@ Studio, most of what exists). The driver's front end for both is one
 `aarch64-windows/pipeasio64.dll` over the aarch64 unixlib
 ([#23](https://github.com/M0n7y5/pipeasio/issues/23)).
 
-To serve x86_64 hosts, that DLL has to be an ARM64X hybrid, carrying aarch64
-and arm64ec code in one file. A Wine built for both `aarch64` and `arm64ec`
-keeps no separate `arm64ec-windows` directory: its `aarch64-windows`
-libraries hold both halves, and when an x86_64 program loads a builtin, Wine
-looks in `aarch64-windows` and takes the x64 view of a hybrid image there. A
-plain aarch64 DLL only loads into native ARM64 hosts.
+To serve both kinds of host from one install, that DLL is an ARM64X hybrid
+carrying aarch64 and arm64ec code in one file. A Wine built for both `aarch64`
+and `arm64ec` keeps no separate `arm64ec-windows` directory: its
+`aarch64-windows` libraries hold both halves, and Wine finds builtins for
+native and x86_64 programs in that one directory, `WINEDLLPATH` included. A
+plain aarch64 DLL only loads into native ARM64 hosts. A plain arm64ec DLL loads
+for x86_64 hosts only when copied into `system32` by hand, because Wine finds
+no `arm64ec-windows` directory through `WINEDLLPATH`. The hybrid is what lets
+`pipeasio-register` and the manager install one file for both.
 
 Building needs `clang` and `lld` (there is no MinGW gcc for these targets)
 and Wine's `lib/wine/aarch64-windows/` import libraries. `BUILD_ARM64`
@@ -664,10 +678,14 @@ Fedora does not build Wine for aarch64 at all. On an x86_64 host only the PE
 half can be cross-built; the unixlib is always the host's.
 
 Status: CI builds both forms on an ARM64 runner. Against Hangover's Wine it
-links the hybrid, registers it, and loads it from an x86_64 program under
-FEX, which is the path Ableton takes. Nobody has yet played audio through
-either form on real hardware. Reports from an Asahi or other ARM64 machine
-are what moves this from "builds" to "works", on the tracking issue above.
+links the hybrid, registers it, and loads it from an x86_64 program under FEX,
+which is the path Ableton takes. Ableton Live has played audio on real ARM64
+hardware through an arm64ec front end copied into `system32` (Lenovo IdeaPad
+Duet 3, Fedora in a container, FEX), with 1024 frames as the practical floor
+there with ntsync ([#23](https://github.com/M0n7y5/pipeasio/issues/23)). No
+report yet covers a native ARM64 host, or the ARM64X hybrid installed by
+`pipeasio-register`. Reports from Asahi or other ARM64 machines go on the
+tracking issue.
 
 ## Other distributions
 
@@ -861,7 +879,7 @@ A few knobs affect xrun-free, low-latency operation:
 
 The native settings panel (`pipeasio-settings`, C++/Qt6 Widgets) is built from the
 `gui` subdirectory and installed to `bin`, together with a desktop entry and icon,
-so it also appears in the application menu as **PipeASIO Settings**. It is built
+so it also appears in the application menu as **PipeASIO Manager**. It is built
 only when Qt6 Widgets is found at configure time - otherwise configure warns,
 the driver still builds, and no panel binary is produced. It runs on
 your Linux host. The in-app ASIO control-panel button shows a message pointing
@@ -888,7 +906,7 @@ another tab. The device combos on the **Settings** tab enumerate through
 
 **`... holds no Wine SDK, so ... is used instead`.** `winebuild` came from a private prefix with no headers beside it, so another Wine's SDK was used. Install the matching `-devel`/`-dev` companion package, or the driver is compiled against a different Wine version than it runs on.
 
-**`Qt6 Widgets not found - skipping the settings panel`.** The driver still builds, but `pipeasio-settings` does not, so there is no panel to open. Install Qt6 Widgets (`qt6-base` on Arch, `qt6-qtbase-devel` on Fedora, `qt6-base-dev` on Debian/Ubuntu), then re-run configure, rebuild and re-install. Run it from a host terminal or the **PipeASIO Settings** menu entry; your DAW's ASIO control-panel button never opens it, with or without Qt, and only shows a message pointing here. Pass `-DBUILD_SETTINGS_PANEL=OFF` if you want no panel.
+**`Qt6 Widgets not found - skipping the settings panel`.** The driver still builds, but `pipeasio-settings` does not, so there is no panel to open. Install Qt6 Widgets (`qt6-base` on Arch, `qt6-qtbase-devel` on Fedora, `qt6-base-dev` on Debian/Ubuntu), then re-run configure, rebuild and re-install. Run it from a host terminal or the **PipeASIO Manager** menu entry; your DAW's ASIO control-panel button never opens it, with or without Qt, and only shows a message pointing here. Pass `-DBUILD_SETTINGS_PANEL=OFF` if you want no panel.
 
 **No sound, or the driver does not load under Proton.** Proton's container cannot see `/usr/lib/wine`. Install under `$HOME` and set `WINEDLLPATH` in the game's launch options (Steam: `WINEDLLPATH=/home/<you>/.local/lib/wine %command%`; Faugus: the same variable in the per-game environment field), then register in that prefix.
 
@@ -947,7 +965,7 @@ which makes upstream WineASIO crash on `dlopen`.
 
 The driver has its own COM identity: CLSID
 `{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}`, ASIO registration under
-`HKCU\Software\ASIO\PipeASIO`, and DLL filename `pipeasio64.dll`. That is why
+`HKLM\Software\ASIO\PipeASIO`, and DLL filename `pipeasio64.dll`. That is why
 it coexists with WineASIO: neither overrides the other.
 
 It is built the way Wine builds its own modules: a PE half (`src/asio.c`,
