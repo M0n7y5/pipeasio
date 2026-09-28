@@ -261,8 +261,9 @@ jobs:
   # must create the driver through COM and then fail Init at the PipeWire
   # connection, which the aarch64 unixlib makes: that proves the x64 view loads
   # and reaches the unixlib. The aarch64 probe takes the native view the same
-  # way. Linking ARM64X needs LLD 20+, and trixie's own LLVM is 19, so the
-  # toolchain comes from trixie-backports.
+  # way, and each probe's debug log names the half it loaded. Linking ARM64X
+  # needs LLD 20+, and trixie's own LLVM is 19, so the toolchain comes from
+  # trixie-backports.
   build-arm64x:
     name: build (hangover, ARM64X)
     runs-on: ubuntu-24.04-arm
@@ -328,12 +329,14 @@ jobs:
           file asio_probe_x64.exe build/tests/asio_probe/asio_probe.exe
           export WINEPREFIX="$HOME/pfx" WINEDLLPATH="$HOME/.local/lib/wine"
           export WINEDLLOVERRIDES="mscoree,mshtml=" WINEDEBUG=-all,+loaddll,err+all
-          export XDG_CONFIG_HOME="$HOME/pfx/xdg" PIPEASIO_CONNECT_TO_HARDWARE=off
-          for probe in asio_probe_x64.exe build/tests/asio_probe/asio_probe.exe; do
+          export XDG_CONFIG_HOME="$HOME/pfx/xdg" PIPEASIO_CONNECT_TO_HARDWARE=off PIPEASIO_DEBUG=1
+          for pair in 'asio_probe_x64.exe arm64ec' 'build/tests/asio_probe/asio_probe.exe aarch64'; do
+            read -r probe half <<< "$pair"
             log="$(basename "$probe" .exe).log"
             timeout 180 wine "$probe" 2 > "$log" 2>&1 || true
             cat "$log"
             grep -q 'got IPipeASIO' "$log"
+            grep -q "${half} half of the ARM64X front end" "$log"
             grep 'Init failed:' "$log" | grep -qi pipewire
           done
           wineserver -w

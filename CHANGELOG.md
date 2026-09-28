@@ -6,6 +6,15 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- With `PIPEASIO_DEBUG=1`, the driver's log names the build the host loaded:
+  version, git commit (with `-dirty` for uncommitted changes), which front end
+  or half of an ARM64X hybrid, the Wine build and the kernel. The unixlib's
+  `audio_open` line adds the same version, commit and architecture. The commit
+  is read at build time, so a rebuild after `git pull` never reports the old
+  one.
+
 ### Changed
 
 - Bottles support is marked experimental and is not actively maintained. Plain

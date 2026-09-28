@@ -46,6 +46,7 @@
 #endif
 
 #include "audio.h"
+#include "pipeasio_build.h"
 #include "pipeasio_offsets.h"
 #include "pipeasio_config.h"
 #include "pipeasio_parse.h"
@@ -1156,6 +1157,44 @@ effective_forced_rate(IPipeASIOImpl *This)
     return (audio_nframes_t)atomic_load_explicit(&This->host_requested_rate, memory_order_acquire);
 }
 
+#if defined(PIPEASIO_ARM64X)
+#define PIPEASIO_FRONT_END PIPEASIO_BUILD_ARCH " half of the ARM64X front end"
+#elif defined(_WIN64)
+#define PIPEASIO_FRONT_END PIPEASIO_BUILD_ARCH " front end"
+#else
+#define PIPEASIO_FRONT_END PIPEASIO_BUILD_ARCH " WoW64 front end"
+#endif
+
+typedef const char *(CDECL *wine_get_build_id_fn)(void);
+typedef void(CDECL *wine_get_host_version_fn)(const char **sysname, const char **release);
+
+/* Opens a debug log with the build the host actually loaded and the Wine and
+ * kernel under it. */
+static void
+trace_build_identity(void)
+{
+    HMODULE                  ntdll;
+    wine_get_build_id_fn     get_build_id;
+    wine_get_host_version_fn get_host_version;
+    const char              *wine    = "unknown Wine";
+    const char              *sysname = "unknown host";
+    const char              *release = "";
+
+    if (!pipeasio_log_on())
+        return;
+    ntdll        = GetModuleHandleA("ntdll.dll");
+    get_build_id = (wine_get_build_id_fn)(void *)GetProcAddress(ntdll, "wine_get_build_id");
+    get_host_version
+            = (wine_get_host_version_fn)(void *)GetProcAddress(ntdll, "wine_get_host_version");
+    if (get_build_id)
+        wine = get_build_id();
+    if (get_host_version)
+        get_host_version(&sysname, &release);
+    TRACE("PipeASIO " PIPEASIO_VERSION " (commit " PIPEASIO_GIT_COMMIT "), " PIPEASIO_FRONT_END
+          ", %s on %s %s\n",
+          wine, sysname, release);
+}
+
 /* sysRef is 0 on OS/X; on Windows it is the application's main window handle.
  * Returns 0 on error, 1 on success. */
 
@@ -1179,12 +1218,7 @@ Init(LPPIPEASIO iface, void *sysRef)
         return 0;
     }
 
-    /* Open a debug log with the build the host actually loaded. */
-#ifdef _WIN64
-    TRACE("PipeASIO " PIPEASIO_VERSION " (64-bit)\n");
-#else
-    TRACE("PipeASIO " PIPEASIO_VERSION " (32-bit WoW64 front end)\n");
-#endif
+    trace_build_identity();
 
     clear_last_error(This);
     owner = next_gate_owner(This);
