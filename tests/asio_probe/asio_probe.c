@@ -692,8 +692,20 @@ main(void)
             return die("GetErrorMessage overrun", (LONG)errmsg.guard);
         }
         fprintf(stderr, "[probe] Init failed: %s\n", errmsg.text);
+        /* A failed Init keeps the channel counts but frees the channel table:
+         * channel info must be refused, not read through a NULL table. */
+        struct
+        {
+            LONG channel, isInput, isActive, channelGroup, type;
+            char name[32];
+        } channel_info = { 0, 1, 0, 0, 0, { 0 } };
+        LONG info_rc   = asio->lpVtbl->GetChannelInfo(asio, &channel_info);
+        fprintf(stderr, "[probe] GetChannelInfo after failed Init: rc=%ld -> %s\n", (long)info_rc,
+                info_rc == -1000 ? "ok" : "BAD");
         asio->lpVtbl->Release(asio);
         CoUninitialize();
+        if (info_rc != -1000)
+            return 2;
         return die("Init", rc);
     }
 
