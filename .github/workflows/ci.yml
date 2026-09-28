@@ -5,6 +5,11 @@ on:
     branches: [master]
   pull_request:
 
+# Git refuses a checkout owned by another user, and these container jobs run
+# as root, so the commit in the driver log comes from here (cmake/PeDriver.cmake).
+env:
+  PIPEASIO_GIT_COMMIT: ${{ github.sha }}
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -340,6 +345,7 @@ jobs:
             cat "$log"
             grep -q 'got IPipeASIO' "$log"
             grep -q "${half} half of the ARM64X front end" "$log"
+            grep -q "commit $(printf %.7s "$GITHUB_SHA")" "$log"
             grep 'Init failed:' "$log" | grep -qi pipewire
           done
           wineserver -w

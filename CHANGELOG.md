@@ -13,7 +13,9 @@ follow [Semantic Versioning](https://semver.org/).
   or half of an ARM64X hybrid, the Wine build and the kernel. The unixlib's
   `audio_open` line adds the same version, commit and architecture. The commit
   is read at build time, so a rebuild after `git pull` never reports the old
-  one.
+  one. Where git cannot read the checkout, `-DPIPEASIO_GIT_COMMIT=<sha>` or the
+  environment variable of the same name supplies it, and the release builds
+  set it.
 
 ### Changed
 

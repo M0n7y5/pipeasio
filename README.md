@@ -843,6 +843,10 @@ A few knobs affect xrun-free, low-latency operation:
   half of an ARM64X hybrid), the Wine build and the kernel. The unixlib's
   `audio_open` line repeats the version, commit and architecture, so a front end
   and unixlib from different builds stand out. Include both lines in bug reports.
+  Where git cannot read the checkout (a source tarball, or a container building
+  as root on a checkout owned by another user) the commit is `unknown`. Pass
+  `-DPIPEASIO_GIT_COMMIT=<sha>`, or set the environment variable of the same
+  name at configure time, to supply it.
 
 ## Settings panel
 

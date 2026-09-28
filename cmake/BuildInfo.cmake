@@ -5,9 +5,14 @@
 # the value changes, so nothing recompiles otherwise.
 #
 #   -DSOURCE_DIR=<source tree> -DOUTPUT=<header> [-DGIT_EXECUTABLE=<git>]
+#   [-DCOMMIT=<commit>]
+#
+# COMMIT, when set, is used instead of asking git.
 
 set(_commit "unknown")
-if(GIT_EXECUTABLE)
+if(COMMIT)
+    set(_commit "${COMMIT}")
+elseif(GIT_EXECUTABLE)
     execute_process(
         COMMAND "${GIT_EXECUTABLE}" -C "${SOURCE_DIR}" rev-parse --show-toplevel
         OUTPUT_VARIABLE _top OUTPUT_STRIP_TRAILING_WHITESPACE
