@@ -337,21 +337,20 @@ InstallationsTab::updateActions()
     const bool selected = !target.isEmpty();
     const bool supported
             = target.value(QStringLiteral("status")).toString() != QStringLiteral("unsupported");
-    const bool installed      = !target.value(QStringLiteral("version")).toString().isEmpty();
-    const bool pendingRemoval = target.value(QStringLiteral("metadata"))
-                                        .toObject()
-                                        .value(QStringLiteral("removal_pending"))
-                                        .toBool();
+    const bool installed  = !target.value(QStringLiteral("version")).toString().isEmpty();
+    const auto metadata   = target.value(QStringLiteral("metadata")).toObject();
+    const bool removeOnly = metadata.value(QStringLiteral("removal_pending")).toBool()
+                            || metadata.value(QStringLiteral("remove_only")).toBool();
     m_targets->setEnabled(!m_running);
     m_refresh->setEnabled(!m_running);
     m_refreshReleases->setEnabled(!m_running);
     m_add->setEnabled(!m_running);
     m_releases->setEnabled(!m_running);
     m_include32->setEnabled(!m_running);
-    m_install->setEnabled(!m_running && selected && supported && !pendingRemoval);
+    m_install->setEnabled(!m_running && selected && supported && !removeOnly);
     m_install->setText(installed ? tr("&Update...") : tr("&Install..."));
-    m_repair->setEnabled(!m_running && selected && supported && installed && !pendingRemoval);
-    m_check->setEnabled(!m_running && selected && supported && installed && !pendingRemoval);
+    m_repair->setEnabled(!m_running && selected && supported && installed && !removeOnly);
+    m_check->setEnabled(!m_running && selected && supported && installed && !removeOnly);
     m_remove->setEnabled(!m_running && selected && supported && installed);
     QString title = target.value(QStringLiteral("name")).toString();
     m_details->setTitle(selected ? title.replace(QLatin1Char('&'), QStringLiteral("&&"))

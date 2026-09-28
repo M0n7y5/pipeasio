@@ -144,6 +144,19 @@ validate(const QJsonObject &target)
                     + state.value("target").toObject().value("name").toString() + ".");
 }
 
+// #36: scratch and backup files for a Flatpak bottle sit where the Bottles
+// sandbox can replace them, so only Remove stays available there.
+const char *const flatpakBottlesDisabled
+        = "Flatpak Bottles is disabled until the manager keeps its scratch files outside the "
+          "sandbox (issue #36). Native Bottles, Faugus and custom prefixes are unaffected.";
+
+void
+refuseFlatpakBottles(const QJsonObject &target)
+{
+    if (target.value("kind") == "bottles-flatpak")
+        throw Error(flatpakBottlesDisabled);
+}
+
 void
 assertIdle(const QJsonObject &target)
 {
@@ -949,6 +962,20 @@ listTargets()
             target["status"] = "needs-repair";
             metadata["note"] = "Existing PipeASIO installation, not managed here.";
         }
+        if (target.value("kind") == "bottles-flatpak" && target.value("error").toString().isEmpty())
+        {
+            // Listed rather than hidden so an existing installation can be removed.
+            if (state.isEmpty())
+                target["error"] = flatpakBottlesDisabled;
+            else
+            {
+                const QString note      = metadata.value("note").toString();
+                metadata["remove_only"] = true;
+                metadata["note"]
+                        = note.isEmpty() ? QString(flatpakBottlesDisabled) + " Remove still works."
+                                         : note + ' ' + flatpakBottlesDisabled;
+            }
+        }
         if (!target.value("error").toString().isEmpty())
             target["status"] = "unsupported";
         target["metadata"] = metadata;
@@ -990,6 +1017,7 @@ preview(QNetworkAccessManager &network, const QString &targetId, const QString &
 {
     const auto target = targetFor(targetId);
     validate(target);
+    refuseFlatpakBottles(target);
     auto selected = version.isEmpty() ? QJsonObject{} : cachedPayload(target, version);
     if (selected.isEmpty())
         selected = selectRelease(network, version, {});
@@ -1032,6 +1060,7 @@ install(QNetworkAccessManager &network, const QString &targetId, const QString &
     Lock       lock;
     const auto target = targetFor(targetId);
     validate(target);
+    refuseFlatpakBottles(target);
     assertIdle(target);
     const auto previous = stateFor(target);
     if (previous.value("phase") == "permissions-pending")
@@ -1306,6 +1335,7 @@ check(const QString &targetId, const Progress &progress)
     Lock       lock;
     const auto target = targetFor(targetId);
     validate(target);
+    refuseFlatpakBottles(target);
     const auto state = stateFor(target);
     if (state.isEmpty())
         throw Error("Install or repair this prefix with the manager before checking it.");

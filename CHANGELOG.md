@@ -56,6 +56,16 @@ follow [Semantic Versioning](https://semver.org/).
   through a NULL pointer. It now returns the ASIO "not present" error unless
   the driver is initialized.
 
+### Security
+
+- The manager no longer installs, updates, repairs or checks PipeASIO in
+  Flatpak Bottles (#36). Its scratch and backup files for those bottles sat in
+  storage the Bottles sandbox can write, and it followed symlinks there, so
+  code inside the sandbox could redirect its file operations to files outside
+  it. Flatpak bottles are listed with the reason, and one the manager already
+  installed into still offers Remove. Native Bottles, Faugus and custom
+  prefixes are unaffected.
+
 ## [1.8.1] - 2026-09-25
 
 ### Changed
