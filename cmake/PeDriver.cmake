@@ -55,11 +55,24 @@ endif()
 # (cmake/BuildInfo.cmake).  Written here so the file exists before any
 # generator scans dependencies, then refreshed by pipeasio_build_info on every
 # build.
+#
+# PIPEASIO_GIT_COMMIT replaces git's answer for builds where git cannot read
+# the checkout: CI containers run as root on a checkout owned by another user,
+# which git refuses.  CI sets the environment variable to the full SHA; it is
+# shortened to the 7 characters git describe prints.
+set(PIPEASIO_GIT_COMMIT "$ENV{PIPEASIO_GIT_COMMIT}" CACHE STRING
+    "Commit the driver log reports (default: ask git)")
+set(_commit "${PIPEASIO_GIT_COMMIT}")
+string(LENGTH "${_commit}" _commit_length)
+if(_commit_length EQUAL 40 AND _commit MATCHES "^[0-9a-f]+$")
+    string(SUBSTRING "${_commit}" 0 7 _commit)
+endif()
 find_package(Git QUIET)
 set(PIPEASIO_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
 set(PIPEASIO_BUILD_INFO_H "${PIPEASIO_GENERATED_DIR}/pipeasio_build_info.h")
 set(_build_info_args -DSOURCE_DIR=${CMAKE_SOURCE_DIR} -DOUTPUT=${PIPEASIO_BUILD_INFO_H}
-    -DGIT_EXECUTABLE=${GIT_EXECUTABLE} -P ${CMAKE_SOURCE_DIR}/cmake/BuildInfo.cmake)
+    -DGIT_EXECUTABLE=${GIT_EXECUTABLE} -DCOMMIT=${_commit}
+    -P ${CMAKE_SOURCE_DIR}/cmake/BuildInfo.cmake)
 execute_process(COMMAND "${CMAKE_COMMAND}" ${_build_info_args})
 add_custom_target(pipeasio_build_info
     COMMAND "${CMAKE_COMMAND}" ${_build_info_args}

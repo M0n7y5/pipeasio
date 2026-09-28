@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# Git refuses a checkout owned by another user, and these container jobs run
+# as root, so the commit in the driver log comes from here (cmake/PeDriver.cmake).
+env:
+  PIPEASIO_GIT_COMMIT: ${{ github.sha }}
+
 jobs:
   archlinux-binaries:
     name: Arch/CachyOS x86_64 tarball
