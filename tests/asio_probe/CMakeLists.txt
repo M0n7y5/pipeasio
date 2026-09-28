@@ -60,6 +60,16 @@ if(PIPEASIO_ASAN)
     set_tests_properties(asio_probe PROPERTIES FIXTURES_REQUIRED sanitizer_artifacts)
 endif()
 
+# A host rate change while Prepared, then the reset the driver asks for: the
+# graph must move to the new rate, or the host must be told the rate it got.
+add_test(NAME asio_probe_rate_reset COMMAND "${CMAKE_CURRENT_BINARY_DIR}/run.sh" 2)
+set_tests_properties(asio_probe_rate_reset PROPERTIES
+    SKIP_RETURN_CODE 77
+    TIMEOUT 300
+    RESOURCE_LOCK wineprefix
+    ENVIRONMENT "PROBE_RESET_RATE=44100;PROBE_ENV_KEEP=PROBE_RESET_RATE"
+    LABELS "integration;wine;pipewire")
+
 # Three scheduling-topology legs (default / config-on / env-off) in one prefix.
 add_test(NAME asio_probe_rt
     COMMAND "${CMAKE_CURRENT_BINARY_DIR}/run_rt.sh"

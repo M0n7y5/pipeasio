@@ -449,21 +449,6 @@ audio_port_unregister(audio_client_t *client, audio_port_t *opaque)
     return true;
 }
 
-void *
-audio_port_get_buffer(audio_port_t *port, audio_nframes_t nframes)
-{
-    (void)port;
-    (void)nframes;
-    return NULL;
-}
-
-audio_nframes_t
-audio_port_buffer_avail_frames(const audio_port_t *port)
-{
-    (void)port;
-    return 0;
-}
-
 bool
 audio_port_get_name(const audio_port_t *opaque, char *out, size_t size)
 {
@@ -475,18 +460,6 @@ audio_port_get_name(const audio_port_t *opaque, char *out, size_t size)
         return false;
     memcpy(out, port->local_name, strlen(port->local_name) + 1);
     return true;
-}
-
-bool
-audio_port_publish_output(audio_port_t *port, const audio_sample_t *source, audio_nframes_t frames,
-                          bool admitted, bool active)
-{
-    (void)port;
-    (void)source;
-    (void)frames;
-    (void)admitted;
-    (void)active;
-    return false;
 }
 
 void

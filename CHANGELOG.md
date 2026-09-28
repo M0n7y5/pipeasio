@@ -32,6 +32,12 @@ follow [Semantic Versioning](https://semver.org/).
   hybrid when Wine's libraries carry arm64ec code and the linker is LLD 20 or
   newer, and the `arm64ec-windows` front end is gone. The Debian aarch64
   release tarball stays aarch64-only, since Debian's Wine has no arm64ec code.
+- A sample-rate change from the host while buffers exist was lost. The driver
+  asked the host to reset but never applied the new rate, so PipeWire kept the
+  old one while the host was told the change had worked. The rate is now
+  applied on every activation. The `sampleRateChanged` notification for a
+  rate PipeWire settles on during activation was also never sent, since only
+  an unused callback carried it. It now goes out with the first buffer.
 
 ## [1.8.1] - 2026-09-25
 
