@@ -252,7 +252,6 @@ typedef struct IPipeASIOImpl
     /* Host stuff */
     LONG host_active_inputs;
     LONG host_active_outputs;
-    BOOL host_buffer_index;
     Callbacks *_Atomic host_callbacks;
     /* Live-config watcher: polls config.ini, asks the host to reset on change.
      * Heap ctx shared with the watcher thread. See struct config_watch. */
@@ -268,7 +267,7 @@ typedef struct IPipeASIOImpl
     /* Last rate the host has observed (GetSampleRate / accepted SetSampleRate /
      * a delivered sampleRateChanged).  Diverges from host_sample_rate when the
      * graph's real rate lands while callbacks are unpublished or the state is
-     * not Running; the process callback delivers the missed notification. */
+     * not Running; the next process cycle delivers the missed notification. */
     _Atomic uint32_t host_announced_rate;
     TimeInformation  host_time;
     BOOL             host_time_info_mode;
@@ -369,7 +368,6 @@ void __thiscall_OutputReady(void);
  *  ASIO process callbacks
  */
 
-static inline int process_callback(audio_nframes_t nframes, void *arg);
 static inline int sample_rate_callback(audio_nframes_t nframes, void *arg);
 
 /*
@@ -726,6 +724,18 @@ pipeasio_host_call_process(pipeasio_host_call_token *token, int32_t buffer_index
     IPipeASIOImpl *This    = token->owner;
     Callbacks     *cb      = token->callbacks;
     uint64_t       samples = atomic_load_explicit(&This->host_num_samples, memory_order_relaxed);
+    uint32_t       rate    = atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
+
+    /* Deliver a sampleRateChanged the SAMPLE_RATE path could not: the backend
+     * announces the measured graph rate on the first cycle after activation
+     * (CreateBuffers), before the driver is Running, so only the
+     * host_sample_rate store survived (issue #20).  Tell the host before it
+     * processes the first buffer at that rate. */
+    if (rate != atomic_load_explicit(&This->host_announced_rate, memory_order_acquire))
+    {
+        atomic_store_explicit(&This->host_announced_rate, rate, memory_order_release);
+        pipeasio_host_call_sample_rate(token, rate);
+    }
 
     atomic_store_explicit(&This->host_time_stamp, time_nsec, memory_order_relaxed);
     if (This->host_time_info_mode)
@@ -735,9 +745,8 @@ pipeasio_host_call_process(pipeasio_host_call_token *token, int32_t buffer_index
         This->host_time.numSamples.hi = (ULONG)(samples >> 32);
         This->host_time.timeStamp.lo  = (ULONG)(time_nsec & 0xFFFFFFFFu);
         This->host_time.timeStamp.hi  = (ULONG)(time_nsec >> 32);
-        This->host_time.sampleRate
-                = (double)atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
-        This->host_time.flags = 0x7;
+        This->host_time.sampleRate    = (double)rate;
+        This->host_time.flags         = 0x7;
         cb->swapBuffersWithTimeInfo(&This->host_time, buffer_index, 1);
     }
     else
@@ -1314,7 +1323,8 @@ Init(LPPIPEASIO iface, void *sysRef)
             goto fail;
         }
     }
-    if (!audio_set_process_callback(This->audio_client, process_callback, This)
+    /* The pump thread calls the host itself: this only binds the instance. */
+    if (!audio_set_process_callback(This->audio_client, NULL, This)
         || !audio_set_sample_rate_callback(This->audio_client, sample_rate_callback, This))
     {
         set_last_error(This, "failed to install PipeWire callbacks; check the Wine log");
@@ -1475,7 +1485,6 @@ Start(LPPIPEASIO iface)
     samples = (size_t)(This->pipeasio_number_inputs + This->pipeasio_number_outputs) * 2
               * (size_t)This->host_current_buffersize;
     memset(This->callback_audio_buffer, 0, samples * sizeof(*This->callback_audio_buffer));
-    This->host_buffer_index = 0;
     atomic_store_explicit(&This->host_num_samples, 0, memory_order_relaxed);
     atomic_store_explicit(&This->host_time_stamp, 0, memory_order_relaxed);
     {
@@ -1966,7 +1975,6 @@ apply_pending_config(IPipeASIOImpl *This)
         lstrcpynA(This->pipeasio_input_device, cfg.input_device,
                   sizeof This->pipeasio_input_device);
 
-        audio_set_forced_rate(This->audio_client, effective_forced_rate(This));
         audio_set_follow_device(This->audio_client, This->pipeasio_follow_device_clock);
         audio_set_realtime(This->audio_client, This->pipeasio_realtime);
         TRACE("config: applied live reload (buffer_size=%d rate=%d follow=%d auto=%d rt=%d)\n",
@@ -1974,6 +1982,9 @@ apply_pending_config(IPipeASIOImpl *This)
               (int)This->pipeasio_follow_device_clock, (int)This->pipeasio_connect_to_hardware,
               (int)This->pipeasio_realtime);
     }
+    /* SetSampleRate while Prepared or Running only stores the rate and asks
+     * for a reset, so every activation applies it, not just a config reload. */
+    audio_set_forced_rate(This->audio_client, effective_forced_rate(This));
     /* Forced quantum: follow-device uses the observed graph quantum, else the
      * configured preferred size.  Mirrors Init().  Runs every call so a
      * follow-device-only reset (config_pending false) still settles.  Host-
@@ -2514,61 +2525,6 @@ OutputReady(LPPIPEASIO iface)
 /****************************************************************************
  *  ASIO process callbacks
  */
-
-static inline int
-process_callback(audio_nframes_t nframes, void *arg)
-{
-    IPipeASIOImpl           *This = (IPipeASIOImpl *)arg;
-    pipeasio_host_call_token token;
-    bool admitted = pipeasio_host_call_begin(This, PIPEASIO_HOST_PROCESS, &token);
-    int  half     = 0;
-
-    if (admitted)
-    {
-        /* Deliver a sampleRateChanged the SAMPLE_RATE path could not: the
-         * backend announces the measured graph rate on the first process
-         * cycle after activation (CreateBuffers), when the driver is not yet
-         * Running, so only the host_sample_rate store survived (issue #20).
-         * Tell the host before it processes the first buffer at that rate. */
-        uint32_t rate = atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
-        if (rate != atomic_load_explicit(&This->host_announced_rate, memory_order_acquire))
-        {
-            atomic_store_explicit(&This->host_announced_rate, rate, memory_order_release);
-            pipeasio_host_call_sample_rate(&token, rate);
-        }
-
-        /* Read only while admitted: Start writes host_buffer_index after
-         * draining the host gate, which rejected callbacks are not part of. */
-        half = This->host_buffer_index;
-        for (int i = 0; i < This->pipeasio_number_inputs; ++i)
-        {
-            if (!This->input_channel[i].active)
-                continue;
-            audio_sample_t *source = audio_port_get_buffer(This->input_channel[i].port, nframes);
-            audio_sample_t *destination = &This->input_channel[i].audio_buffer[nframes * half];
-            if (source)
-                memcpy(destination, source, sizeof(*destination) * nframes);
-            else
-                memset(destination, 0, sizeof(*destination) * nframes);
-        }
-
-        pipeasio_host_call_process(&token, half, nframes, audio_get_time_nsec(This->audio_client));
-    }
-
-    for (int i = 0; i < This->pipeasio_number_outputs; ++i)
-    {
-        const audio_sample_t *source
-                = admitted ? &This->output_channel[i].audio_buffer[nframes * half] : NULL;
-        audio_port_publish_output(This->output_channel[i].port, source, nframes, admitted,
-                                  This->output_channel[i].active);
-    }
-    if (admitted)
-        This->host_buffer_index = half ? 0 : 1;
-    pipeasio_host_call_end(&token);
-    /* Nonzero tells the backend the host did not consume this cycle, so a
-     * deliberate Stop's idle cycles are not billed to us as xruns. */
-    return admitted ? 0 : 1;
-}
 
 static inline int
 sample_rate_callback(audio_nframes_t nframes, void *arg)

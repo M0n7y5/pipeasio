@@ -117,6 +117,7 @@ static volatile LONG g_first_index = -1;
 static volatile LONG g_block_callback;
 static volatile LONG g_stop_ready;
 static volatile LONG g_stop_done;
+static volatile LONG g_rate_told; /* last sampleRateChanged value, in Hz */
 static HANDLE        g_callback_blocked;
 static HANDLE        g_callback_release;
 static HANDLE        g_stop_completion_entered;
@@ -441,6 +442,7 @@ static void PROBE_CB
 cb_sampleRateChanged(double rate)
 {
     fprintf(stderr, "[probe] sampleRateChanged(%f)\n", rate);
+    InterlockedExchange(&g_rate_told, (LONG)rate);
 }
 static LONG PROBE_CB
 cb_sendNotification(LONG selector, LONG value, void *msg, double *opt)
@@ -843,6 +845,30 @@ main(void)
     fprintf(stderr, "[probe] CreateBuffers OK (%ld channels @ %ld frames)\n", (long)nch,
             (long)prefBs);
 
+    /* Opt-in rate change while Prepared (PROBE_RESET_RATE=44100): SetSampleRate
+     * asks for kAsioResetRequest, and the probe then does what a host honoring
+     * it does, DisposeBuffers and CreateBuffers.  The graph must move to that
+     * rate, or the host must be told the rate it runs at instead. */
+    const char *reset_rate = getenv("PROBE_RESET_RATE");
+    double      reset_want = reset_rate && *reset_rate ? atof(reset_rate) : 0.0;
+    if (reset_want > 0.0)
+    {
+        LONG src = asio->lpVtbl->SetSampleRate(asio, reset_want);
+        LONG drc = asio->lpVtbl->DisposeBuffers(asio);
+        LONG crc = asio->lpVtbl->CreateBuffers(asio, bi, nch, prefBs, &cbs);
+        fprintf(stderr,
+                "[probe] SetSampleRate(%.0f) while Prepared: rc=%ld, reset: DisposeBuffers=%ld "
+                "CreateBuffers=%ld\n",
+                reset_want, (long)src, (long)drc, (long)crc);
+        if (src != 0 || drc != 0 || crc != 0)
+        {
+            free(bi);
+            asio->lpVtbl->Release(asio);
+            CoUninitialize();
+            return die("rate change while Prepared", src ? src : drc ? drc : crc);
+        }
+    }
+
     LONG inLat = 0, outLat = 0;
     asio->lpVtbl->GetLatencies(asio, &inLat, &outLat);
     fprintf(stderr, "[probe] latencies: in=%ld out=%ld\n", (long)inLat, (long)outLat);
@@ -923,6 +949,15 @@ main(void)
         fprintf(stderr, "[probe] rate: check skipped (stall leg or position unavailable)\n");
     if (running_rate > 0.0)
         rate = running_rate; /* pass criterion below uses the Running rate */
+
+    int reset_rate_ok = 1;
+    if (reset_want > 0.0)
+    {
+        LONG told     = g_rate_told;
+        reset_rate_ok = running_rate == reset_want || (double)told == running_rate;
+        fprintf(stderr, "[probe] rate reset: set=%.0f running=%.0f sampleRateChanged=%ld -> %s\n",
+                reset_want, running_rate, (long)told, reset_rate_ok ? "ok" : "BAD");
+    }
 
     int  concurrent_stop_ok = getenv("PROBE_STOP_INTERLEAVE") ? run_forced_stop_interleave(asio)
                                                               : run_concurrent_stop(asio);
@@ -1027,7 +1062,7 @@ main(void)
     LONG expected = (LONG)((rate / prefBs) * seconds);
     LONG ok       = (g_cycles >= expected / 2) && future_ok && spos_ok && contract_ok && thread_ok
                     && stop_ok && first_index_ok && concurrent_stop_ok && restart_ok && rt_worker_ok
-                    && rate_ok && latency_ok && rate_caps_ok;
+                    && rate_ok && latency_ok && rate_caps_ok && reset_rate_ok;
     fprintf(stderr, "[probe] expected ~%ld cycles, got %ld -> %s\n", (long)expected, (long)g_cycles,
             ok ? "PASS" : "FAIL");
     return ok ? 0 : 2;

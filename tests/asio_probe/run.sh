@@ -127,7 +127,8 @@ for _cfg_var in PIPEASIO_NUMBER_INPUTS PIPEASIO_NUMBER_OUTPUTS \
     esac
 done
 for _probe_var in PROBE_XRUN_ARM_FILE PROBE_XRUN_STALL_MS PROBE_RT_WORKER \
-                  PROBE_RT_SCAN_FILE PROBE_STOP_INTERLEAVE PROBE_GATE_BARRIER; do
+                  PROBE_RT_SCAN_FILE PROBE_STOP_INTERLEAVE PROBE_GATE_BARRIER \
+                  PROBE_RESET_RATE; do
     case " ${PROBE_ENV_KEEP:-} " in
         *" $_probe_var "*) ;;
         *) unset "$_probe_var" ;;
