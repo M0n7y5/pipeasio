@@ -330,8 +330,11 @@ jobs:
           export WINEPREFIX="$HOME/pfx" WINEDLLPATH="$HOME/.local/lib/wine"
           export WINEDLLOVERRIDES="mscoree,mshtml=" WINEDEBUG=-all,+loaddll,err+all
           export XDG_CONFIG_HOME="$HOME/pfx/xdg" PIPEASIO_CONNECT_TO_HARDWARE=off PIPEASIO_DEBUG=1
-          for pair in 'asio_probe_x64.exe arm64ec' 'build/tests/asio_probe/asio_probe.exe aarch64'; do
-            read -r probe half <<< "$pair"
+          for probe in asio_probe_x64.exe build/tests/asio_probe/asio_probe.exe; do
+            case "$probe" in
+              *_x64.exe) half=arm64ec ;;
+              *) half=aarch64 ;;
+            esac
             log="$(basename "$probe" .exe).log"
             timeout 180 wine "$probe" 2 > "$log" 2>&1 || true
             cat "$log"
