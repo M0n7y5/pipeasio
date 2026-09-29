@@ -35,7 +35,7 @@ drivers.
 ![PipeASIO settings panel](docs/panel-settings.png)
 
 > [!NOTE]
-> PipeASIO is at **1.9.1**. It is verified with FL Studio under Proton-CachyOS and with the [VB-Audio ASIO Test](https://forum.vb-audio.com/viewtopic.php?p=4259#p4259) utility (64-bit and 32-bit). Reaper should work but is not yet confirmed. Ableton Live has played audio on ARM64 under FEX, see [ARM64](#arm64). x86_64, with experimental opt-in 32-bit (WoW64) support. Bug reports are very welcome on the [issue tracker](https://github.com/M0n7y5/pipeasio/issues).
+> PipeASIO is at **1.10.0**. It is verified with FL Studio under Proton-CachyOS and with the [VB-Audio ASIO Test](https://forum.vb-audio.com/viewtopic.php?p=4259#p4259) utility (64-bit and 32-bit). Reaper should work but is not yet confirmed. Ableton Live has played audio on ARM64 under FEX, see [ARM64](#arm64). x86_64, with experimental opt-in 32-bit (WoW64) support. Bug reports are very welcome on the [issue tracker](https://github.com/M0n7y5/pipeasio/issues).
 
 ## Support
 
