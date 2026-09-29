@@ -19,6 +19,10 @@ follow [Semantic Versioning](https://semver.org/).
   the launch options to set, keeping the game's other options, tells when
   Steam has them, and after Remove shows the options to set back. Flatpak
   Steam is not supported, for the same reason as Flatpak Bottles (#36).
+- The Installations tab lists installed prefixes first, then those needing
+  attention, not installed, and unavailable, each by name. A filter field
+  above the list narrows it by name, launcher, status or version, so a large
+  Steam library stays manageable.
 
 ## [1.9.1] - 2026-09-29
 

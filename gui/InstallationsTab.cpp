@@ -31,6 +31,7 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <utility>
 
 static QString
@@ -109,6 +110,11 @@ InstallationsTab::InstallationsTab(QWidget *parent) : QWidget(parent)
     heading->addWidget(intro);
     layout->addLayout(heading);
 
+    m_filter = new QLineEdit(this);
+    m_filter->setObjectName(QStringLiteral("installationFilter"));
+    m_filter->setAccessibleName(tr("Filter installation targets"));
+    m_filter->setPlaceholderText(tr("Filter by name, launcher, status, or version"));
+    m_filter->setClearButtonEnabled(true);
     m_targets = new QTreeWidget(this);
     m_targets->setObjectName(QStringLiteral("installationTargets"));
     m_targets->setAccessibleName(tr("Wine installation targets"));
@@ -121,7 +127,11 @@ InstallationsTab::InstallationsTab(QWidget *parent) : QWidget(parent)
     m_targets->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
     m_targets->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_targets->setMinimumHeight(96);
-    layout->addWidget(m_targets, 1);
+    auto *list = new QVBoxLayout;
+    list->setSpacing(6);
+    list->addWidget(m_filter);
+    list->addWidget(m_targets, 1);
+    layout->addLayout(list, 1);
 
     m_details    = new QGroupBox(this);
     auto *fields = new QFormLayout(m_details);
@@ -254,6 +264,7 @@ InstallationsTab::InstallationsTab(QWidget *parent) : QWidget(parent)
                                  .arg(m_process->errorString()));
             });
     connect(m_refresh, &QPushButton::clicked, this, &InstallationsTab::refreshTargets);
+    connect(m_filter, &QLineEdit::textChanged, this, &InstallationsTab::applyFilter);
     connect(m_refreshReleases, &QToolButton::clicked, this, &InstallationsTab::refreshReleases);
     connect(m_add, &QPushButton::clicked, this, &InstallationsTab::addPrefix);
     connect(m_install, &QPushButton::clicked, this, [this] { previewInstall(false); });
@@ -338,6 +349,31 @@ InstallationsTab::targetDescription() const
     if (!note.isEmpty())
         text += QStringLiteral("\n") + note;
     return text;
+}
+
+void
+InstallationsTab::applyFilter()
+{
+    /* Every word must appear in some column, so "steam not" narrows by both. */
+    const QStringList words = m_filter->text().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    QTreeWidgetItem  *first = nullptr;
+    for (int i = 0; i < m_targets->topLevelItemCount(); ++i)
+    {
+        auto   *item = m_targets->topLevelItem(i);
+        QString row;
+        for (int column = 0; column < m_targets->columnCount(); ++column)
+            row += item->text(column) + QLatin1Char('\n');
+        bool match = true;
+        for (const auto &word : words)
+            match = match && row.contains(word, Qt::CaseInsensitive);
+        item->setHidden(!match);
+        if (match && !first)
+            first = item;
+    }
+    const auto *current = m_targets->currentItem();
+    if (!current || current->isHidden())
+        m_targets->setCurrentItem(first);
+    updateActions();
 }
 
 void
@@ -546,11 +582,33 @@ InstallationsTab::refreshTargets()
                 return;
             }
             m_targets->clear();
+            QList<QJsonObject> targets;
             for (const auto &value : data.value(QStringLiteral("targets")).toArray())
+                if (!value.toObject().value(QStringLiteral("id")).toString().isEmpty())
+                    targets.append(value.toObject());
+            /* Installations first, so a long Steam library does not bury them. */
+            const auto rank = [](const QJsonObject &target)
             {
-                const auto target = value.toObject();
-                if (target.value(QStringLiteral("id")).toString().isEmpty())
-                    continue;
+                static const QStringList order
+                        = { QStringLiteral("installed"), QStringLiteral("needs-repair"),
+                            QStringLiteral("not-installed"), QStringLiteral("unsupported") };
+                const auto index = order.indexOf(target.value(QStringLiteral("status")).toString());
+                return index < 0 ? order.size() : index;
+            };
+            std::stable_sort(
+                    targets.begin(), targets.end(),
+                    [&](const QJsonObject &left, const QJsonObject &right)
+                    {
+                        if (rank(left) != rank(right))
+                            return rank(left) < rank(right);
+                        return left.value(QStringLiteral("name"))
+                                       .toString()
+                                       .compare(right.value(QStringLiteral("name")).toString(),
+                                                Qt::CaseInsensitive)
+                               < 0;
+                    });
+            for (const auto &target : targets)
+            {
                 auto             *item   = new QTreeWidgetItem(m_targets);
                 const QStringList fields = { QStringLiteral("name"), QStringLiteral("kind"),
                                              QStringLiteral("status"), QStringLiteral("version") };
@@ -567,8 +625,7 @@ InstallationsTab::refreshTargets()
                 if (target.value(QStringLiteral("id")).toString() == selected)
                     m_targets->setCurrentItem(item);
             }
-            if (!m_targets->currentItem() && m_targets->topLevelItemCount())
-                m_targets->setCurrentItem(m_targets->topLevelItem(0));
+            applyFilter();
             m_status->setText(m_targets->topLevelItemCount()
                                       ? tr("Select a target and preview an installation, or check "
                                            "an existing one.")

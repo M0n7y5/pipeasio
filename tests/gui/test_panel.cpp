@@ -27,6 +27,8 @@
 #include <QComboBox>
 #include <QDir>
 #include <QLabel>
+#include <QLineEdit>
+#include <QTreeWidget>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QImage>
@@ -463,6 +465,12 @@ helper_mode(const QStringList &arguments)
     {
         if (arguments.size() != 3 || arguments.at(2) != QStringLiteral("list"))
             return 2;
+        if (qEnvironmentVariableIsSet("PIPEASIO_TEST_TARGETS"))
+        {
+            std::printf("{\"event\":\"result\",\"ok\":true,\"data\":{\"targets\":%s}}\n",
+                        qgetenv("PIPEASIO_TEST_TARGETS").constData());
+            return 0;
+        }
         std::fputs("{\"event\":\"progress\",\"message\":\"Discovering prefixes\"}\n", stdout);
         std::fflush(stdout);
         for (;;)
@@ -582,6 +590,63 @@ test_manager_close_during_discovery()
     CHECK(process->state() == QProcess::Running);
     delete panel;
     CHECK(stopped);
+    if (hadBackend)
+        qputenv("PIPEASIO_MANAGER_BACKEND", previousBackend);
+    else
+        qunsetenv("PIPEASIO_MANAGER_BACKEND");
+}
+
+static QStringList
+visible_targets(QTreeWidget *tree)
+{
+    QStringList names;
+    for (int i = 0; i < tree->topLevelItemCount(); ++i)
+        if (!tree->topLevelItem(i)->isHidden())
+            names << tree->topLevelItem(i)->text(0);
+    return names;
+}
+
+static void
+test_installation_order_and_filter()
+{
+    const bool hadBackend = qEnvironmentVariableIsSet("PIPEASIO_MANAGER_BACKEND");
+    const QByteArray previousBackend = qgetenv("PIPEASIO_MANAGER_BACKEND");
+    qputenv("PIPEASIO_MANAGER_BACKEND", QCoreApplication::applicationFilePath().toUtf8());
+    qputenv("PIPEASIO_TEST_TARGETS",
+            "[{\"id\":\"a\",\"name\":\"Zeta Game\",\"kind\":\"steam\",\"status\":\"not-installed\"},"
+            "{\"id\":\"b\",\"name\":\"Alpha Game\",\"kind\":\"steam\",\"status\":\"unsupported\"},"
+            "{\"id\":\"c\",\"name\":\"Studio\",\"kind\":\"faugus\",\"status\":\"installed\","
+            "\"version\":\"v1.9.1\"},"
+            "{\"id\":\"d\",\"name\":\"Mixer\",\"kind\":\"wine\",\"status\":\"needs-repair\"},"
+            "{\"id\":\"e\",\"name\":\"beta Game\",\"kind\":\"steam\",\"status\":\"installed\"}]");
+    {
+        InstallationsTab panel;
+        auto *tree   = panel.findChild<QTreeWidget *>(QStringLiteral("installationTargets"));
+        auto *filter = panel.findChild<QLineEdit *>(QStringLiteral("installationFilter"));
+        CHECK(tree && filter);
+        if (tree && filter)
+        {
+            QElapsedTimer deadline;
+            deadline.start();
+            while (tree->topLevelItemCount() < 5 && deadline.elapsed() < 2500)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            /* Installed, then needing attention, not installed, unavailable;
+             * names without regard to case within each. */
+            CHECK(visible_targets(tree)
+                  == QStringList({ "beta Game", "Studio", "Mixer", "Zeta Game", "Alpha Game" }));
+            CHECK(tree->currentItem() == tree->topLevelItem(0));
+            /* Words match in any column: "Steam" is the launcher, "not" the status. */
+            filter->setText(QStringLiteral("steam not"));
+            CHECK(visible_targets(tree) == QStringList({ "Zeta Game" }));
+            CHECK(tree->currentItem() && tree->currentItem()->text(0) == QStringLiteral("Zeta Game"));
+            filter->setText(QStringLiteral("no such target"));
+            CHECK(visible_targets(tree).isEmpty());
+            CHECK(!tree->currentItem());
+            filter->clear();
+            CHECK(visible_targets(tree).size() == 5);
+        }
+    }
+    qunsetenv("PIPEASIO_TEST_TARGETS");
     if (hadBackend)
         qputenv("PIPEASIO_MANAGER_BACKEND", previousBackend);
     else
@@ -987,6 +1052,7 @@ main(int argc, char **argv)
     test_resolve_connections();
     test_async_enumerator();
     test_manager_close_during_discovery();
+    test_installation_order_and_filter();
     test_dialog_loading_state();
     test_latency_follows_graph_rate();
     test_scheduling_row_follows_checkbox();

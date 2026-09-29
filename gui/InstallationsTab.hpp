@@ -35,6 +35,7 @@ class InstallationsTab : public QWidget
     void        checkTarget();
     void        removeTarget();
     void        updateActions();
+    void        applyFilter();
     void        readOutput();
     void        consumeLine(const QByteArray &line);
     void        finish(int exitCode, bool crashed);
@@ -45,6 +46,7 @@ class InstallationsTab : public QWidget
     QStringList installArguments(const QString &command) const;
     QString     targetDescription() const;
 
+    QLineEdit                               *m_filter          = nullptr;
     QTreeWidget                             *m_targets         = nullptr;
     QGroupBox                               *m_details         = nullptr;
     QLineEdit                               *m_prefix          = nullptr;

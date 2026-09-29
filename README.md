@@ -135,9 +135,10 @@ Darkly are not bundled. Restart the manager if a desktop theme change is not
 reflected while it is open. Explicit `QT_QPA_PLATFORMTHEME` and
 `QT_STYLE_OVERRIDE` overrides remain available.
 
-1. Select the application or prefix. Close its Windows applications and the
-   launcher, including the Faugus tray process, before changing the installation.
-   Steam can stay open.
+1. Select the application or prefix. Installed prefixes are listed first, and
+   the filter field above the list narrows it by name, launcher, status or
+   version. Close its Windows applications and the launcher, including the
+   Faugus tray process, before changing the installation. Steam can stay open.
 2. Choose **Install** or **Update**. Review the selected runner, release, and
    any Flatpak permission requests before confirming.
 3. The manager downloads an official GitHub release, checks its SHA256, stages
