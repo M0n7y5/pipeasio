@@ -1255,8 +1255,13 @@ Init(LPPIPEASIO iface, void *sysRef)
         switch (audio_status)
         {
         case AUDIO_STATUS_NO_UNIXLIB:
-            set_last_error(This, "the 64-bit unixlib is unavailable; 32-bit hosts need Wine's "
-                                 "new WoW64 mode (Wine 11 / Proton 11)");
+#ifdef _WIN64
+            set_last_error(This, "cannot load pipeasio64.so: set WINEDLLPATH to PipeASIO's "
+                                 "lib/wine, or check the Wine log for a missing library");
+#else
+            set_last_error(This, "cannot load pipeasio32.so: needs new WoW64 (PROTON_USE_WOW64=1, "
+                                 "Faugus's WoW64 option, a new-WoW64 Wine) and WINEDLLPATH");
+#endif
             break;
         case AUDIO_STATUS_NO_DAEMON:
             set_last_error(This, "cannot connect to the PipeWire daemon (is it running and "

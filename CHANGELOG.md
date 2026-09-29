@@ -4,6 +4,18 @@ All notable changes to PipeASIO are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- When the driver could not load its Linux half, the error told 32-bit hosts
+  they needed Wine 11 or Proton 11. Wine 10.0 and Proton 10 work, and Proton
+  11 fails the same way without new WoW64. The 32-bit front end now names what
+  it needs at any version: `PROTON_USE_WOW64=1`, Faugus's WoW64 option or a
+  new-WoW64 Wine build, plus `WINEDLLPATH`. The 64-bit front end showed the same
+  WoW64 hint, which never applies to it, and now points to `WINEDLLPATH` and the
+  Wine log.
+
 ## [1.9.0] - 2026-09-28
 
 ### Added

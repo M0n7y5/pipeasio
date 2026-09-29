@@ -705,9 +705,12 @@ and are the usual causes of trouble elsewhere:
   import libraries at build time and does not affect install locations. A
   user-local `--prefix "$HOME/.local"` install plus `WINEDLLPATH` sidesteps
   the question entirely.
-- **Wine version.** The 64-bit driver runs on current Wine. The experimental
-  32-bit front end additionally requires Wine's *new WoW64*. Older or
-  split-WoW64 Wine cannot load it.
+- **Wine version.** Tested with Wine 10.0 and 11 and with Proton 10 and 11.
+  Proton 10 runs in Steam Runtime 3, whose PipeWire library is 0.3.65. The
+  driver runs against it unchanged. The experimental 32-bit front end
+  additionally requires Wine's *new WoW64*, at any version: Proton's
+  `PROTON_USE_WOW64=1` (Faugus's WoW64 option) or a Wine built for new WoW64.
+  Split-WoW64 Wine cannot load it.
 - **PipeWire version.** 1.4.2 or newer, the version Steam Runtime 4 and Debian
   13 ship; configure refuses anything older. The forced quantum/rate that pins
   low latency is not what sets this floor - those properties have existed since
