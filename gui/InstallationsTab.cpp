@@ -400,12 +400,13 @@ InstallationsTab::run(const QStringList &arguments, bool mutation,
                                          .filePath(QStringLiteral("pipeasio-manage"));
         if (QFileInfo(adjacent).isExecutable())
             backend = adjacent;
-        else
-            backend = QStandardPaths::findExecutable(QStringLiteral("pipeasio-manage"));
 #ifdef PIPEASIO_MANAGER_SOURCE_BACKEND
-        if (backend.isEmpty())
+        /* A build-tree GUI must not run an older installed backend from PATH. */
+        else if (QFileInfo(QString::fromUtf8(PIPEASIO_MANAGER_SOURCE_BACKEND)).isExecutable())
             backend = QString::fromUtf8(PIPEASIO_MANAGER_SOURCE_BACKEND);
 #endif
+        else
+            backend = QStandardPaths::findExecutable(QStringLiteral("pipeasio-manage"));
     }
     if (backend.isEmpty())
     {
