@@ -41,6 +41,7 @@ displayTargetValue(const QString &value)
                 { "faugus", "Faugus" },
                 { "bottles", "Bottles" },
                 { "bottles-flatpak", "Bottles (Flatpak)" },
+                { "steam", "Steam" },
                 { "not-installed", "Not installed" },
                 { "installed", "Installed" },
                 { "needs-repair", "Needs attention" },
@@ -98,10 +99,12 @@ InstallationsTab::InstallationsTab(QWidget *parent) : QWidget(parent)
     header->addWidget(m_refresh);
     header->addWidget(m_add);
     heading->addLayout(header);
-    auto *intro = new QLabel(tr("Manage official PipeASIO releases in Faugus, Bottles, or a custom "
-                                "Wine prefix. Close the launcher and Windows applications before "
-                                "changing an installation. Discovery does not start Wine."),
-                             this);
+    auto *intro
+            = new QLabel(tr("Manage official PipeASIO releases in Steam, Faugus, Bottles, or a "
+                            "custom Wine prefix. Close the prefix's applications, and Faugus or "
+                            "Bottles, before changing an installation. Discovery does not start "
+                            "Wine."),
+                         this);
     intro->setWordWrap(true);
     heading->addWidget(intro);
     layout->addLayout(heading);
@@ -156,7 +159,7 @@ InstallationsTab::InstallationsTab(QWidget *parent) : QWidget(parent)
     auto *state = new QVBoxLayout;
     m_state     = textField(tr("Selected target status"));
     m_note      = textField(tr("Selected target notes"));
-    m_guidance  = textField(tr("Manual prefix launch instructions"));
+    m_guidance  = textField(tr("Launch instructions"));
     m_guidance->setVisible(false);
     for (auto *label : { m_state, m_note, m_guidance })
         state->addWidget(label);
@@ -264,14 +267,21 @@ InstallationsTab::InstallationsTab(QWidget *parent) : QWidget(parent)
                 m_include32->setChecked(metadata.value(QStringLiteral("include_32")).toBool());
                 const QString launcher
                         = metadata.value(QStringLiteral("launch_command")).toString();
-                m_guidance->setVisible(!launcher.isEmpty());
-                m_guidance->setText(
-                        launcher.isEmpty()
-                                ? QString()
-                                : tr("Launch this prefix's Windows applications through:\n%1\n"
-                                     "Direct Wine launches do not inherit its PipeASIO library "
-                                     "path.")
-                                          .arg(launcher));
+                const QString options
+                        = metadata.value(QStringLiteral("launch_options_required")).toString();
+                m_guidance->setVisible(!launcher.isEmpty() || !options.isEmpty());
+                if (!options.isEmpty())
+                    m_guidance->setText(tr("In Steam, open this game's Properties > General and "
+                                           "set Launch Options to:\n%1")
+                                                .arg(options));
+                else
+                    m_guidance->setText(
+                            launcher.isEmpty()
+                                    ? QString()
+                                    : tr("Launch this prefix's Windows applications through:\n%1\n"
+                                         "Direct Wine launches do not inherit its PipeASIO library "
+                                         "path.")
+                                              .arg(launcher));
                 updateActions();
             });
     updateActions();

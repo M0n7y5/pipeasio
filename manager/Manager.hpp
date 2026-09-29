@@ -89,6 +89,10 @@ CommandResult run(const QJsonObject &target, const QStringList &arguments,
                   const QJsonObject &environment, int timeoutMs = 120000);
 QStringList   permissionPlan(const QJsonObject &target, const QString &payloadRoot);
 QStringList   grantPermissions(const QJsonObject &target, const QString &payloadRoot);
+// Steam launch options: their leading environment assignments, and the options
+// with `updates` applied to those assignments (null removes one).
+QJsonObject launchAssignments(const QString &options);
+QString     launchOptions(const QString &options, const QJsonObject &updates);
 }
 
 namespace Releases

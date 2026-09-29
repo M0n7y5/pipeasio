@@ -201,6 +201,66 @@ struct Fixture
         return selected + "/bottle.yml";
     }
 
+    // A Steam root with a second library, a custom and a Valve Proton, and a
+    // game in each discovery state. Returns the second library.
+    QString steam()
+    {
+        const QString root = data + "/Steam";
+        const QString library = home + "/Library Two";
+        QDir().mkpath(root + "/steamapps");
+        QDir().mkpath(library + "/steamapps");
+        writeFile(root + "/steamapps/libraryfolders.vdf", QStringLiteral(
+            "\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\"%1\"\n\t}\n\t\"1\"\n\t{\n\t\t\"path\"\t\t\"%2\"\n"
+            "\t\t\"apps\"\n\t\t{\n\t\t\t\"221680\"\t\t\"123\"\n\t\t}\n\t}\n}\n").arg(root, library).toUtf8());
+        writeFile(root + "/config/config.vdf",
+            "\"InstallConfigStore\" { \"Software\" { \"valve\" { \"Steam\" { \"CompatToolMapping\" {\n"
+            "  \"0\" { \"name\" \"Removed Proton\" }\n"
+            "  \"221680\" { \"name\" \"Chosen Proton\" \"config\" \"\" \"priority\" \"250\" }\n"
+            "  \"400\" { \"name\" \"proton_experimental\" }\n"
+            "  \"500\" { \"name\" \"Removed Proton\" }\n"
+            "  \"600\" { \"name\" \"Chosen Proton\" }\n"
+            "} } } } }\n");
+        const QString chosen = root + "/compatibilitytools.d/Chosen Proton";
+        writeFile(chosen + "/compatibilitytool.vdf",
+            "\"compatibilitytools\"\n{\n  \"compat_tools\"\n  {\n    \"Chosen Proton\" // Steam's internal name\n"
+            "    {\n      \"install_path\" \".\"\n      \"display_name\" \"Chosen\"\n    }\n  }\n}\n");
+        executable(chosen + "/proton");
+        writeFile(library + "/steamapps/appmanifest_1493710.acf",
+            "\"AppState\" { \"appid\" \"1493710\" \"name\" \"Proton Experimental\" \"installdir\" \"Proton - Experimental\" }\n");
+        writeFile(library + "/steamapps/common/Proton - Experimental/toolmanifest.vdf", "\"manifest\" { }\n");
+        executable(library + "/steamapps/common/Proton - Experimental/proton");
+        steamGame(library, "221680", "Rocksmith 2014 \\\"Remastered\\\"", true);
+        steamGame(root, "400", "Experimental Game", true);
+        steamGame(root, "450", "Default Game", true);
+        writeFile(root + "/steamapps/compatdata/450/config_info",
+            ("CachyOS-11.0\n" + chosen + "/files/share/fonts/\n" + chosen + "/files/lib/\n").toUtf8());
+        steamGame(root, "500", "Stale Tool Game", true);
+        steamGame(root, "600", "Unlaunched Game", false);
+        steamGame(root, "700", "Native Game", false);
+        writeFile(root + "/config/loginusers.vdf",
+            "\"users\" { \"76561197960265729\" { \"MostRecent\" \"0\" } \"76561197960265730\" { \"MostRecent\" \"1\" } }\n");
+        const auto settings = [&](const QString &account, const QString &options)
+        {
+            writeFile(root + "/userdata/" + account + "/config/localconfig.vdf",
+                ("\"UserLocalConfigStore\" { \"Software\" { \"Valve\" { \"Steam\" { \"Apps\" { \"221680\" { \"LaunchOptions\" \""
+                 + options + "\" } } } } } }\n").toUtf8());
+        };
+        settings("1", "WRONG=account %command%");
+        settings("2", "DXVK_HUD=1 LABEL=\\\"two words\\\" gamemoderun %command% -nolauncher");
+        executable(home + "/bin/umu-run");
+        return QFileInfo(library).canonicalFilePath();
+    }
+
+    void steamGame(const QString &library, const QString &appid, const QString &name, bool launched)
+    {
+        writeFile(library + "/steamapps/appmanifest_" + appid + ".acf",
+            ("\"AppState\"\n{\n\t\"appid\"\t\t\"" + appid + "\"\n\t\"name\"\t\t\"" + name + "\"\n\t\"installdir\"\t\t\"Game "
+             + appid + "\"\n}\n").toUtf8());
+        QDir().mkpath(library + "/steamapps/common/Game " + appid);
+        if (launched)
+            prefix(library + "/steamapps/compatdata/" + appid + "/pfx");
+    }
+
     QJsonObject selected(const QString &kind)
     {
         for (const auto &value : Launchers::discover())
@@ -714,6 +774,91 @@ static void hostPlatformThemeRestoration()
     CHECK(f.run(target).exitCode == 37);
 }
 
+static QJsonObject steamTarget(const QString &appid)
+{
+    for (const auto &value : Launchers::discover())
+        if (value.toObject().value("kind") == "steam"
+            && value.toObject().value("metadata").toObject().value("appid") == appid)
+            return value.toObject();
+    return {};
+}
+
+static void steamDiscovery()
+{
+    Fixture f;
+    const QString library = f.steam();
+    const QString tools = QFileInfo(f.data + "/Steam").canonicalFilePath() + "/compatibilitytools.d";
+    const auto chosen = steamTarget("221680");
+    CHECK(chosen.value("error").toString().isEmpty());
+    CHECK(chosen.value("name") == "Rocksmith 2014 \"Remastered\"");
+    CHECK(chosen.value("prefix") == library + "/steamapps/compatdata/221680/pfx");
+    CHECK(chosen.value("runner") == tools + "/Chosen Proton");
+    CHECK(chosen.value("metadata").toObject().value("launch_options")
+          == "DXVK_HUD=1 LABEL=\"two words\" gamemoderun %command% -nolauncher");
+    CHECK(steamTarget("400").value("runner") == library + "/steamapps/common/Proton - Experimental");
+    CHECK(steamTarget("450").value("runner") == tools + "/Chosen Proton");
+    CHECK(steamTarget("500").value("error").toString().contains("not installed: Removed Proton"));
+    CHECK(steamTarget("600").value("error").toString().contains("Launch this game once"));
+    CHECK(steamTarget("700").isEmpty());
+    CHECK(steamTarget("1493710").isEmpty());
+    qputenv("PATH", (f.home + "/bin").toUtf8());
+    QFile::remove(f.home + "/bin/umu-run");
+    CHECK(steamTarget("221680").value("error").toString().contains("umu-run"));
+}
+
+static void steamConfigCorruption()
+{
+    Fixture f;
+    f.steam();
+    writeFile(f.data + "/Steam/config/config.vdf", "\"InstallConfigStore\" { \"Software\" {\n");
+    bool reported = false;
+    for (const auto &value : Launchers::discover())
+        reported = reported || (value.toObject().value("kind") == "steam"
+                                && value.toObject().value("error").toString().contains("unterminated block"));
+    CHECK(reported);
+    CHECK(steamTarget("221680").isEmpty());
+}
+
+static void steamChildContext()
+{
+    Fixture f;
+    f.steam();
+    const auto target = steamTarget("221680");
+    const QString settings = f.data + "/Steam/userdata/2/config/localconfig.vdf";
+    const auto before = readFile(settings);
+    Launchers::setEnvironment(target, {{"WINEDLLPATH", "/payload/lib/wine"}});
+    CHECK(readFile(settings) == before);
+    CHECK(Launchers::environment(target).value("WINEDLLPATH") == "/payload/lib/wine");
+    CHECK(Launchers::environment(target).value("LABEL") == "two words");
+    qputenv("WINEPREFIX", "/wrong-prefix");
+    f.expect(f.home + "/bin/umu-run", target.value("prefix").toString(),
+        {{"WINEPREFIX", target.value("metadata").toObject().value("compatdata")}, {"PROTONPATH", target.value("runner")},
+         {"GAMEID", "umu-0"}, {"PROTONFIXES_DISABLE", "1"}, {"UMU_RUNTIME_UPDATE", "0"},
+         {"PROTON_VERB", "waitforexitandrun"}, {"DXVK_HUD", "1"}, {"LABEL", "two words"},
+         {"WINEDLLPATH", "/payload/lib/wine"}, {"CONFIGURED", "per-launch"}});
+    const auto result = f.run(target, {{"CONFIGURED", "per-launch"}, {"WINEPREFIX", "/injected"}});
+    CHECK(result.exitCode == 37);
+    CHECK(result.output == "fixture accepted\n");
+}
+
+static void steamLaunchOptions()
+{
+    const QJsonObject installed{{"WINEDLLPATH", "/payload/lib/wine"}, {"PROTON_USE_WOW64", "1"}};
+    CHECK(Launchers::launchOptions("DXVK_HUD=1 gamemoderun %command% -nolauncher", installed)
+          == "DXVK_HUD=1 PROTON_USE_WOW64=1 WINEDLLPATH=/payload/lib/wine gamemoderun %command% -nolauncher");
+    CHECK(Launchers::launchOptions("", installed) == "PROTON_USE_WOW64=1 WINEDLLPATH=/payload/lib/wine %command%");
+    CHECK(Launchers::launchOptions("-dx11", {{"WINEDLLPATH", "/p"}}) == "WINEDLLPATH=/p %command% -dx11");
+    CHECK(Launchers::launchOptions("WINEDLLPATH=/old %command%", {{"WINEDLLPATH", "/new:/old"}})
+          == "WINEDLLPATH=/new:/old %command%");
+    CHECK(Launchers::launchOptions("PROTON_USE_WOW64=1 WINEDLLPATH=/p DXVK_HUD=1 %command%",
+                                   {{"WINEDLLPATH", QJsonValue::Null}, {"PROTON_USE_WOW64", QJsonValue::Null}})
+          == "DXVK_HUD=1 %command%");
+    CHECK(Launchers::launchOptions("%command%", {{"WINEDLLPATH", "/home/a b/lib/wine"}})
+          == "'WINEDLLPATH=/home/a b/lib/wine' %command%");
+    CHECK(Launchers::launchAssignments("A=1 B='two words' gamemoderun C=3 %command%")
+          == QJsonObject({{"A", "1"}, {"B", "two words"}}));
+}
+
 int main(int argc, char **argv)
 {
     QCoreApplication application(argc, argv);
@@ -756,6 +901,10 @@ int main(int argc, char **argv)
         {"Manual environment and child status", manualEnvironmentAndStatus},
         {"Host loader restoration", hostLoaderRestoration},
         {"Host platform theme restoration", hostPlatformThemeRestoration},
+        {"Steam discovery", steamDiscovery},
+        {"Steam configuration corruption", steamConfigCorruption},
+        {"Steam child context", steamChildContext},
+        {"Steam launch options", steamLaunchOptions},
     };
     for (const auto &test : tests)
     {
