@@ -163,13 +163,16 @@ launches do not inherit its `WINEDLLPATH`. Faugus and Bottles retain the setting
 in their own application configuration.
 
 For a Steam game, the manager shows the launch options to set in the game's
-**Properties > General**, keeping any options it already has. It reads Steam's
-settings to tell when they are set, but never writes them, since Steam rewrites
-its settings files while it runs. After **Remove**, it shows the options to set
-back. Steam games need `umu-run`, from the `umu-launcher` package or the copy
-Faugus includes. A game appears once it has run through Proton, or once a Proton
-is selected for it in Steam, and its Proton is the one Steam uses: the game's
-own **Compatibility** choice, otherwise the one it last ran with.
+**Properties > General**, keeping its other options. Its `WINEDLLPATH` replaces
+one the game already sets. The manager reads Steam's settings to tell when the
+options are set, but never writes them, since Steam rewrites its settings files
+while it runs. After **Remove**, it shows the options to set back, with the
+values they had before. Steam games need `umu-run`, from the `umu-launcher`
+package or the copy Faugus includes. A game appears once it has run through
+Proton, or once a Proton is selected for it in Steam. The manager uses the
+game's own **Compatibility** choice, otherwise the Proton the game last ran
+with. If you changed Steam's default Proton since then, launch the game once
+and refresh.
 
 Driver payloads and backups normally live under
 `${XDG_DATA_HOME:-$HOME/.local/share}/pipeasio`. Flatpak Bottles payloads stay in
@@ -516,8 +519,9 @@ WoW64 toggle) so Proton runs them through new WoW64 - see
 
 ## Proton / Steam / Faugus
 
-The [GUI manager](#gui-manager) does this for Steam and Faugus games. The
-manual steps follow.
+The [GUI manager](#gui-manager) does this for Faugus games. For Steam games it
+does everything but step 2, and shows the launch options to paste. The manual
+steps follow.
 
 Proton runs Wine inside a pressure-vessel container (steamrt4). The container does
 not expose the host's `/usr/lib/wine/`, so a system-wide install is invisible to

@@ -1018,6 +1018,27 @@ steamUmu()
     return executable(bundled) ? absolutePath(bundled) : QString();
 }
 
+// umu-run downloads the Steam Runtime a Proton requires on first use.
+bool
+umuRuntimeReady(const QString &runner)
+{
+    QString appid;
+    try
+    {
+        appid = vdfValue(loadVdf(runner + "/toolmanifest.vdf"),
+                         { "manifest", "require_tool_appid" })
+                        .toString();
+    }
+    catch (const Error &)
+    {
+        return true;
+    }
+    const QString name = appid == "4183110" ? "steamrt4" : appid == "1628350" ? "steamrt3" : "";
+    const QString root = dataDirectory() + "/umu/" + name;
+    return name.isEmpty() || QFileInfo::exists(root + "/.installed.ok")
+           || QFileInfo::exists(root + "/VERSIONS.txt");
+}
+
 // Games that ran through Proton, plus those set to a Proton that have not run
 // yet. Native Linux games and Steam's own tools have no prefix and no mapping.
 QJsonArray
@@ -1122,6 +1143,7 @@ steamTargets()
             {
                 error = QString::fromUtf8(exception.what());
             }
+            metadata.insert("runtime_ready", runner.isEmpty() || umuRuntimeReady(runner));
             auto    current  = target("steam", root + ':' + appid,
                                       vdfValue(state, { "name" }).toString(appid), prefix, runner,
                                       metadata, error);
@@ -1460,17 +1482,9 @@ environment(const QJsonObject &selected)
 {
     const auto target   = fresh(selected);
     const auto metadata = target.value("metadata").toObject();
-    if (target.value("kind") == "wine")
+    if (target.value("kind") == "wine" || target.value("kind") == "steam")
         return object(readJson(metadata.value("environment_file").toString(), QJsonObject()),
-                      "manual environment");
-    if (target.value("kind") == "steam")
-    {
-        // What Steam sets at launch, overlaid with what the manager installed.
-        auto result = launchAssignments(metadata.value("launch_options").toString());
-        merge(result, object(readJson(metadata.value("environment_file").toString(), QJsonObject()),
-                             "Steam environment"));
-        return result;
-    }
+                      target.value("kind") == "wine" ? "manual environment" : "Steam environment");
     if (target.value("kind") != "faugus")
         return yamlEnvironment(loadYaml(metadata.value("config").toString()));
     for (const auto &value : readJson(metadata.value("config").toString()).toArray())
@@ -1715,6 +1729,9 @@ run(const QJsonObject &selected, const QStringList &arguments, const QJsonObject
         child.insert("UMU_RUNTIME_UPDATE", "0");
         child.insert("PROTON_VERB", "waitforexitandrun");
         program = metadata.value("umu").toString();
+        // Its first run downloads the Steam Runtime, which outlasts one command.
+        if (!umuRuntimeReady(target.value("runner").toString()))
+            timeoutMs = std::max(timeoutMs, 30 * 60 * 1000);
     }
     else
     {

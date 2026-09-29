@@ -10,15 +10,15 @@ follow [Semantic Versioning](https://semver.org/).
 
 - PipeASIO Manager installs into Steam games that run through Proton (#38).
   It finds every Steam library, and each game that has run through Proton or
-  has a Proton selected, and uses the Proton Steam uses for it: the game's own
-  Compatibility choice, otherwise the one it last ran with. A game set to a
-  Proton that is no longer installed is listed with that reason. Registration
-  and checks run through `umu-run` with that Proton, the way Steam starts the
-  game. The manager never writes Steam's settings, which Steam rewrites while
-  it runs: it shows the launch options to set, keeping the game's existing
-  ones, tells when Steam has them, and after Remove shows the options to set
-  back. Flatpak Steam is not supported, for the same reason as Flatpak Bottles
-  (#36).
+  has a Proton selected, and uses the game's own Compatibility choice,
+  otherwise the Proton it last ran with. A game set to a Proton that is no
+  longer installed is listed with that reason. Registration and checks run
+  through `umu-run` with that Proton, the way Steam starts the game, and the
+  first run waits for `umu-run` to download its Steam Runtime. The manager
+  never writes Steam's settings, which Steam rewrites while it runs: it shows
+  the launch options to set, keeping the game's other options, tells when
+  Steam has them, and after Remove shows the options to set back. Flatpak
+  Steam is not supported, for the same reason as Flatpak Bottles (#36).
 
 ## [1.9.1] - 2026-09-29
 

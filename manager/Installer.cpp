@@ -864,7 +864,8 @@ ready(const QJsonObject &state, const QJsonObject &checks, const QJsonObject &ta
              { "message", message } };
 }
 
-// Steam keeps the launch options the user copied in, so point back to them.
+// Steam keeps the launch options the user copied in, so point back to the values
+// its options had before the first installation.
 QString
 steamRemovalNote(const QJsonObject &target, const QJsonObject &state)
 {
@@ -880,10 +881,11 @@ steamRemovalNote(const QJsonObject &target, const QJsonObject &state)
     try
     {
         const auto applied = Launchers::launchAssignments(current);
+        const auto before
+                = Launchers::launchAssignments(state.value("launch_options_before").toString());
         for (auto it = installed.begin(); it != installed.end(); ++it)
         {
-            restored[it.key()]
-                    = valueOrNull(state.value("environment_before").toObject(), it.key());
+            restored[it.key()] = valueOrNull(before, it.key());
             stale = stale || (!it.value().isNull() && applied.value(it.key()) == it.value());
         }
         if (stale)
@@ -1113,9 +1115,13 @@ preview(QNetworkAccessManager &network, const QString &targetId, const QString &
         warnings.append("Close the game. Steam can stay open: the manager does not change Steam's "
                         "settings. After installation, set the launch options it shows in the "
                         "game's Properties > General.");
-        if (QDir(dataDirectory() + "/umu").entryList({ "steamrt*" }, QDir::Dirs).isEmpty())
-            warnings.append("umu-run downloads its Steam Runtime on first use, which can take a "
-                            "few minutes. If the installation times out, run it again.");
+        if (!target.value("metadata").toObject().value("runtime_ready").toBool(true))
+            warnings.append("umu-run first downloads the Steam Runtime this Proton needs, which "
+                            "can take several minutes.");
+        warnings.append("Proton, run through umu-run, rewrites the prefix's config_info, links "
+                        "your user to steamuser under drive_c/users, and adds an empty shadercache "
+                        "folder next to pfx. Steam rewrites config_info at the game's next launch, "
+                        "and none of this affects the game.");
     }
     if (include32)
         warnings.append("Experimental 32-bit support requires new WoW64 and a successful 32-bit "
@@ -1282,19 +1288,24 @@ install(QNetworkAccessManager &network, const QString &targetId, const QString &
                                != valueOrNull(previous.value("environment_installed").toObject(),
                                               it.key())))
                 originalsEnvironment[it.key()] = valueOrNull(environmentBefore, it.key());
-        state             = { { "schema", 1 },
-                              { "target", target },
-                              { "version", payload.value("version") },
-                              { "payload", payload },
-                              { "dllpath", dllpath },
-                              { "include_32", include32 },
-                              { "files", hashes },
-                              { "registry_hashes", registryHashes(registry) },
-                              { "originals", baseline },
-                              { "environment_before", originalsEnvironment },
-                              { "environment_installed", updates },
-                              { "checks", checks } };
-        state["launcher"] = manualLauncher(target);
+        state               = { { "schema", 1 },
+                                { "target", target },
+                                { "version", payload.value("version") },
+                                { "payload", payload },
+                                { "dllpath", dllpath },
+                                { "include_32", include32 },
+                                { "files", hashes },
+                                { "registry_hashes", registryHashes(registry) },
+                                { "originals", baseline },
+                                { "environment_before", originalsEnvironment },
+                                { "environment_installed", updates },
+                                { "checks", checks } };
+        state["launcher"]   = manualLauncher(target);
+        const auto metadata = target.value("metadata").toObject();
+        if (target.value("kind") == "steam" && previous.contains("launch_options_before"))
+            state["launch_options_before"] = previous.value("launch_options_before");
+        else if (target.value("kind") == "steam" && metadata.contains("launch_options"))
+            state["launch_options_before"] = metadata.value("launch_options");
         if (flatpak)
         {
             auto journal = permissionJournal.isObject()

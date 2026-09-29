@@ -828,13 +828,12 @@ static void steamChildContext()
     const auto before = readFile(settings);
     Launchers::setEnvironment(target, {{"WINEDLLPATH", "/payload/lib/wine"}});
     CHECK(readFile(settings) == before);
-    CHECK(Launchers::environment(target).value("WINEDLLPATH") == "/payload/lib/wine");
-    CHECK(Launchers::environment(target).value("LABEL") == "two words");
+    CHECK(Launchers::environment(target) == QJsonObject({{"WINEDLLPATH", "/payload/lib/wine"}}));
     qputenv("WINEPREFIX", "/wrong-prefix");
     f.expect(f.home + "/bin/umu-run", target.value("prefix").toString(),
         {{"WINEPREFIX", target.value("metadata").toObject().value("compatdata")}, {"PROTONPATH", target.value("runner")},
          {"GAMEID", "umu-0"}, {"PROTONFIXES_DISABLE", "1"}, {"UMU_RUNTIME_UPDATE", "0"},
-         {"PROTON_VERB", "waitforexitandrun"}, {"DXVK_HUD", "1"}, {"LABEL", "two words"},
+         {"PROTON_VERB", "waitforexitandrun"}, {"DXVK_HUD", QJsonValue::Null}, {"LABEL", QJsonValue::Null},
          {"WINEDLLPATH", "/payload/lib/wine"}, {"CONFIGURED", "per-launch"}});
     const auto result = f.run(target, {{"CONFIGURED", "per-launch"}, {"WINEPREFIX", "/injected"}});
     CHECK(result.exitCode == 37);

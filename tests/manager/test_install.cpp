@@ -656,7 +656,7 @@ static void test_steam_install_leaves_steam_settings_to_the_user()
                 return value.toObject();
         return QJsonObject{};
     };
-    options("DXVK_HUD=1 %command%");
+    options("WINEDLLPATH=/home/user/.local/lib/wine DXVK_HUD=1 %command%");
     f.target = listed();
     CHECK(f.target.value("error").toString().isEmpty());
     writeFile(dllPath(f.prefix, "64"), "previous DLL64");
@@ -665,8 +665,8 @@ static void test_steam_install_leaves_steam_settings_to_the_user()
                                                             {"32:0", "original class32"}, {"32:1", "original ASIO32"}});
     const auto before = readFile(settings);
     const QString message = f.install(true).value("message").toString();
-    const QString line = "DXVK_HUD=1 PROTON_USE_WOW64=1 WINEDLLPATH="
-                         + readJson(f.statePath()).toObject().value("dllpath").toString() + " %command%";
+    const QString line = "WINEDLLPATH=" + readJson(f.statePath()).toObject().value("dllpath").toString()
+                         + " DXVK_HUD=1 PROTON_USE_WOW64=1 %command%";
     CHECK(message.endsWith("launch options to: " + line));
     CHECK(readFile(settings) == before);
     CHECK(readFile(dllPath(f.prefix, "64")) == "fixture DLL64");
@@ -676,7 +676,8 @@ static void test_steam_install_leaves_steam_settings_to_the_user()
     CHECK(!listed().value("metadata").toObject().contains("launch_options_required"));
     CHECK(Installer::check(f.id()).value("message") == "PipeASIO is ready in this launcher.");
     CHECK(Installer::remove(f.id()).value("message").toString().endsWith(
-            "launch options back to: DXVK_HUD=1 %command%"));
+            "launch options back to: WINEDLLPATH=/home/user/.local/lib/wine DXVK_HUD=1 %command%"));
+    CHECK(Launchers::environment(f.target).isEmpty());
     CHECK(readFile(dllPath(f.prefix, "64")) == "previous DLL64");
 }
 
