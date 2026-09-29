@@ -704,6 +704,465 @@ bottleTargets(const QString &base, const QString &kind)
     return result;
 }
 
+// Steam's text KeyValues files (.vdf, .acf): quoted keys and values, nested
+// blocks and // comments. Steam compares keys case-insensitively.
+QJsonObject
+parseVdf(const QByteArray &bytes, const QString &path)
+{
+    enum class Kind
+    {
+        End,
+        Text,
+        Open,
+        Close
+    };
+    const QString text = QString::fromUtf8(bytes);
+    qsizetype     i    = 0;
+    const auto    fail = [&](const QString &reason)
+    { throw Error("Cannot read Steam file " + path + ": " + reason); };
+    const auto next = [&](QString &value)
+    {
+        while (i < text.size())
+        {
+            if (text[i].isSpace())
+                ++i;
+            else if (text.mid(i, 2) == QLatin1String("//"))
+                while (i < text.size() && text[i] != '\n')
+                    ++i;
+            else
+                break;
+        }
+        if (i == text.size())
+            return Kind::End;
+        if (text[i] == '{' || text[i] == '}')
+            return text[i++] == '{' ? Kind::Open : Kind::Close;
+        value.clear();
+        if (text[i] != '"')
+        {
+            while (i < text.size() && !text[i].isSpace()
+                   && !QStringLiteral("\"{}").contains(text[i]))
+                value += text[i++];
+            return Kind::Text;
+        }
+        for (++i; i < text.size() && text[i] != '"'; ++i)
+        {
+            if (text[i] != '\\' || i + 1 == text.size())
+            {
+                value += text[i];
+                continue;
+            }
+            const QChar escaped = text[++i];
+            if (escaped == 'n')
+                value += '\n';
+            else if (escaped == 't')
+                value += '\t';
+            else if (escaped == '\\' || escaped == '"')
+                value += escaped;
+            else
+                value += QStringLiteral("\\") + escaped;
+        }
+        if (i == text.size())
+            fail("unterminated string");
+        ++i;
+        return Kind::Text;
+    };
+    std::function<QJsonObject(int)> block = [&](int depth)
+    {
+        QJsonObject result;
+        QString     key, value;
+        for (;;)
+        {
+            const Kind kind = next(key);
+            if (kind == Kind::End)
+            {
+                if (depth > 0)
+                    fail("unterminated block");
+                return result;
+            }
+            if (kind == Kind::Close)
+            {
+                if (depth == 0)
+                    fail("unbalanced brace");
+                return result;
+            }
+            if (kind == Kind::Open)
+                fail("block without a key");
+            const Kind content = next(value);
+            if (content == Kind::Open)
+            {
+                if (depth == 32)
+                    fail("nested too deeply");
+                result.insert(key, block(depth + 1));
+            }
+            else if (content == Kind::Text)
+                result.insert(key, value);
+            else
+                fail("key without a value");
+        }
+    };
+    return block(0);
+}
+
+QJsonObject
+loadVdf(const QString &path, qint64 limit = 2 * 1024 * 1024)
+{
+    return parseVdf(readFile(path, limit), path);
+}
+
+QJsonValue
+vdfValue(QJsonValue value, const QStringList &keys)
+{
+    for (const auto &key : keys)
+    {
+        const auto object = value.toObject();
+        value             = QJsonValue(QJsonValue::Undefined);
+        for (auto it = object.begin(); it != object.end(); ++it)
+            if (it.key().compare(key, Qt::CaseInsensitive) == 0)
+            {
+                value = it.value();
+                break;
+            }
+    }
+    return value;
+}
+
+QStringList
+steamRoots()
+{
+    QStringList result;
+    for (const QString &candidate :
+         { dataDirectory() + "/Steam", homeDirectory() + "/.local/share/Steam",
+           homeDirectory() + "/.steam/steam", homeDirectory() + "/.steam/root",
+           homeDirectory() + "/.steam/debian-installation" })
+    {
+        const QString root = QFileInfo(candidate).canonicalFilePath();
+        if (!root.isEmpty() && QFileInfo(root + "/steamapps").isDir() && !result.contains(root))
+            result.append(root);
+    }
+    return result;
+}
+
+QStringList
+steamLibraries(const QString &root)
+{
+    QStringList result{ root };
+    QJsonObject folders;
+    try
+    {
+        folders = vdfValue(loadVdf(root + "/steamapps/libraryfolders.vdf"), { "libraryfolders" })
+                          .toObject();
+    }
+    catch (const Error &)
+    {
+    }
+    for (auto it = folders.begin(); it != folders.end(); ++it)
+    {
+        bool numeric = false;
+        it.key().toUInt(&numeric);
+        const QString path    = it.value().isObject() ? vdfValue(it.value(), { "path" }).toString()
+                                                      : it.value().toString();
+        const QString library = QFileInfo(path).canonicalFilePath();
+        if (numeric && !library.isEmpty() && QFileInfo(library + "/steamapps").isDir()
+            && !result.contains(library))
+            result.append(library);
+    }
+    return result;
+}
+
+// Custom compatibility tools declare their Steam names in
+// compatibilitytool.vdf. The first directory Steam searches wins.
+QHash<QString, QString>
+customSteamTools(const QString &root)
+{
+    QStringList directories{ root + "/compatibilitytools.d" };
+    directories += qEnvironmentVariable("STEAM_EXTRA_COMPAT_TOOLS_PATHS")
+                           .split(':', Qt::SkipEmptyParts);
+    for (const auto &path : qEnvironmentVariable("XDG_DATA_DIRS", "/usr/local/share:/usr/share")
+                                    .split(':', Qt::SkipEmptyParts))
+        directories << path + "/steam/compatibilitytools.d";
+    directories << "/usr/local/share/steam/compatibilitytools.d"
+                << "/usr/share/steam/compatibilitytools.d";
+    QHash<QString, QString> result;
+    for (const auto &directory : directories)
+        for (const auto &tool :
+             QDir(directory).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
+        {
+            QJsonObject declared;
+            try
+            {
+                declared = vdfValue(loadVdf(tool.absoluteFilePath() + "/compatibilitytool.vdf"),
+                                    { "compatibilitytools", "compat_tools" })
+                                   .toObject();
+            }
+            catch (const Error &)
+            {
+                continue;
+            }
+            for (auto it = declared.begin(); it != declared.end(); ++it)
+            {
+                const QString path = QDir::cleanPath(
+                        QDir(tool.absoluteFilePath())
+                                .absoluteFilePath(
+                                        vdfValue(it.value(), { "install_path" }).toString(".")));
+                if (!result.contains(it.key()) && QFileInfo(path + "/proton").isFile())
+                    result.insert(it.key(), path);
+            }
+        }
+    return result;
+}
+
+// Valve's Protons are Steam apps: proton_9 is the app named "Proton 9.0",
+// proton_experimental the one named "Proton Experimental".
+QString
+protonAppName(QString name)
+{
+    name = name.trimmed().toLower();
+    if (name.endsWith(" (beta)"))
+        name.chop(7);
+    return name;
+}
+
+QString
+valveToolAppName(const QString &tool)
+{
+    static const QRegularExpression numbered(QStringLiteral("^proton_(\\d+)$"));
+    const auto                      match = numbered.match(tool);
+    if (match.hasMatch())
+        return "proton " + match.captured(1) + ".0";
+    return tool.startsWith("proton_") ? "proton " + tool.mid(7) : QString();
+}
+
+QString
+steamRunner(const QString &tool, const QHash<QString, QString> &custom,
+            const QHash<QString, QString> &valve, const QString &compatdata)
+{
+    if (!tool.isEmpty())
+    {
+        if (custom.contains(tool))
+            return absolutePath(custom.value(tool));
+        const QString name = valveToolAppName(tool);
+        if (!name.isEmpty() && valve.contains(name))
+            return absolutePath(valve.value(name));
+        throw Error("The Proton selected for this game in Steam is not installed: " + tool
+                    + ". Choose an installed one in the game's Properties > Compatibility, or "
+                      "launch the game once so Steam downloads it, then refresh.");
+    }
+    // Without a per-game choice Steam picks the Proton itself, and the prefix
+    // records the one it last ran: its fonts directory is config_info's second line.
+    static const QRegularExpression fonts(QStringLiteral("^(/.+)/(?:files|dist)/share/fonts/?$"));
+    QString                         line;
+    try
+    {
+        line = QString::fromUtf8(readFile(compatdata + "/config_info", 65536))
+                       .split('\n')
+                       .value(1)
+                       .trimmed();
+    }
+    catch (const Error &)
+    {
+    }
+    const auto match = fonts.match(line);
+    if (match.hasMatch() && QFileInfo(match.captured(1) + "/proton").isFile())
+        return absolutePath(match.captured(1));
+    throw Error("Cannot tell which Proton runs this game. Choose one in the game's Properties > "
+                "Compatibility, launch the game once, then refresh.");
+}
+
+// The launch options live in the settings of the account that signed in last.
+QString
+steamLocalConfig(const QString &root)
+{
+    constexpr quint64 accountBase = 76561197960265728ULL;
+    QString           account;
+    try
+    {
+        const auto users
+                = vdfValue(loadVdf(root + "/config/loginusers.vdf"), { "users" }).toObject();
+        for (auto it = users.begin(); it != users.end(); ++it)
+        {
+            bool       numeric = false;
+            const auto id      = it.key().toULongLong(&numeric);
+            if (numeric && id > accountBase
+                && vdfValue(it.value(), { "MostRecent" }).toString() == "1")
+                account = QString::number(id - accountBase);
+        }
+    }
+    catch (const Error &)
+    {
+    }
+    if (account.isEmpty())
+    {
+        QStringList accounts;
+        for (const auto &user :
+             QDir(root + "/userdata").entryList(QDir::Dirs | QDir::NoDotAndDotDot))
+        {
+            bool numeric = false;
+            if (user.toULongLong(&numeric) > 0 && numeric)
+                accounts << user;
+        }
+        if (accounts.size() == 1)
+            account = accounts.first();
+    }
+    const QString path = root + "/userdata/" + account + "/config/localconfig.vdf";
+    return !account.isEmpty() && QFileInfo(path).isFile() ? path : QString();
+}
+
+QString
+steamUmu()
+{
+    const QString path = QStandardPaths::findExecutable(
+            "umu-run", cleanEnvironment().value("PATH").split(':', Qt::SkipEmptyParts));
+    if (!path.isEmpty())
+        return absolutePath(path);
+    const QString bundled = dataDirectory() + "/faugus-launcher/umu-run";
+    return executable(bundled) ? absolutePath(bundled) : QString();
+}
+
+// umu-run downloads the Steam Runtime a Proton requires on first use.
+bool
+umuRuntimeReady(const QString &runner)
+{
+    QString appid;
+    try
+    {
+        appid = vdfValue(loadVdf(runner + "/toolmanifest.vdf"),
+                         { "manifest", "require_tool_appid" })
+                        .toString();
+    }
+    catch (const Error &)
+    {
+        return true;
+    }
+    const QString name = appid == "4183110" ? "steamrt4" : appid == "1628350" ? "steamrt3" : "";
+    const QString root = dataDirectory() + "/umu/" + name;
+    return name.isEmpty() || QFileInfo::exists(root + "/.installed.ok")
+           || QFileInfo::exists(root + "/VERSIONS.txt");
+}
+
+// Games that ran through Proton, plus those set to a Proton that have not run
+// yet. Native Linux games and Steam's own tools have no prefix and no mapping.
+QJsonArray
+steamTargets()
+{
+    QJsonArray    result;
+    QSet<QString> seen;
+    const QString umu = steamUmu();
+    for (const auto &root : steamRoots())
+    {
+        const QString config = root + "/config/config.vdf";
+        const auto    mapping
+                = QFileInfo::exists(config)
+                          ? vdfValue(loadVdf(config), { "InstallConfigStore", "Software", "Valve",
+                                                        "Steam", "CompatToolMapping" })
+                                    .toObject()
+                          : QJsonObject();
+        const QString localConfig = steamLocalConfig(root);
+        bool          known       = false;
+        QJsonObject   launch;
+        if (!localConfig.isEmpty())
+            try
+            {
+                launch = vdfValue(loadVdf(localConfig, 64 * 1024 * 1024),
+                                  { "UserLocalConfigStore", "Software", "Valve", "Steam", "apps" })
+                                 .toObject();
+                known  = true;
+            }
+            catch (const Error &)
+            {
+            }
+        const auto                         custom = customSteamTools(root);
+        QHash<QString, QString>            valve;
+        QList<QPair<QString, QJsonObject>> games;
+        for (const auto &library : steamLibraries(root))
+        {
+            if (seen.contains(library))
+                continue;
+            seen.insert(library);
+            for (const auto &file :
+                 QDir(library + "/steamapps")
+                         .entryInfoList({ "appmanifest_*.acf" }, QDir::Files, QDir::Name))
+            {
+                QJsonObject state;
+                try
+                {
+                    state = vdfValue(loadVdf(file.absoluteFilePath()), { "AppState" }).toObject();
+                }
+                catch (const Error &exception)
+                {
+                    result.append(target("steam", file.absoluteFilePath(), file.fileName(), "", "",
+                                         {}, QString::fromUtf8(exception.what())));
+                    continue;
+                }
+                const QString installed = vdfValue(state, { "installdir" }).toString();
+                const QString directory = library + "/steamapps/common/" + installed;
+                if (!installed.isEmpty() && QFileInfo(directory + "/toolmanifest.vdf").isFile())
+                {
+                    if (QFileInfo(directory + "/proton").isFile())
+                        valve.insert(protonAppName(vdfValue(state, { "name" }).toString()),
+                                     directory);
+                    continue;
+                }
+                games.append({ library, state });
+            }
+        }
+        for (const auto &[library, state] : games)
+        {
+            const QString appid   = vdfValue(state, { "appid" }).toString();
+            bool          numeric = false;
+            appid.toUInt(&numeric);
+            if (!numeric)
+                continue;
+            QString compatdata = library + "/steamapps/compatdata/" + appid;
+            if (!QFileInfo(compatdata + "/pfx").isDir()
+                && QFileInfo(root + "/steamapps/compatdata/" + appid + "/pfx").isDir())
+                compatdata = root + "/steamapps/compatdata/" + appid;
+            const bool    launched = QFileInfo(compatdata + "/pfx").isDir();
+            const QString tool     = vdfValue(mapping, { appid, "name" }).toString();
+            if (!launched && tool.isEmpty())
+                continue;
+            QJsonObject metadata{ { "steam_root", root }, { "library", library },
+                                  { "appid", appid },     { "compatdata", compatdata },
+                                  { "tool", tool },       { "umu", umu } };
+            if (known)
+                metadata.insert("launch_options",
+                                vdfValue(launch, { appid, "LaunchOptions" }).toString());
+            QString prefix, runner, error;
+            try
+            {
+                if (!launched)
+                    throw Error("Launch this game once in Steam so Proton creates its prefix, "
+                                "then refresh.");
+                prefix = compatdata + "/pfx";
+                runner = steamRunner(tool, custom, valve, compatdata);
+                if (umu.isEmpty())
+                    throw Error("Steam games are set up through umu-run. Install the "
+                                "umu-launcher package, or Faugus, which includes it.");
+                error = prefixError(prefix);
+            }
+            catch (const Error &exception)
+            {
+                error = QString::fromUtf8(exception.what());
+            }
+            metadata.insert("runtime_ready", runner.isEmpty() || umuRuntimeReady(runner));
+            auto    current  = target("steam", root + ':' + appid,
+                                      vdfValue(state, { "name" }).toString(appid), prefix, runner,
+                                      metadata, error);
+            QString filename = current.value("id").toString();
+            filename.replace(':', '-');
+            metadata.insert("environment_file",
+                            managerDirectory() + "/steam-environments/" + filename + ".json");
+            current.insert("metadata", metadata);
+            result.append(current);
+        }
+    }
+    const QString sandboxed = homeDirectory() + "/.var/app/com.valvesoftware.Steam/data/Steam";
+    if (QFileInfo(sandboxed + "/steamapps").isDir())
+        result.append(target("steam", sandboxed, "Steam (Flatpak)", "", "", {},
+                             "Flatpak Steam is not supported: its game prefixes sit where the "
+                             "Steam sandbox can write, like Flatpak Bottles (issue #36)."));
+    return result;
+}
+
 bool
 managedMarker(const QString &prefix)
 {
@@ -963,14 +1422,16 @@ discover()
     const QList<QPair<QString, QString>> sources{
         { "faugus", dataDirectory() + "/faugus-launcher" },
         { "bottles", dataDirectory() + "/bottles" },
-        { "bottles-flatpak", homeDirectory() + "/.var/app/" + app + "/data/bottles" }
+        { "bottles-flatpak", homeDirectory() + "/.var/app/" + app + "/data/bottles" },
+        { "steam", dataDirectory() + "/Steam" }
     };
     for (const auto &source : sources)
     {
         try
         {
-            const auto targets = source.first == "faugus"
-                                         ? faugusTargets()
+            const auto targets = source.first == "faugus" ? faugusTargets()
+                                 : source.first == "steam"
+                                         ? steamTargets()
                                          : bottleTargets(source.second, source.first);
             for (const auto &current : targets)
                 result.append(current);
@@ -1021,9 +1482,9 @@ environment(const QJsonObject &selected)
 {
     const auto target   = fresh(selected);
     const auto metadata = target.value("metadata").toObject();
-    if (target.value("kind") == "wine")
+    if (target.value("kind") == "wine" || target.value("kind") == "steam")
         return object(readJson(metadata.value("environment_file").toString(), QJsonObject()),
-                      "manual environment");
+                      target.value("kind") == "wine" ? "manual environment" : "Steam environment");
     if (target.value("kind") != "faugus")
         return yamlEnvironment(loadYaml(metadata.value("config").toString()));
     for (const auto &value : readJson(metadata.value("config").toString()).toArray())
@@ -1050,7 +1511,9 @@ setEnvironment(const QJsonObject &selected, const QJsonObject &updates)
     const auto    target   = fresh(selected);
     const auto    metadata = target.value("metadata").toObject();
     const QString kind     = target.value("kind").toString();
-    const QString path = metadata.value(kind == "wine" ? "environment_file" : "config").toString();
+    const QString path
+            = metadata.value(kind == "wine" || kind == "steam" ? "environment_file" : "config")
+                      .toString();
     atomicUpdate(
             path, target,
             [&](const QByteArray &before)
@@ -1092,7 +1555,7 @@ setEnvironment(const QJsonObject &selected, const QJsonObject &updates)
                     games[index] = game;
                     return QJsonDocument(games).toJson(QJsonDocument::Indented);
                 }
-                if (kind == "wine")
+                if (kind == "wine" || kind == "steam")
                 {
                     auto values = before.isEmpty() ? QJsonObject()
                                                    : object(parseJson(before, path), path);
@@ -1254,6 +1717,22 @@ run(const QJsonObject &selected, const QStringList &arguments, const QJsonObject
         if (!string(config["WorkingDir"]).isEmpty())
             cwd = hostPath(absolutePath(string(config["WorkingDir"])), metadata);
     }
+    else if (kind == "steam")
+    {
+        merge(child, configured);
+        merge(child, updates);
+        // As under Steam: the compatdata directory, whose pfx is the Wine prefix.
+        child.insert("WINEPREFIX", metadata.value("compatdata").toString());
+        child.insert("PROTONPATH", target.value("runner").toString());
+        child.insert("GAMEID", "umu-0");
+        child.insert("PROTONFIXES_DISABLE", "1");
+        child.insert("UMU_RUNTIME_UPDATE", "0");
+        child.insert("PROTON_VERB", "waitforexitandrun");
+        program = metadata.value("umu").toString();
+        // Its first run downloads the Steam Runtime, which outlasts one command.
+        if (!umuRuntimeReady(target.value("runner").toString()))
+            timeoutMs = std::max(timeoutMs, 30 * 60 * 1000);
+    }
     else
     {
         merge(child, configured);
@@ -1262,6 +1741,43 @@ run(const QJsonObject &selected, const QStringList &arguments, const QJsonObject
     }
     fresh(target);
     return execute(program, command, child, cwd, timeoutMs);
+}
+
+QJsonObject
+launchAssignments(const QString &options)
+{
+    QJsonObject result;
+    for (const auto &token : tokens(expand(options)))
+    {
+        const auto    separator = token.value.indexOf('=');
+        const QString key       = token.value.left(separator);
+        if (separator < 1 || !environmentKey.match(key).hasMatch())
+            break;
+        result.insert(key, token.value.mid(separator + 1));
+    }
+    return result;
+}
+
+QString
+launchOptions(const QString &options, const QJsonObject &updates)
+{
+    // Steam runs the options as a command line with %command% standing for the
+    // game. Options without it are arguments Steam appends to the game's.
+    QString text = options.trimmed();
+    if (!text.contains("%command%"))
+        text = text.isEmpty() ? QStringLiteral("%command%") : "%command% " + text;
+    qsizetype split = 0;
+    for (const auto &token : tokens(text))
+    {
+        const auto separator = token.value.indexOf('=');
+        if (separator < 1 || !environmentKey.match(token.value.left(separator)).hasMatch())
+        {
+            split = token.start;
+            break;
+        }
+    }
+    const QString assignments = patchAssignments(text.left(split).trimmed(), updates).trimmed();
+    return assignments.isEmpty() ? text.mid(split) : assignments + ' ' + text.mid(split);
 }
 
 QStringList

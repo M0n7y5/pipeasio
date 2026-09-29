@@ -39,7 +39,10 @@ static QString windowsFile(QString path, const QString &prefix)
 
 static int fakeWine(const QStringList &arguments)
 {
-    const QString prefix = qEnvironmentVariable("WINEPREFIX");
+    // Proton, as umu-run starts it for a Steam game, uses the compatdata directory's pfx.
+    QString prefix = qEnvironmentVariable("WINEPREFIX");
+    if (QFileInfo(prefix + "/pfx").isDir())
+        prefix += "/pfx";
     if (arguments == QStringList{"--capture-wrapper"})
     {
         writeJson(prefix + "/wrapper-result.json", QJsonObject{{"prefix", prefix}, {"dllpath", qEnvironmentVariable("WINEDLLPATH")}});
@@ -620,6 +623,64 @@ static void test_aarch64_payload_installs_the_aarch64_front_end()
     CHECK(Installer::remove(f.id()).value("status") == "removed");
 }
 
+// A Steam game on a custom Proton, with launch options the manager only reads.
+static void test_steam_install_leaves_steam_settings_to_the_user()
+{
+    Fixture f;
+    const QString steam = dataDirectory() + "/Steam";
+    f.prefix = steam + "/steamapps/compatdata/10/pfx";
+    QDir().mkpath(f.prefix + "/drive_c/windows/system32");
+    QDir().mkpath(f.prefix + "/drive_c/windows/syswow64");
+    writeFile(f.prefix + "/system.reg", "WINE REGISTRY Version 2\n");
+    writeFile(steam + "/steamapps/appmanifest_10.acf",
+              "\"AppState\" { \"appid\" \"10\" \"name\" \"Studio Game\" \"installdir\" \"Studio Game\" }\n");
+    writeFile(steam + "/config/config.vdf",
+              "\"InstallConfigStore\" { \"Software\" { \"Valve\" { \"Steam\" { \"CompatToolMapping\" "
+              "{ \"10\" { \"name\" \"Fixture Proton\" } } } } } }\n");
+    writeFile(steam + "/compatibilitytools.d/fixture/compatibilitytool.vdf",
+              "\"compatibilitytools\" { \"compat_tools\" { \"Fixture Proton\" { \"install_path\" \".\" } } }\n");
+    writeFile(steam + "/compatibilitytools.d/fixture/proton", "fixture proton");
+    const QString umu = QFileInfo(f.runner).absolutePath() + "/umu-run";
+    copyFile(f.runner, umu);
+    QFile::setPermissions(umu, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    const QString settings = steam + "/userdata/1/config/localconfig.vdf";
+    const auto options = [&](const QString &value)
+    {
+        writeFile(settings, ("\"UserLocalConfigStore\" { \"Software\" { \"Valve\" { \"Steam\" { \"apps\" { \"10\" "
+                             "{ \"LaunchOptions\" \"" + value + "\" } } } } } }\n").toUtf8());
+    };
+    const auto listed = [&]
+    {
+        for (const auto &value : Installer::listTargets())
+            if (value.toObject().value("kind") == "steam")
+                return value.toObject();
+        return QJsonObject{};
+    };
+    options("WINEDLLPATH=/home/user/.local/lib/wine DXVK_HUD=1 %command%");
+    f.target = listed();
+    CHECK(f.target.value("error").toString().isEmpty());
+    writeFile(dllPath(f.prefix, "64"), "previous DLL64");
+    writeFile(dllPath(f.prefix, "32"), "previous DLL32");
+    writeJson(f.prefix + "/fake-registry.json", QJsonObject{{"64:0", "original class64"}, {"64:1", "original ASIO64"},
+                                                            {"32:0", "original class32"}, {"32:1", "original ASIO32"}});
+    const auto before = readFile(settings);
+    const QString message = f.install(true).value("message").toString();
+    const QString line = "WINEDLLPATH=" + readJson(f.statePath()).toObject().value("dllpath").toString()
+                         + " DXVK_HUD=1 PROTON_USE_WOW64=1 %command%";
+    CHECK(message.endsWith("launch options to: " + line));
+    CHECK(readFile(settings) == before);
+    CHECK(readFile(dllPath(f.prefix, "64")) == "fixture DLL64");
+    CHECK(listed().value("status") == "installed");
+    CHECK(listed().value("metadata").toObject().value("launch_options_required") == line);
+    options(line);
+    CHECK(!listed().value("metadata").toObject().contains("launch_options_required"));
+    CHECK(Installer::check(f.id()).value("message") == "PipeASIO is ready in this launcher.");
+    CHECK(Installer::remove(f.id()).value("message").toString().endsWith(
+            "launch options back to: WINEDLLPATH=/home/user/.local/lib/wine DXVK_HUD=1 %command%"));
+    CHECK(Launchers::environment(f.target).isEmpty());
+    CHECK(readFile(dllPath(f.prefix, "64")) == "previous DLL64");
+}
+
 static int tests()
 {
     const std::pair<const char *, void (*)()> cases[] = {
@@ -642,7 +703,8 @@ static int tests()
         {"shared permissions", test_shared_permissions_survive_until_last_removal},
         {"pending permissions", test_pending_permissions_cleanup_is_resumable},
         {"flatpak bottles disabled", test_flatpak_bottles_are_disabled_except_remove},
-        {"aarch64 payload", test_aarch64_payload_installs_the_aarch64_front_end}};
+        {"aarch64 payload", test_aarch64_payload_installs_the_aarch64_front_end},
+        {"steam install", test_steam_install_leaves_steam_settings_to_the_user}};
     for (const auto &[name, test] : cases)
         try { test(); }
         catch (const std::exception &error)

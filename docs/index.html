@@ -397,8 +397,8 @@
       <h2>Quick start</h2>
       <p class="lead">x86_64, with an ARM64 tarball and build notes in the <a href="https://github.com/M0n7y5/pipeasio#arm64">README</a>. Building from source needs CMake 3.20+, <code>gcc</code>, <code>pkg-config</code>, the Wine SDK, the PipeWire headers and a MinGW cross compiler, plus Qt 6, <code>yaml-cpp</code>, <code>libarchive</code> and zlib for the manager and settings panel. Package names differ per distro - Arch: <code>cmake ninja gcc pkgconf wine libpipewire qt6-base mingw-w64-gcc yaml-cpp libarchive zlib</code>, Fedora: <code>cmake ninja-build gcc gcc-c++ pkgconf wine-devel pipewire-devel qt6-qtbase-devel mingw64-gcc mingw64-gcc-c++ yaml-cpp-devel libarchive-devel zlib-devel</code>, Debian/Ubuntu: <code>cmake ninja-build gcc g++ pkg-config wine64-tools libwine-dev libpipewire-0.3-dev qt6-base-dev gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 libyaml-cpp-dev libarchive-dev zlib1g-dev</code>.</p>
 
-      <div class="step">Faugus, Bottles or a custom prefix: use the manager</div>
-      <p>Download <code>pipeasio-manager-&lt;tag&gt;-x86_64.AppImage</code> from the <a href="https://github.com/M0n7y5/pipeasio/releases">releases page</a>, mark it executable and open it. Pick the application or prefix and click <b>Install</b>: it downloads a checksum-verified release, registers the driver through that prefix's own runner, and checks that it loads. No build and no <code>sudo</code>.</p>
+      <div class="step">Steam, Faugus, Bottles or a custom prefix: use the manager</div>
+      <p>Download <code>pipeasio-manager-&lt;tag&gt;-x86_64.AppImage</code> from the <a href="https://github.com/M0n7y5/pipeasio/releases">releases page</a>, mark it executable and open it. Pick the application or prefix and click <b>Install</b>: it downloads a checksum-verified release, registers the driver through that prefix's own runner, and checks that it loads. For a Steam game, then paste the launch options it shows into the game's properties. No build and no <code>sudo</code>.</p>
 
       <div class="step">Arch Linux / CachyOS: skip the build</div>
 <pre><span class="c"># driver + settings panel, from the AUR</span>

@@ -819,16 +819,83 @@ registryHashes(const QJsonObject &registry)
     return hashes;
 }
 
+// The launch options Steam still needs for this game, or empty once its current
+// options carry the environment the manager installed.
+QString
+pendingLaunchOptions(const QJsonObject &target, const QJsonObject &installed)
+{
+    if (target.value("kind") != "steam" || installed.isEmpty())
+        return {};
+    const auto    metadata = target.value("metadata").toObject();
+    const QString current  = metadata.value("launch_options").toString();
+    try
+    {
+        if (metadata.contains("launch_options"))
+        {
+            const auto applied = Launchers::launchAssignments(current);
+            bool       set     = true;
+            for (auto it = installed.begin(); it != installed.end(); ++it)
+                set = set && valueOrNull(applied, it.key()) == it.value();
+            if (set)
+                return {};
+        }
+        return Launchers::launchOptions(current, installed);
+    }
+    catch (const Error &)
+    {
+        return Launchers::launchOptions({}, installed);
+    }
+}
+
 QJsonObject
-ready(const QJsonObject &state, const QJsonObject &checks)
+ready(const QJsonObject &state, const QJsonObject &checks, const QJsonObject &target)
 {
     const QString launcher = state.value("launcher").toString();
+    const QString options
+            = pendingLaunchOptions(target, state.value("environment_installed").toObject());
+    QString message = launcher.isEmpty() ? "PipeASIO is ready in this launcher."
+                                         : "Ready via the generated launch wrapper.";
+    if (!options.isEmpty())
+        message = "PipeASIO is installed. In Steam, set this game's launch options to: " + options;
     return { { "status", "ready" },
              { "version", state.value("version") },
              { "checks", checks },
              { "launcher", launcher },
-             { "message", launcher.isEmpty() ? "PipeASIO is ready in this launcher."
-                                             : "Ready via the generated launch wrapper." } };
+             { "message", message } };
+}
+
+// Steam keeps the launch options the user copied in, so point back to the values
+// its options had before the first installation.
+QString
+steamRemovalNote(const QJsonObject &target, const QJsonObject &state)
+{
+    const auto installed = state.value("environment_installed").toObject();
+    const auto metadata  = target.value("metadata").toObject();
+    if (target.value("kind") != "steam" || installed.isEmpty())
+        return {};
+    if (!metadata.contains("launch_options"))
+        return " Remove PipeASIO's WINEDLLPATH from this game's Steam launch options.";
+    const QString current = metadata.value("launch_options").toString();
+    QJsonObject   restored;
+    bool          stale = false;
+    try
+    {
+        const auto applied = Launchers::launchAssignments(current);
+        const auto before
+                = Launchers::launchAssignments(state.value("launch_options_before").toString());
+        for (auto it = installed.begin(); it != installed.end(); ++it)
+        {
+            restored[it.key()] = valueOrNull(before, it.key());
+            stale = stale || (!it.value().isNull() && applied.value(it.key()) == it.value());
+        }
+        if (stale)
+            return " In Steam, set this game's launch options back to: "
+                   + Launchers::launchOptions(current, restored);
+    }
+    catch (const Error &)
+    {
+    }
+    return {};
 }
 
 QJsonObject
@@ -861,11 +928,10 @@ finishRemoval(const QJsonObject &target, const QJsonObject &state)
     if (!state.value("launcher").toString().isEmpty())
         unlinkFile(state.value("launcher").toString());
     unlinkFile(stateDirectory(target) + "/state.json");
-    return {
-        { "status", "removed" },
-        { "message",
-          "Manager-owned changes removed. Any previous PipeASIO installation was restored." }
-    };
+    return { { "status", "removed" },
+             { "message", "Manager-owned changes removed. Any previous PipeASIO installation was "
+                          "restored."
+                                  + steamRemovalNote(target, state) } };
 }
 }
 
@@ -962,6 +1028,19 @@ listTargets()
             target["status"] = "needs-repair";
             metadata["note"] = "Existing PipeASIO installation, not managed here.";
         }
+        const QString options
+                = pendingLaunchOptions(target, state.value("environment_installed").toObject());
+        if (!options.isEmpty())
+        {
+            const QString note    = metadata.value("note").toString();
+            const QString pending = metadata.contains("launch_options")
+                                            ? "Steam does not have PipeASIO's launch options yet, "
+                                              "so the game will not load it."
+                                            : "Steam's launch options for this game cannot be "
+                                              "read. Make sure they match the ones below.";
+            metadata["launch_options_required"] = options;
+            metadata["note"]                    = note.isEmpty() ? pending : note + ' ' + pending;
+        }
         if (target.value("kind") == "bottles-flatpak" && target.value("error").toString().isEmpty())
         {
             // Listed rather than hidden so an existing installation can be removed.
@@ -1031,6 +1110,19 @@ preview(QNetworkAccessManager &network, const QString &targetId, const QString &
     if (kind == "wine")
         warnings.append("Plain Wine needs a launch wrapper to retain WINEDLLPATH. The manager will "
                         "create one.");
+    if (kind == "steam")
+    {
+        warnings.append("Close the game. Steam can stay open: the manager does not change Steam's "
+                        "settings. After installation, set the launch options it shows in the "
+                        "game's Properties > General.");
+        if (!target.value("metadata").toObject().value("runtime_ready").toBool(true))
+            warnings.append("umu-run first downloads the Steam Runtime this Proton needs, which "
+                            "can take several minutes.");
+        warnings.append("Proton, run through umu-run, rewrites the prefix's config_info, links "
+                        "your user to steamuser under drive_c/users, and adds an empty shadercache "
+                        "folder next to pfx. Steam rewrites config_info at the game's next launch, "
+                        "and none of this affects the game.");
+    }
     if (include32)
         warnings.append("Experimental 32-bit support requires new WoW64 and a successful 32-bit "
                         "runtime check.");
@@ -1090,9 +1182,10 @@ install(QNetworkAccessManager &network, const QString &targetId, const QString &
     paths.removeAll(dllpath);
     paths.prepend(dllpath);
     QJsonObject updates{ { "WINEDLLPATH", paths.join(':') } };
-    if (target.value("kind") == "faugus" && include32)
+    const bool  proton = target.value("kind") == "faugus" || target.value("kind") == "steam";
+    if (proton && include32)
         updates["PROTON_USE_WOW64"] = "1";
-    else if (target.value("kind") == "faugus"
+    else if (proton
              && previous.value("environment_installed").toObject().contains("PROTON_USE_WOW64"))
         updates["PROTON_USE_WOW64"]
                 = valueOrNull(previous.value("environment_before").toObject(), "PROTON_USE_WOW64");
@@ -1195,19 +1288,24 @@ install(QNetworkAccessManager &network, const QString &targetId, const QString &
                                != valueOrNull(previous.value("environment_installed").toObject(),
                                               it.key())))
                 originalsEnvironment[it.key()] = valueOrNull(environmentBefore, it.key());
-        state             = { { "schema", 1 },
-                              { "target", target },
-                              { "version", payload.value("version") },
-                              { "payload", payload },
-                              { "dllpath", dllpath },
-                              { "include_32", include32 },
-                              { "files", hashes },
-                              { "registry_hashes", registryHashes(registry) },
-                              { "originals", baseline },
-                              { "environment_before", originalsEnvironment },
-                              { "environment_installed", updates },
-                              { "checks", checks } };
-        state["launcher"] = manualLauncher(target);
+        state               = { { "schema", 1 },
+                                { "target", target },
+                                { "version", payload.value("version") },
+                                { "payload", payload },
+                                { "dllpath", dllpath },
+                                { "include_32", include32 },
+                                { "files", hashes },
+                                { "registry_hashes", registryHashes(registry) },
+                                { "originals", baseline },
+                                { "environment_before", originalsEnvironment },
+                                { "environment_installed", updates },
+                                { "checks", checks } };
+        state["launcher"]   = manualLauncher(target);
+        const auto metadata = target.value("metadata").toObject();
+        if (target.value("kind") == "steam" && previous.contains("launch_options_before"))
+            state["launch_options_before"] = previous.value("launch_options_before");
+        else if (target.value("kind") == "steam" && metadata.contains("launch_options"))
+            state["launch_options_before"] = metadata.value("launch_options");
         if (flatpak)
         {
             auto journal = permissionJournal.isObject()
@@ -1326,7 +1424,7 @@ install(QNetworkAccessManager &network, const QString &targetId, const QString &
                         + "\nRecovery needs attention: " + errors.join("; "));
         throw;
     }
-    return ready(state, checks);
+    return ready(state, checks, target);
 }
 
 QJsonObject
@@ -1349,7 +1447,8 @@ check(const QString &targetId, const Progress &progress)
     const auto        environment = runtimeEnvironment(target, workspace.path());
     const QStringList views
             = state.value("include_32").toBool() ? QStringList{ "64", "32" } : QStringList{ "64" };
-    return ready(state, probe(target, payload, views, workspace.path(), environment, progress));
+    return ready(state, probe(target, payload, views, workspace.path(), environment, progress),
+                 target);
 }
 
 QJsonObject

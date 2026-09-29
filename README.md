@@ -75,7 +75,7 @@ reach out in the guild instead.
 
 ## Quick start
 
-**Faugus, Bottles or a custom Wine prefix:** download
+**Steam, Faugus, Bottles or a custom Wine prefix:** download
 `pipeasio-manager-<tag>-x86_64.AppImage` from the
 [releases page](https://github.com/M0n7y5/pipeasio/releases), mark it
 executable and open it. It installs the driver into the prefix you pick and
@@ -112,20 +112,21 @@ Steam and Faugus need. It only loads when the launcher, or `wine`, runs with
 ## GUI manager
 
 PipeASIO Manager adds an **Installations** tab to the existing settings and
-monitor application. It discovers Faugus applications and native Bottles
-configurations without starting Wine. Flatpak Bottles are listed but disabled
-until [#36](https://github.com/M0n7y5/pipeasio/issues/36) is fixed: the manager
-only removes an installation it already made there. Bottles support is
-experimental, see [Bottles](#bottles). **Add prefix** accepts an existing
-custom Wine prefix and its owning Wine executable.
+monitor application. It discovers Steam games that have run through Proton,
+Faugus applications and native Bottles configurations without starting Wine.
+Flatpak Bottles are listed but disabled until
+[#36](https://github.com/M0n7y5/pipeasio/issues/36) is fixed: the manager only
+removes an installation it already made there. Flatpak Steam is not supported,
+for the same reason. Bottles support is experimental, see [Bottles](#bottles).
+**Add prefix** accepts an existing custom Wine prefix and its owning Wine
+executable.
 
 Download `pipeasio-manager-<tag>-x86_64.AppImage` from the
 [releases page](https://github.com/M0n7y5/pipeasio/releases): every release
 since 1.8.0 carries it. It bundles the native Qt/C++ manager, its libraries,
 and the installation probes. Mark it executable in your file manager and open
 it. It requires neither Python nor `sudo` and does not compile the driver. It
-installs any driver release from 1.7.0 on. Steam games are not discovered:
-register those by hand, see [Proton / Steam / Faugus](#proton--steam--faugus).
+installs any driver release from 1.7.0 on.
 
 The AppImage defaults to Qt's Fusion widgets and desktop-portal appearance
 integration. It reads the desktop's light/dark preference at startup and uses
@@ -134,14 +135,17 @@ Darkly are not bundled. Restart the manager if a desktop theme change is not
 reflected while it is open. Explicit `QT_QPA_PLATFORMTHEME` and
 `QT_STYLE_OVERRIDE` overrides remain available.
 
-1. Select the application or prefix. Close its Windows applications and the
-   launcher, including the Faugus tray process, before changing the installation.
+1. Select the application or prefix. Installed prefixes are listed first, and
+   the filter field above the list narrows it by name, launcher, status or
+   version. Close its Windows applications and the launcher, including the
+   Faugus tray process, before changing the installation. Steam can stay open.
 2. Choose **Install** or **Update**. Review the selected runner, release, and
    any Flatpak permission requests before confirming.
 3. The manager downloads an official GitHub release, checks its SHA256, stages
    its driver files outside the runner, and configures that launcher's library
-   path. Faugus registration runs through its bundled umu-run. Bottles uses its
-   configured Wine inside the correct native or Flatpak environment.
+   path. Steam and Faugus registration runs through umu-run with the game's
+   Proton. Bottles uses its configured Wine inside the correct native or Flatpak
+   environment.
 4. A successful installation must pass registration, native-library loading,
    and PipeWire connection checks inside that runner. These checks do not start
    audio playback or connect to hardware.
@@ -158,6 +162,18 @@ path. Pass the Windows application to that wrapper, for example
 `"/path/shown/by/the/manager/launch" "/path/to/application.exe"`. Direct `wine`
 launches do not inherit its `WINEDLLPATH`. Faugus and Bottles retain the setting
 in their own application configuration.
+
+For a Steam game, the manager shows the launch options to set in the game's
+**Properties > General**, keeping its other options. Its `WINEDLLPATH` replaces
+one the game already sets. The manager reads Steam's settings to tell when the
+options are set, but never writes them, since Steam rewrites its settings files
+while it runs. After **Remove**, it shows the options to set back, with the
+values they had before. Steam games need `umu-run`, from the `umu-launcher`
+package or the copy Faugus includes. A game appears once it has run through
+Proton, or once a Proton is selected for it in Steam. The manager uses the
+game's own **Compatibility** choice, otherwise the Proton the game last ran
+with. If you changed Steam's default Proton since then, launch the game once
+and refresh.
 
 Driver payloads and backups normally live under
 `${XDG_DATA_HOME:-$HOME/.local/share}/pipeasio`. Flatpak Bottles payloads stay in
@@ -503,6 +519,10 @@ WoW64 toggle) so Proton runs them through new WoW64 - see
 [Proton / Steam / Faugus](#proton--steam--faugus).
 
 ## Proton / Steam / Faugus
+
+The [GUI manager](#gui-manager) does this for Faugus games. For Steam games it
+does everything but step 2, and shows the launch options to paste. The manual
+steps follow.
 
 Proton runs Wine inside a pressure-vessel container (steamrt4). The container does
 not expose the host's `/usr/lib/wine/`, so a system-wide install is invisible to
