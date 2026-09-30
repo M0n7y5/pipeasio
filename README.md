@@ -114,8 +114,8 @@ Steam and Faugus need. It only loads when the launcher, or `wine`, runs with
 PipeASIO Manager adds an **Installations** tab to the existing settings and
 monitor application. It discovers Steam games that have run through Proton,
 Faugus applications and native Bottles configurations without starting Wine.
-Flatpak Bottles are listed but disabled until
-[#36](https://github.com/M0n7y5/pipeasio/issues/36) is fixed: the manager only
+Flatpak Bottles are listed but not supported
+([#36](https://github.com/M0n7y5/pipeasio/issues/36)): the manager only
 removes an installation it already made there. Flatpak Steam is not supported,
 for the same reason. Bottles support is experimental, see [Bottles](#bottles).
 **Add prefix** accepts an existing custom Wine prefix and its owning Wine
@@ -702,12 +702,11 @@ half can be cross-built; the unixlib is always the host's.
 Status: CI builds both forms on an ARM64 runner. Against Hangover's Wine it
 links the hybrid, registers it, and loads it from an x86_64 program under FEX,
 which is the path Ableton takes. Ableton Live has played audio on real ARM64
-hardware through an arm64ec front end copied into `system32` (Lenovo IdeaPad
-Duet 3, Fedora in a container, FEX), with 1024 frames as the practical floor
-there with ntsync ([#23](https://github.com/M0n7y5/pipeasio/issues/23)). No
-report yet covers a native ARM64 host, or the ARM64X hybrid installed by
-`pipeasio-register`. Reports from Asahi or other ARM64 machines go on the
-tracking issue.
+hardware through the ARM64X hybrid from 1.10.0 (Lenovo IdeaPad Duet 3, Fedora
+in a container, FEX, Wine 11.13). At 512 frames it crackles occasionally there,
+with nothing else running ([#23](https://github.com/M0n7y5/pipeasio/issues/23)).
+No report yet covers a native ARM64 host. Reports from Asahi or other ARM64
+machines go on the tracking issue.
 
 ## Other distributions
 
